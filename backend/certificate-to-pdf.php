@@ -10,8 +10,9 @@ try {
     exit('The certificate PDF converter is not configured correctly.');
 }
 
+$productionOrigin = 'https://airi.infinityfreeapp.com';
 $allowedOrigins = [
-    'https://airi.infinityfreeapp.com',
+    $productionOrigin,
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://localhost:4173',
@@ -19,7 +20,10 @@ $allowedOrigins = [
 ];
 $configuredOrigin = backendEnv('CERTIFICATE_PDF_ALLOWED_ORIGIN');
 if ($configuredOrigin !== false && $configuredOrigin !== '') {
-    $allowedOrigins = array_filter(array_map('trim', explode(',', $configuredOrigin)));
+    $allowedOrigins = array_values(array_unique(array_merge(
+        [$productionOrigin],
+        array_filter(array_map('trim', explode(',', $configuredOrigin)))
+    )));
 }
 
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
