@@ -1249,6 +1249,32 @@ function SavedCertificateDownloadButton({ document, certificateData, requestId, 
   </span>
 }
 
+function IssuedDocumentPrintButton({ document, onPrint, disabled = false }) {
+  const [isPrinting, setIsPrinting] = useState(false)
+  const [error, setError] = useState('')
+
+  const printDocument = async () => {
+    if (isPrinting || disabled) return
+    setIsPrinting(true)
+    setError('')
+    try {
+      await onPrint()
+    } catch (printError) {
+      console.error(`Unable to print the issued ${document} document.`, printError)
+      setError(printError instanceof Error ? printError.message : 'The PDF could not be prepared for printing.')
+    } finally {
+      setIsPrinting(false)
+    }
+  }
+
+  return <span className="issued-document-print-control">
+    <button type="button" className="open-request issued-document-print" onClick={printDocument} disabled={disabled || isPrinting} aria-label={`Print ${document} as PDF`}>
+      {isPrinting ? 'Preparing…' : 'Print PDF'}
+    </button>
+    {error && <small className="issued-document-print-error" role="alert">{error}</small>}
+  </span>
+}
+
 function CertificateTemplateRequestPicker({ document, requests, viewedState, onClose, onSelect }) {
   useEffect(() => {
     const closeOnEscape = (event) => {
@@ -12468,7 +12494,7 @@ function App() {
               <button type="button" aria-pressed={residentRecordsTab === 'recovery'} className={residentRecordsTab === 'recovery' ? 'active' : ''} onClick={() => { setResidentRecordsTab('recovery'); setAdminRecoveryMessage('') }}>Resident code recovery <span>{pendingRecoveryRequestCount}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'rejected'} className={residentRecordsTab === 'rejected' ? 'active' : ''} onClick={() => setResidentRecordsTab('rejected')}>Rejected registrations <span>{declinedRegistrationRequests.length}</span></button>
             </div>
-            <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder="Search by name, address, resident code, or request ID" /></label>
+            {residentRecordsTab !== 'recovery' && <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder={residentRecordsTab === 'rejected' ? 'Search applicant, address, request ID, or resident code' : 'Search by name, address, resident code, or request ID'} /></label>}
             {residentRecordsTab === 'active' ? <section className="resident-record-tab-panel">
               <button type="button" className="resident-add-form-toggle" aria-expanded={residentFormOpen || Boolean(editingResidentId)} disabled={Boolean(editingResidentId)} onClick={() => { setResidentFormOpen((isOpen) => !isOpen); setResidentFormError('') }}>
                 <span aria-hidden="true">{residentFormOpen || editingResidentId ? '−' : '+'}</span>{editingResidentId ? 'Editing resident' : residentFormOpen ? 'Hide resident form' : 'Add resident'}
@@ -12497,7 +12523,7 @@ function App() {
               </form>}
               {residentFormError && <p className="community-update-error" role="alert">{residentFormError}</p>}
               <p className="resident-record-result-count" aria-live="polite">Showing {filteredAdminResidents.length} of {adminResidents.length} current residents</p>
-              <TableSearch label="resident records"><div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
+              <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
                 const profileRequests = residentProfileUpdateRequests.filter((request) => request.residentCode?.toLowerCase() === resident.code.toLowerCase())
                 const pendingProfileRequests = profileRequests.filter((request) => request.status === 'Pending').length
                 const isRecoveryNameMatch = resident.id === highlightedResidentId
@@ -12514,7 +12540,7 @@ function App() {
                     {profileRequests.length > 0 && <button type="button" className="resident-profile-update-icon" aria-label={`Open ${profileRequests.length} profile update request${profileRequests.length === 1 ? '' : 's'} for ${resident.name}`} title="Review profile update requests" onClick={() => { setResidentProfileUpdateResidentCode(resident.code); setProfileUpdateError(''); setResidentAccountMessage('') }}><span aria-hidden="true">✎</span>{pendingProfileRequests > 0 && <small>{pendingProfileRequests}</small>}</button>}
                   </div></td>
                 </tr>
-              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length ? 'No current residents match your search.' : 'No resident records yet.'}</td></tr>}</tbody></table></div></TableSearch>
+              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length ? 'No current residents match your search.' : 'No resident records yet.'}</td></tr>}</tbody></table></div>
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
               <div className="requests-heading"><div><span className="section-number">EXISTING RESIDENT ACCESS</span><h3>Resident code recovery requests</h3><p>Verify against an existing resident record. Recovery never creates a new resident account.</p></div><span className="request-notification">{pendingRecoveryRequestCount} pending</span></div>
               {adminRecoveryMessage && <p className="recovery-admin-message" role="status">{adminRecoveryMessage}</p>}
@@ -12621,14 +12647,14 @@ function App() {
             </section> : <section className="resident-record-tab-panel">
               <section className="resident-record-subsection">
                 <div className="requests-heading"><div><span className="section-number">REGISTRATION DECISIONS</span><h3>Rejected registration applications</h3><p>Review declined applications and the reason recorded for each decision.</p></div><span className="request-notification">{filteredDeclinedRegistrationRequests.length} of {declinedRegistrationRequests.length}</span></div>
-                <TableSearch label="rejected registration applications"><div className="table-scroll rejected-registration-table-scroll"><table className="admin-table rejected-registration-table"><thead><tr><th>Request</th><th>Applicant</th><th>Address</th><th>Submitted</th><th>Reason for rejection</th><th>Decision date</th></tr></thead><tbody>{filteredDeclinedRegistrationRequests.map((request) => <tr key={request.id}>
+                <div className="table-scroll rejected-registration-table-scroll"><table className="admin-table rejected-registration-table"><thead><tr><th>Request</th><th>Applicant</th><th>Address</th><th>Submitted</th><th>Reason for rejection</th><th>Decision date</th></tr></thead><tbody>{filteredDeclinedRegistrationRequests.map((request) => <tr key={request.id}>
                   <td data-label="Request"><span className="rejected-registration-request-id">{request.id}</span></td>
                   <td data-label="Applicant"><strong>{request.name}</strong></td>
                   <td data-label="Address">{request.address || 'Address not recorded'}</td>
                   <td data-label="Submitted">{request.submittedAt ? new Date(request.submittedAt).toLocaleDateString('en-PH') : 'Date not recorded'}</td>
                   <td data-label="Reason for rejection"><span className="rejected-registration-reason"><strong>Admin note</strong><span>{request.rejectionReason || 'No reason recorded'}</span></span></td>
                   <td data-label="Decision date">{request.reviewedAt ? new Date(request.reviewedAt).toLocaleDateString('en-PH') : 'Date not recorded'}</td>
-                </tr>)}{filteredDeclinedRegistrationRequests.length === 0 && <tr><td colSpan="6">{declinedRegistrationRequests.length ? 'No rejected applications match your search.' : 'No rejected registration applications.'}</td></tr>}</tbody></table></div></TableSearch>
+                </tr>)}{filteredDeclinedRegistrationRequests.length === 0 && <tr><td colSpan="6">{declinedRegistrationRequests.length ? 'No rejected applications match your search.' : 'No rejected registration applications.'}</td></tr>}</tbody></table></div>
               </section>
             </section>}
             {residentProfileUpdateResidentCode && (() => {
@@ -12781,7 +12807,22 @@ function App() {
           {adminView === 'issuedDocuments' && <section className="compliance-panel issued-documents-workspace">
             <div className="requests-heading"><div><span className="section-number">ISSUANCE REGISTER</span><h2>Issued documents</h2></div><span className="request-notification">{issuedDocuments.length} documents</span></div>
             <p className="resident-report-note">Each released certificate receives a unique control number and records its date, purpose, OR number, recipient, and issuing officer.</p>
-            <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th></tr></thead><tbody>{issuedDocuments.map((entry) => <tr key={entry.id}><td>{entry.controlNumber}</td><td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td><td>{entry.releasedTo || entry.resident}</td><td>{entry.document}</td><td>{entry.purpose || 'Not provided'}</td><td>{entry.orNumber || '—'}</td><td>{entry.issuingOfficer || '—'}</td></tr>)}{issuedDocuments.length === 0 && <tr><td colSpan="7">No documents have been released yet.</td></tr>}</tbody></table></div></TableSearch>
+            <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table issued-documents-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th><th>Action</th></tr></thead><tbody>{issuedDocuments.map((entry) => {
+              const issuedRequest = historyRequestList.find((request) => request.id === entry.requestId)
+              const hasCertificate = Boolean(issuedRequest?.certificateData?.[entry.document])
+              return <tr key={entry.id}>
+                <td>{entry.controlNumber}</td>
+                <td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td>
+                <td>{entry.releasedTo || entry.resident}</td>
+                <td>{entry.document}</td>
+                <td>{entry.purpose || 'Not provided'}</td>
+                <td>{entry.orNumber || '—'}</td>
+                <td>{entry.issuingOfficer || '—'}</td>
+                <td className="issued-document-action-cell">{hasCertificate
+                  ? <IssuedDocumentPrintButton document={entry.document} onPrint={() => printApprovedCertificatePdf(issuedRequest, entry.document)} />
+                  : <span className="issued-document-print-unavailable">Certificate unavailable</span>}</td>
+              </tr>
+            })}{issuedDocuments.length === 0 && <tr><td colSpan="8">No documents have been released yet.</td></tr>}</tbody></table></div></TableSearch>
           </section>}
           {adminView === 'residentHistory' && <section className="resident-history-page">
             <section className="compliance-panel resident-compliance-report">
@@ -12796,7 +12837,7 @@ function App() {
                 {(historySearch || historyStatusFilter !== 'all') && <button type="button" className="history-filter-reset" onClick={() => { setHistorySearch(''); setHistoryStatusFilter('all') }}>Clear filters</button>}
                 <p className="history-result-count" aria-live="polite">Showing <strong>{filteredHistoryRequests.length}</strong> of {historyRequestList.length} requests</p>
               </div>
-              <TableSearch label="request history"><div className="resident-history-table-wrap">
+              <div className="resident-history-table-wrap">
                 <table className="resident-history-table resident-admin-request-history">
                   <thead><tr><th>Resident</th><th>Request ID</th><th>Documents</th><th>Submitted</th><th>Status</th><th>Action</th></tr></thead>
                   <tbody>{filteredHistoryRequests.map((request) => <tr key={request.id}>
@@ -12810,7 +12851,7 @@ function App() {
                     {filteredHistoryRequests.length === 0 && <tr><td className="resident-table-empty" colSpan="6">{historyRequestList.length ? 'No request history matches your search or status filter.' : 'No document requests have been recorded yet.'}</td></tr>}
                   </tbody>
                 </table>
-              </div></TableSearch>
+              </div>
               {selectedHistoryRequest && <div className="resident-history-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelectedHistoryRequestId(null); setSelectedFinishedCertificate(null) } }}>
                 <section className="resident-history-modal" role="dialog" aria-modal="true" aria-labelledby="resident-history-modal-title">
                   <header className="resident-history-modal-header"><div><span className="section-number">REQUEST DETAILS</span><h2 id="resident-history-modal-title">{selectedHistoryRequest.resident}</h2><p>{selectedHistoryRequest.id} · {selectedHistoryRequest.residentCode || 'Resident code not recorded'}</p></div><button type="button" className="resident-history-modal-close" onClick={() => { setSelectedHistoryRequestId(null); setSelectedFinishedCertificate(null) }} aria-label="Close request details">×</button></header>

@@ -6727,6 +6727,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .payment-recipient-note { color: #55778d; font-size: 9px; line-height: 1.45; }
 .payment-history-section { padding: 17px; }
 .payment-history-section .table-scroll { overflow: auto; border: 1px solid #dce8ef; border-radius: 10px; background: #fff; }
+.payment-history-section .table-search-toolbar input { border-color: #c9dce8; }
+.payment-history-section .table-search-toolbar input:focus-visible { border-color: #7ca7c2; outline-color: rgba(53, 107, 139, .2); }
 .payment-history-table { min-width: 960px; }
 .payment-history-table th { padding: 11px 12px; background: #eaf3f9; color: #315d7b; font-size: 10px; }
 .payment-history-table td { padding: 12px; border-bottom: 1px solid #e3edf2; color: #405766; font-size: 10px; vertical-align: middle; }
@@ -6824,6 +6826,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .official-dashboard.dark-mode.dashboard-redesign .refund-form-fields textarea { border-color: #526e7c; background: #1d303a; color: #e3edf2; }
 .official-dashboard.dark-mode.dashboard-redesign .payment-history-table th { background: #304b5a; color: #dcecf4; }
 .official-dashboard.dark-mode.dashboard-redesign .payment-history-table td { border-color: #405b6e; }
+.official-dashboard.dark-mode.dashboard-redesign .payment-history-section .table-search-toolbar input { border-color: #526e7c; background: #1d303a; color: #e3edf2; }
+.official-dashboard.dark-mode.dashboard-redesign .payment-history-section .table-search-toolbar input:focus-visible { border-color: #78a9c5; }
 .official-dashboard.dark-mode.dashboard-redesign .payment-history-table tbody tr:hover { background: #2a4350; }
 .official-dashboard.dark-mode.dashboard-redesign .refund-process-panel { border-color: #405b6e; background: #233843; }
 .official-dashboard.dark-mode.dashboard-redesign .refund-process-step { border-color: #405b6e; background: #263d49; }
@@ -7033,6 +7037,16 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   border-bottom-color: #d9e8d9;
 }
 .issued-documents-workspace .admin-table tbody tr:hover { background: #f1f8f0; }
+.issued-documents-workspace .issued-documents-table { min-width: 1080px; }
+.issued-documents-workspace .issued-documents-table th:last-child,
+.issued-documents-workspace .issued-documents-table td:last-child { width: 140px; }
+.issued-document-action-cell { min-width: 140px; }
+.issued-document-print-control { display: grid; justify-items: start; gap: 4px; }
+.issued-document-print { min-height: 32px; padding: 6px 9px; }
+.issued-document-print-error { max-width: 180px; color: #8f372d; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.issued-document-print-unavailable { color: #68746a; font-size: 10px; }
+.official-dashboard.dark-mode .issued-document-print-error { color: #f0aaa0; }
+.official-dashboard.dark-mode .issued-document-print-unavailable { color: #b6c2b7; }
 .document-request-workspace {
   display: grid;
   align-content: start;
@@ -9335,6 +9349,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .registration-process-step strong { color: #39463d; font-size: 10px; }
 .registration-process-step small { color: #7a857d; font-size: 9px; line-height: 1.4; }
 .registration-resident-directory .admin-table { min-width: 840px; }
+.registration-review-v2 .registration-resident-directory .table-search-toolbar input { border-color: #bfd4e4; color: #315d7b; }
+.registration-review-v2 .registration-resident-directory .table-search-toolbar input:focus-visible { border-color: #7ca7c2; outline-color: rgba(53, 107, 139, .2); }
 @media (max-width: 760px) {
   .registration-process-panel { grid-template-columns: minmax(0, 1fr); }
 }
@@ -10128,6 +10144,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .registration-review-v2 .registration-resident-directory .admin-table td strong {
   font-size: 14px;
 }
+.official-dashboard.dark-mode .registration-review-v2 .registration-resident-directory .table-search-toolbar input { border-color: #526e7c; background: #1d303a; color: #e3edf2; }
+.official-dashboard.dark-mode .registration-review-v2 .registration-resident-directory .table-search-toolbar input:focus-visible { border-color: #78a9c5; }
 .registration-review-v2 .registration-resident-directory .admin-table td .compliance-status {
   font-size: 13px;
 }
