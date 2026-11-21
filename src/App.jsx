@@ -1468,6 +1468,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   const [pageSizeId, setPageSizeId] = useState('short')
   const [originalPageSizeId, setOriginalPageSizeId] = useState('short')
   const [pageOrientation, setPageOrientation] = useState('portrait')
+  const [originalPageOrientation, setOriginalPageOrientation] = useState('portrait')
   const [isLoading, setIsLoading] = useState(true)
   const [isRendered, setIsRendered] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -1510,16 +1511,22 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         const source = uploadedFile || await getCertificateTemplateSourceBlob(document, customTemplates)
         const content = await getCertificateTemplateContent(source)
         if (!isCurrent) return
-        paragraphsRef.current = content.paragraphs
+        const editorParagraphs = content.paragraphs.map((paragraph) => (
+          paragraph.partPath.includes('/header') && paragraph.text.trim()
+            ? { ...paragraph, style: { ...paragraph.style, alignment: 'center' } }
+            : paragraph
+        ))
+        paragraphsRef.current = editorParagraphs
         imagesRef.current = content.images
         setSourceBlob(source)
-        setParagraphs(content.paragraphs)
+        setParagraphs(editorParagraphs)
         setImages(content.images)
-        setActiveParagraphKey(content.paragraphs[0]?.key || '')
+        setActiveParagraphKey(editorParagraphs[0]?.key || '')
         setActivePart('word/document.xml')
         setPageSizeId(content.pageSize.id)
         setOriginalPageSizeId(content.pageSize.id)
-        setPageOrientation(content.pageSize.orientation)
+        setPageOrientation(content.pageSize.id === 'a4' ? 'portrait' : content.pageSize.orientation)
+        setOriginalPageOrientation(content.pageSize.orientation)
       } catch (loadError) {
         console.error(`Unable to open the ${document} template editor.`, loadError)
         if (isCurrent) setError(loadError.message || 'The certificate template could not be opened.')
@@ -1744,7 +1751,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         wrapMode: image.wrapMode,
         behindText: image.behindText,
       }))
-      const pageSizeChanged = pageSizeId !== originalPageSizeId
+      const pageSizeChanged = pageSizeId !== originalPageSizeId || pageOrientation !== originalPageOrientation
       if (!changedParagraphs.length && !imageFiles.length && !imageLayouts.length && !insertedImages.length && !pageSizeChanged) {
         setError('Make a text, formatting, picture, or paper-size change before applying the edited template.')
         return
@@ -1816,7 +1823,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         wrapMode: image.wrapMode,
         behindText: image.behindText,
       }))
-      const pageSizeChanged = pageSizeId !== originalPageSizeId
+      const pageSizeChanged = pageSizeId !== originalPageSizeId || pageOrientation !== originalPageOrientation
       const blob = await updateCertificateTemplateDocx(sourceBlob, {
         paragraphs: changedParagraphs,
         imageFiles,
@@ -1981,7 +1988,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   useEffect(() => {
     if (!isRendered) return
     const pages = Array.from(editorCanvasRef.current?.querySelectorAll('section.certificate-docx') || [])
-    if (pageSizeId === originalPageSizeId) {
+    if (pageSizeId === originalPageSizeId && pageOrientation === originalPageOrientation) {
       pages.forEach((page) => {
         page.style.width = ''
         page.style.height = ''
@@ -1999,7 +2006,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       page.style.height = `${heightTwips / 15}px`
       page.style.minHeight = `${heightTwips / 15}px`
     })
-  }, [isRendered, originalPageSizeId, pageOrientation, pageSizeId])
+  }, [isRendered, originalPageOrientation, originalPageSizeId, pageOrientation, pageSizeId])
 
   useEffect(() => {
     const container = editorCanvasRef.current
@@ -2226,7 +2233,9 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                   }}>{partOptions.map(([partPath, partLabel]) => <option key={partPath} value={partPath}>{partLabel}</option>)}</select>
                   <label className="certificate-editor-page-size">Paper size
                     <select value={pageSizeId} disabled={isLoading} onChange={(event) => {
-                      setPageSizeId(event.target.value)
+                      const nextPageSizeId = event.target.value
+                      setPageSizeId(nextPageSizeId)
+                      if (nextPageSizeId === 'a4') setPageOrientation('portrait')
                       setPreviewedDraft(false)
                       setReviewFields(null)
                     }}>
