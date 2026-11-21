@@ -1587,10 +1587,41 @@ const getCertificateEditorImageMimeType = (path) => ({
   gif: 'image/gif',
 }[path.split('.').pop()?.toLowerCase()] || '')
 const certificateEditorPartPathPattern = /^word\/(?:document|header\d+|footer\d+)\.xml$/
+export const CERTIFICATE_EDITOR_PAGE_SIZES = Object.freeze({
+  short: Object.freeze({ label: 'Short bond · 8.5 × 11 in', widthTwips: 12240, heightTwips: 15840 }),
+  long: Object.freeze({ label: 'Long bond · 8.5 × 13 in', widthTwips: 12240, heightTwips: 18720 }),
+  a4: Object.freeze({ label: 'A4 · 8.27 × 11.69 in', widthTwips: 11906, heightTwips: 16838 }),
+})
+
+const getCertificateEditorPageSizeId = (widthTwips, heightTwips) => Object.entries(CERTIFICATE_EDITOR_PAGE_SIZES)
+  .map(([id, size]) => ({
+    id,
+    difference: Math.abs(size.widthTwips - widthTwips) + Math.abs(size.heightTwips - heightTwips),
+  }))
+  .sort((first, second) => first.difference - second.difference)[0]?.id || 'short'
 
 export const readCertificateTemplateForEditing = async (documentBlob) => {
   const zip = await JSZip.loadAsync(documentBlob)
   if (!zip.file('word/document.xml')) throw new Error('The DOCX file is missing its main Word document.')
+  const documentXml = new DOMParser().parseFromString(await zip.file('word/document.xml').async('text'), 'application/xml')
+  if (documentXml.getElementsByTagName('parsererror').length) {
+    throw new Error('The DOCX file contains invalid Word document XML.')
+  }
+  const pageSizeElement = documentXml.getElementsByTagNameNS(wordNamespace, 'pgSz')[0]
+  const pageWidthTwips = Number(pageSizeElement?.getAttributeNS(wordNamespace, 'w'))
+  const pageHeightTwips = Number(pageSizeElement?.getAttributeNS(wordNamespace, 'h'))
+  const hasPageDimensions = pageWidthTwips > 0 && pageHeightTwips > 0
+  const orientationAttribute = pageSizeElement?.getAttributeNS(wordNamespace, 'orient') || ''
+  const pageOrientation = orientationAttribute === 'landscape'
+    || (!orientationAttribute && pageWidthTwips > pageHeightTwips)
+    ? 'landscape'
+    : 'portrait'
+  const normalizedPageWidth = hasPageDimensions
+    ? pageOrientation === 'landscape' ? pageHeightTwips : pageWidthTwips
+    : CERTIFICATE_EDITOR_PAGE_SIZES.short.widthTwips
+  const normalizedPageHeight = hasPageDimensions
+    ? pageOrientation === 'landscape' ? pageWidthTwips : pageHeightTwips
+    : CERTIFICATE_EDITOR_PAGE_SIZES.short.heightTwips
   const activeHeaderFooterParts = new Set()
   const documentRelationshipsFile = zip.file('word/_rels/document.xml.rels')
   if (documentRelationshipsFile) {
@@ -1706,7 +1737,14 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
       })
     }
   }
-  return { paragraphs, images }
+  return {
+    paragraphs,
+    images,
+    pageSize: {
+      id: getCertificateEditorPageSizeId(normalizedPageWidth, normalizedPageHeight),
+      orientation: pageOrientation,
+    },
+  }
 }
 
 const setCertificateEditorProperty = (documentXml, parent, propertyName, enabled) => {
@@ -2160,7 +2198,7 @@ const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIn
   paragraph.appendChild(run)
 }
 
-export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs = [], imageFiles = [], imageLayouts = [], insertedImages = [] }) => {
+export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs = [], imageFiles = [], imageLayouts = [], insertedImages = [], pageSize = null }) => {
   const zip = await JSZip.loadAsync(documentBlob)
   const groupedEdits = new Map()
   paragraphs.forEach((edit) => {
@@ -2236,6 +2274,43 @@ export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs =
     }
     await addCertificateEditorImage(zip, xml, image.partPath, image.paragraphIndex, image, imageIndex)
     zip.file(image.partPath, new XMLSerializer().serializeToString(xml))
+  }
+  if (pageSize) {
+    const size = CERTIFICATE_EDITOR_PAGE_SIZES[pageSize.id]
+    if (!size || !['portrait', 'landscape'].includes(pageSize.orientation)) {
+      throw new Error('The template editor received an unsupported paper size.')
+    }
+    const widthTwips = pageSize.orientation === 'landscape' ? size.heightTwips : size.widthTwips
+    const heightTwips = pageSize.orientation === 'landscape' ? size.widthTwips : size.heightTwips
+    const documentFile = zip.file('word/document.xml')
+    if (!documentFile) throw new Error('The DOCX file is missing its main Word document.')
+    const documentXml = new DOMParser().parseFromString(await documentFile.async('text'), 'application/xml')
+    if (documentXml.getElementsByTagName('parsererror').length) {
+      throw new Error('The DOCX file contains invalid Word document XML.')
+    }
+    let sections = Array.from(documentXml.getElementsByTagNameNS(wordNamespace, 'sectPr'))
+    if (!sections.length) {
+      const body = documentXml.getElementsByTagNameNS(wordNamespace, 'body')[0]
+      if (!body) throw new Error('The DOCX file has no Word document body.')
+      const section = documentXml.createElementNS(wordNamespace, 'w:sectPr')
+      body.appendChild(section)
+      sections = [section]
+    }
+    sections.forEach((section) => {
+      let sectionPageSize = Array.from(section.children)
+        .find((child) => child.namespaceURI === wordNamespace && child.localName === 'pgSz')
+      if (!sectionPageSize) {
+        sectionPageSize = documentXml.createElementNS(wordNamespace, 'w:pgSz')
+        const pageMargins = Array.from(section.children)
+          .find((child) => child.namespaceURI === wordNamespace && child.localName === 'pgMar')
+        section.insertBefore(sectionPageSize, pageMargins || null)
+      }
+      sectionPageSize.setAttributeNS(wordNamespace, 'w:w', String(widthTwips))
+      sectionPageSize.setAttributeNS(wordNamespace, 'w:h', String(heightTwips))
+      if (pageSize.orientation === 'landscape') sectionPageSize.setAttributeNS(wordNamespace, 'w:orient', 'landscape')
+      else sectionPageSize.removeAttributeNS(wordNamespace, 'orient')
+    })
+    zip.file('word/document.xml', new XMLSerializer().serializeToString(documentXml))
   }
   return zip.generateAsync({
     type: 'blob',
