@@ -787,6 +787,39 @@ const getCertificateCorrectionFields = (request, customTemplates = []) => (
   })
 )
 
+const certificateTemplateSourceBlobCache = new WeakMap()
+const certificateTemplateContentCache = new WeakMap()
+const certificatePreviewDomCache = new WeakMap()
+
+const getCertificateTemplateSourceBlob = (document, customTemplates = EMPTY_CERTIFICATE_TEMPLATES) => {
+  const cacheKey = Array.isArray(customTemplates) ? customTemplates : EMPTY_CERTIFICATE_TEMPLATES
+  let documentCache = certificateTemplateSourceBlobCache.get(cacheKey)
+  if (!documentCache) {
+    documentCache = new Map()
+    certificateTemplateSourceBlobCache.set(cacheKey, documentCache)
+  }
+  if (!documentCache.has(document)) {
+    const source = createFilledCertificateDocx(document, {}, cacheKey)
+    documentCache.set(document, source)
+    source.catch(() => {
+      if (documentCache.get(document) === source) documentCache.delete(document)
+    })
+  }
+  return documentCache.get(document)
+}
+
+const getCertificateTemplateContent = (blob) => {
+  let content = certificateTemplateContentCache.get(blob)
+  if (!content) {
+    content = readCertificateTemplateForEditing(blob)
+    certificateTemplateContentCache.set(blob, content)
+    content.catch(() => {
+      if (certificateTemplateContentCache.get(blob) === content) certificateTemplateContentCache.delete(blob)
+    })
+  }
+  return content
+}
+
 const waitForCertificatePreviewAssets = async (container) => {
   const images = Array.from(container?.querySelectorAll('img') || [])
   let timeoutId
@@ -875,7 +908,8 @@ const positionCertificateFloatingImages = (page, imagePlacements) => {
       image.style.height = '100%'
       image.style.maxWidth = 'none'
       image.style.objectFit = 'fill'
-      if (/watermark/i.test(placement.altText)) anchor.style.opacity = '0.18'
+      const opacity = Number(placement.opacity)
+      image.style.opacity = `${Number.isFinite(opacity) ? Math.min(100, Math.max(0, opacity)) / 100 : 1}`
       if (placement.behindText) {
         page.querySelectorAll('header, article, footer').forEach((content) => {
           content.style.position = 'relative'
@@ -886,17 +920,69 @@ const positionCertificateFloatingImages = (page, imagePlacements) => {
   })
 }
 
-const decorateCertificateDocxPages = async (container, blob, document) => {
+const decorateCertificateDocxPages = async (container, documentName, imagePlacements) => {
   await waitForCertificatePreviewAssets(container)
   wrapLongCertificateUnderlines(container)
-  const { images } = await readCertificateTemplateForEditing(blob)
   const pages = Array.from(container.querySelectorAll('section.certificate-docx'))
   pages.forEach((page) => {
-    positionCertificateFloatingImages(page, images)
-    page.setAttribute('aria-label', `${document} certificate preview`)
+    positionCertificateFloatingImages(page, imagePlacements)
+    page.setAttribute('aria-label', `${documentName} certificate preview`)
   })
   return pages
 }
+
+const renderCertificateDocxPages = async (container, blob, documentName, providedImages = null) => {
+  let renderedDocument = certificatePreviewDomCache.get(blob)
+  if (!renderedDocument) {
+    renderedDocument = (async () => {
+      const staging = window.document.createElement('div')
+      const [{ renderAsync }, templateContent] = await Promise.all([
+        import('docx-preview'),
+        providedImages ? Promise.resolve({ images: providedImages }) : getCertificateTemplateContent(blob),
+      ])
+      await renderAsync(blob, staging, null, {
+        className: 'certificate-docx',
+        inWrapper: true,
+        breakPages: true,
+        useBase64URL: true,
+      })
+      await decorateCertificateDocxPages(staging, documentName, templateContent.images)
+      return staging
+    })()
+    certificatePreviewDomCache.set(blob, renderedDocument)
+    try {
+      await renderedDocument
+    } catch (error) {
+      if (certificatePreviewDomCache.get(blob) === renderedDocument) certificatePreviewDomCache.delete(blob)
+      throw error
+    }
+  }
+  const staging = await renderedDocument
+  container.replaceChildren(...Array.from(staging.childNodes, (node) => node.cloneNode(true)))
+  return Array.from(container.querySelectorAll('section.certificate-docx'))
+}
+
+const matchEditedCertificateFields = (detectedFields, previousFields) => detectedFields.map((field) => {
+  const previousField = previousFields.find((candidate) => (
+    (candidate.type === field.type
+      || (!candidate.type && field.type !== 'checkbox')
+      || (field.type === 'checkbox' && candidate.options?.includes(field.choiceLabel)))
+    && ((Number.isInteger(candidate.paragraph) && candidate.paragraph === field.paragraph
+      && candidate.textNodeIndex === field.textNodeIndex)
+      || (!Number.isInteger(candidate.paragraph)
+        && ((candidate.key === field.key && candidate.label === field.label)
+          || String(candidate.label || '').trim().toLowerCase() === String(field.label || '').trim().toLowerCase())))
+    && (field.type !== 'checkbox' || candidate.choiceLabel === field.choiceLabel || candidate.options?.includes(field.choiceLabel))
+    && (!candidate.context || candidate.context === field.context)
+  ))
+  if (!previousField) return { ...field, needsReview: true, labelConfidence: 'low' }
+  return {
+    ...field,
+    label: previousField.label || field.label,
+    needsReview: Boolean(field.needsReview && previousField.labelConfidence !== 'reviewed'),
+    labelConfidence: previousField.labelConfidence === 'reviewed' ? 'reviewed' : field.labelConfidence,
+  }
+})
 
 function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificate, onPrintPdf, savedCertificateDownloadError = '', copyCount = 1, reviewOnly = false, large = false }) {
   const panelRef = useRef(null)
@@ -934,15 +1020,7 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
         scrollContainer.current.scrollLeft = 0
       }
       try {
-        const { renderAsync } = await import('docx-preview')
-        await renderAsync(blob, previewContainer.current, null, {
-          className: 'certificate-docx',
-          inWrapper: true,
-          breakPages: true,
-          useBase64URL: true,
-        })
-        if (!isCurrent) return
-        await decorateCertificateDocxPages(previewContainer.current, blob, document)
+        await renderCertificateDocxPages(previewContainer.current, blob, document)
         if (!isCurrent) return
         previewContainer.current?.querySelectorAll('section.certificate-docx').forEach((page) => {
           page.setAttribute('aria-label', `${document} certificate preview`)
@@ -1238,7 +1316,7 @@ function CertificateTemplateRequestPicker({ document, requests, viewedState, onC
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [onClose])
 
-  return (
+  return createPortal(
     <div className="certificate-template-preview-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section className="certificate-template-request-picker" role="dialog" aria-modal="true" aria-labelledby="certificate-template-picker-title">
         <header>
@@ -1254,11 +1332,12 @@ function CertificateTemplateRequestPicker({ document, requests, viewedState, onC
           </div>
         ) : <p className="certificate-template-request-empty">There are no requests currently in document processing that still need this certificate.</p>}
       </section>
-    </div>
+    </div>,
+    window.document.body,
   )
 }
 
-function CertificateTemplateContentEditor({ document, customTemplates, onClose, onApply }) {
+function CertificateTemplateContentEditor({ document, customTemplates, onClose, onApply, uploadedFile = null }) {
   const editorCanvasRef = useRef(null)
   const paragraphsRef = useRef([])
   const imagesRef = useRef([])
@@ -1279,7 +1358,20 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   const [previewFile, setPreviewFile] = useState(null)
   const [previewedDraft, setPreviewedDraft] = useState(false)
   const [reviewFields, setReviewFields] = useState(null)
-  const template = getCertificateTemplate(document, customTemplates)
+  const template = uploadedFile ? null : getCertificateTemplate(document, customTemplates)
+
+  useEffect(() => {
+    const body = window.document.body
+    const previousOverflow = body.style.overflow
+    const previousPaddingRight = body.style.paddingRight
+    const scrollbarWidth = window.innerWidth - window.document.documentElement.clientWidth
+    body.style.overflow = 'hidden'
+    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`
+    return () => {
+      body.style.overflow = previousOverflow
+      body.style.paddingRight = previousPaddingRight
+    }
+  }, [])
 
   useEffect(() => {
     paragraphsRef.current = paragraphs
@@ -1297,10 +1389,12 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     let isCurrent = true
     const loadTemplate = async () => {
       try {
-        if (!template) throw new Error(`The ${document} template is not available.`)
-        const source = await createFilledCertificateDocx(document, {}, customTemplates)
-        const content = await readCertificateTemplateForEditing(source)
+        if (!uploadedFile && !template) throw new Error(`The ${document} template is not available.`)
+        const source = uploadedFile || await getCertificateTemplateSourceBlob(document, customTemplates)
+        const content = await getCertificateTemplateContent(source)
         if (!isCurrent) return
+        paragraphsRef.current = content.paragraphs
+        imagesRef.current = content.images
         setSourceBlob(source)
         setParagraphs(content.paragraphs)
         setImages(content.images)
@@ -1315,7 +1409,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     }
     loadTemplate()
     return () => { isCurrent = false }
-  }, [document, customTemplates, template])
+  }, [document, customTemplates, template, uploadedFile])
 
   useEffect(() => {
     if (!sourceBlob || !editorCanvasRef.current) return undefined
@@ -1324,15 +1418,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       setIsRendered(false)
       try {
         editorCanvasRef.current.replaceChildren()
-        const { renderAsync } = await import('docx-preview')
-        await renderAsync(sourceBlob, editorCanvasRef.current, null, {
-          className: 'certificate-docx',
-          inWrapper: true,
-          breakPages: true,
-          useBase64URL: true,
-        })
-        if (!isCurrent) return
-        await decorateCertificateDocxPages(editorCanvasRef.current, sourceBlob, document)
+        await renderCertificateDocxPages(editorCanvasRef.current, sourceBlob, document, imagesRef.current)
         if (!isCurrent) return
         const renderedImages = Array.from(editorCanvasRef.current.querySelectorAll('img'))
         const sameSourceGroups = new Map()
@@ -1524,6 +1610,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         y: image.y,
         widthPx: image.widthPx,
         heightPx: image.heightPx,
+        opacity: image.opacity,
         wrapMode: image.wrapMode,
         behindText: image.behindText,
       }))
@@ -1532,7 +1619,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         return
       }
       const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, imageLayouts, insertedImages })
-      const file = new File([blob], template.originalFilename || `${document}.docx`, {
+      const file = new File([blob], template?.originalFilename || uploadedFile?.name || `${document}.docx`, {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
       if (!reviewFields) {
@@ -1587,11 +1674,12 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         y: image.y,
         widthPx: image.widthPx,
         heightPx: image.heightPx,
+        opacity: image.opacity,
         wrapMode: image.wrapMode,
         behindText: image.behindText,
       }))
       const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, imageLayouts, insertedImages })
-      setPreviewFile(new File([blob], template.originalFilename || `${document}.docx`, {
+      setPreviewFile(new File([blob], template?.originalFilename || uploadedFile?.name || `${document}.docx`, {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }))
       setPreviewedDraft(true)
@@ -1642,6 +1730,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         y: 80,
         widthPx: 160,
         heightPx: 120,
+        opacity: 100,
         behindText: false,
         wrapMode: 'none',
       }])
@@ -1669,6 +1758,18 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     )))
     setPreviewedDraft(false)
     setReviewFields(null)
+  }
+
+  const activeExistingImageIndex = images.findIndex((image) => image.placementId === activeExistingImageId)
+  const activeInsertedImageIndex = insertedImages.findIndex((image) => image.id === activeInsertedImageId)
+  const activePicture = activeExistingImageIndex >= 0
+    ? { ...images[activeExistingImageIndex], editorType: 'existing' }
+    : activeInsertedImageIndex >= 0
+      ? { ...insertedImages[activeInsertedImageIndex], editorType: 'inserted' }
+      : null
+  const updateSelectedPicture = (update) => {
+    if (activeExistingImageIndex >= 0) updateExistingImage(activeExistingImageIndex, update)
+    else if (activeInsertedImageIndex >= 0) updateInsertedImage(activeInsertedImageIndex, update)
   }
 
   useEffect(() => {
@@ -1699,7 +1800,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     Array.from(container.querySelectorAll('.certificate-editor-image-overlay')).forEach((overlay) => {
       if (!activeIds.has(overlay.dataset.imageId)) overlay.remove()
     })
-    const getOverlay = (id, page, altText, dataUrl) => {
+    const getOverlay = (id, page, altText, dataUrl, opacity = 100) => {
       let overlay = Array.from(container.querySelectorAll('.certificate-editor-image-overlay'))
         .find((candidate) => candidate.dataset.imageId === id)
       if (!overlay) {
@@ -1718,6 +1819,8 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       const picture = overlay.querySelector('img')
       picture.src = dataUrl
       picture.alt = altText || ''
+      const opacityValue = Number(opacity)
+      picture.style.opacity = `${Number.isFinite(opacityValue) ? Math.min(100, Math.max(0, opacityValue)) / 100 : 1}`
       overlay.setAttribute('aria-label', `Select or move ${altText || 'picture'}`)
       overlay.querySelector('.certificate-editor-image-resize')
         .setAttribute('aria-label', `Resize ${altText || 'picture'}`)
@@ -1737,6 +1840,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           page,
           image.altText || image.path.split('/').pop(),
           imageReplacements[image.path]?.dataUrl || image.dataUrl,
+          image.opacity,
         )
         overlay.style.left = `${image.x}px`
         overlay.style.top = `${image.y}px`
@@ -1744,6 +1848,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         overlay.style.height = `${image.heightPx}px`
         overlay.style.zIndex = image.behindText ? '0' : '20'
         overlay.classList.toggle('is-selected', activeExistingImageId === image.placementId)
+        overlay.setAttribute('aria-pressed', String(activeExistingImageId === image.placementId))
         const selectImage = () => {
           setActiveExistingImageId(image.placementId)
           setActiveInsertedImageId('')
@@ -1794,7 +1899,10 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
             window.removeEventListener('pointermove', moveImage)
             window.removeEventListener('pointerup', finishMove)
             window.removeEventListener('pointercancel', finishMove)
-            updateExistingImage(index, next)
+            if (next.x !== initial.x || next.y !== initial.y
+              || next.widthPx !== initial.widthPx || next.heightPx !== initial.heightPx) {
+              updateExistingImage(index, next)
+            }
           }
           window.addEventListener('pointermove', moveImage)
           window.addEventListener('pointerup', finishMove, { once: true })
@@ -1807,13 +1915,14 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       const page = paragraphElement?.closest('section.certificate-docx')
       if (!page) return
       page.style.position = 'relative'
-      const overlay = getOverlay(`inserted/${image.id}`, page, image.altText, image.dataUrl)
+      const overlay = getOverlay(`inserted/${image.id}`, page, image.altText, image.dataUrl, image.opacity)
       overlay.style.left = `${image.x}px`
       overlay.style.top = `${image.y}px`
       overlay.style.width = `${image.widthPx}px`
       overlay.style.height = `${image.heightPx}px`
       overlay.style.zIndex = image.behindText ? '0' : '20'
       overlay.classList.toggle('is-selected', activeInsertedImageId === image.id)
+      overlay.setAttribute('aria-pressed', String(activeInsertedImageId === image.id))
       overlay.onpointerdown = (event) => {
         if (event.button !== 0) return
         event.preventDefault()
@@ -1860,12 +1969,18 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     })
   }, [activeExistingImageId, activeInsertedImageId, imageReplacements, images, insertedImages, isRendered, paragraphs])
 
-  return (
+  return createPortal(
     <div className="certificate-template-preview-backdrop certificate-template-editor-backdrop">
       <section className="docx-preview-panel certificate-template-content-editor" role="dialog" aria-modal="true" aria-labelledby="certificate-content-editor-title">
         <header className="certificate-content-editor-heading">
-          <div><p className="section-number">TEMPLATE LAYOUT EDITOR</p><h2 id="certificate-content-editor-title">{document}</h2><p>Click text on the page to edit it. Insert fillable blanks, checkbox choices, or pictures; review the detected resident fields before saving.</p></div>
-          <button type="button" onClick={onClose}>Close editor</button>
+          <div className="certificate-editor-heading-copy"><p className="section-number">TEMPLATE LAYOUT EDITOR</p><h2 id="certificate-content-editor-title">{document}</h2><p>Click text to edit it, or select a picture to show its controls. Your changes stay inside the page.</p></div>
+          {activeParagraph && !activePicture && <div className="certificate-editor-top-format-toolbar" role="toolbar" aria-label="Selected paragraph formatting">
+            <button type="button" aria-pressed={activeParagraph.style.bold} aria-label="Bold" title="Bold" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, bold: !activeParagraph.style.bold } })}><strong>B</strong></button>
+            <button type="button" aria-pressed={activeParagraph.style.italic} aria-label="Italic" title="Italic" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, italic: !activeParagraph.style.italic } })}><em>I</em></button>
+            <button type="button" aria-pressed={activeParagraph.style.underline} aria-label="Underline" title="Underline" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, underline: !activeParagraph.style.underline } })}><u>U</u></button>
+            <label>Align<select aria-label="Paragraph alignment" value={activeParagraph.style.alignment} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, alignment: event.target.value } })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option><option value="both">Justified</option></select></label>
+          </div>}
+          <button type="button" className="certificate-editor-close" onClick={onClose}>Close editor</button>
         </header>
         {error && <p className="community-update-error" role="alert">{error}</p>}
         {isLoading
@@ -1885,18 +2000,12 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                     }
                   }}>{partOptions.map(([partPath, partLabel]) => <option key={partPath} value={partPath}>{partLabel}</option>)}</select>
                 </section>
-                {activeParagraph && <section className="certificate-editor-tool-section">
+                {activeParagraph && !activePicture && <section className="certificate-editor-tool-section">
                   <h3>Selected paragraph</h3>
                   <div className="certificate-content-formatting">
                     <label>Font<select value={activeParagraph.style.fontName} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontName: event.target.value } })}><option value="">Keep template</option>{['Arial', 'Calibri', 'Times New Roman', 'Georgia', 'Verdana', 'Tahoma'].map((font) => <option key={font}>{font}</option>)}</select></label>
                     <label>Size<select value={activeParagraph.style.fontSize} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontSize: event.target.value } })}><option value="">Keep size</option>{[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((size) => <option key={size} value={size}>{size} pt</option>)}</select></label>
                     <label>Text color<input aria-label="Selected paragraph text color" type="color" value={activeParagraph.style.color || '#000000'} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, color: event.target.value } })} /></label>
-                    <label>Alignment<select value={activeParagraph.style.alignment} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, alignment: event.target.value } })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option><option value="both">Justified</option></select></label>
-                    <div className="certificate-content-formatting-toggles">
-                      <button type="button" aria-pressed={activeParagraph.style.bold} aria-label="Bold" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, bold: !activeParagraph.style.bold } })}><strong>B</strong></button>
-                      <button type="button" aria-pressed={activeParagraph.style.italic} aria-label="Italic" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, italic: !activeParagraph.style.italic } })}><em>I</em></button>
-                      <button type="button" aria-pressed={activeParagraph.style.underline} aria-label="Underline paragraph" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, underline: !activeParagraph.style.underline } })}><u>U</u></button>
-                    </div>
                   </div>
                   <div className="certificate-editor-insert-actions">
                     <button type="button" onClick={() => addTextMarker(' ____________________ ')}>Insert fillable blank</button>
@@ -1904,63 +2013,43 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                   </div>
                 </section>}
                 <section className="certificate-editor-tool-section">
-                  <h3>Pictures</h3>
+                  <h3>Pictures · {images.length + insertedImages.length}</h3>
                   <label className="certificate-editor-picture-upload">Add picture<input type="file" accept="image/png,image/jpeg" onChange={(event) => { addPicture(event.target.files?.[0]); event.target.value = '' }} /></label>
-                  <small>Click any picture on the page to select it. Drag to move, use its corner handle to resize, or adjust its exact position below.</small>
-                  {images.map((image, index) => <div className={`certificate-editor-inserted-image${activeExistingImageId === image.placementId ? ' is-selected' : ''}`} key={image.placementId}>
-                    <img src={imageReplacements[image.path]?.dataUrl || image.dataUrl} alt={`Current ${image.path.split('/').pop()} in ${document}`} />
-                    <strong>{image.path.split('/').pop()}</strong>
-                    <button type="button" className="resident-table-action" onClick={() => {
-                      setActiveExistingImageId(image.placementId)
-                      setActiveInsertedImageId('')
-                      const overlay = Array.from(editorCanvasRef.current?.querySelectorAll('.certificate-editor-image-overlay') || [])
-                        .find((candidate) => candidate.dataset.imageId.startsWith(`existing/${image.placementId}/`))
-                      overlay?.focus()
-                      overlay?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-                    }}>Select picture on page</button>
-                    <label>Left (px)<input type="number" min="-4000" max="4000" value={Math.round(image.x)} onChange={(event) => updateExistingImage(index, { x: Number(event.target.value) })} /></label>
-                    <label>Top (px)<input type="number" min="-4000" max="4000" value={Math.round(image.y)} onChange={(event) => updateExistingImage(index, { y: Number(event.target.value) })} /></label>
-                    <label>Width (px)<input type="number" min="12" max="2000" value={Math.round(image.widthPx)} onChange={(event) => updateExistingImage(index, { widthPx: Number(event.target.value) })} /></label>
-                    <label>Height (px)<input type="number" min="12" max="2000" value={Math.round(image.heightPx)} onChange={(event) => updateExistingImage(index, { heightPx: Number(event.target.value) })} /></label>
-                    <label className="certificate-editor-picture-layout">Layout
-                      <select value={image.behindText ? 'behind' : image.wrapMode === 'square' ? 'square' : image.wrapMode === 'topBottom' ? 'topBottom' : 'front'} onChange={(event) => {
-                        const layout = event.target.value
-                        updateExistingImage(index, {
-                          behindText: layout === 'behind',
-                          wrapMode: layout === 'square' ? 'square' : layout === 'topBottom' ? 'topBottom' : 'none',
-                        })
-                      }}>
-                        <option value="front">In front (overlap text)</option>
-                        <option value="behind">Behind text (watermark)</option>
-                        <option value="square">Square text wrap</option>
-                        <option value="topBottom">Top and bottom wrap</option>
-                      </select>
-                    </label>
-                    <label className="certificate-editor-picture-upload">Replace picture<input type="file" accept={image.mimeType} onChange={(event) => { replaceImage(image, event.target.files?.[0]); event.target.value = '' }} /></label>
-                  </div>)}
-                  {insertedImages.map((image, index) => <div className="certificate-editor-inserted-image" key={`${image.altText}-${index}`}>
-                    <img src={image.dataUrl} alt="" />
-                    <strong>{image.altText}</strong>
-                    <label>Left (px)<input type="number" min="-4000" max="4000" value={image.x} onChange={(event) => updateInsertedImage(index, { x: Number(event.target.value) })} /></label>
-                    <label>Top (px)<input type="number" min="-4000" max="4000" value={image.y} onChange={(event) => updateInsertedImage(index, { y: Number(event.target.value) })} /></label>
-                    <label>Width (px)<input type="number" min="12" max="960" value={image.widthPx} onChange={(event) => updateInsertedImage(index, { widthPx: Number(event.target.value) })} /></label>
-                    <label>Height (px)<input type="number" min="12" max="960" value={image.heightPx} onChange={(event) => updateInsertedImage(index, { heightPx: Number(event.target.value) })} /></label>
-                    <label className="certificate-editor-picture-layout">Layout
-                      <select value={image.behindText ? 'behind' : image.wrapMode === 'square' ? 'square' : image.wrapMode === 'topBottom' ? 'topBottom' : 'front'} onChange={(event) => {
-                        const layout = event.target.value
-                        updateInsertedImage(index, {
-                          behindText: layout === 'behind',
-                          wrapMode: layout === 'square' ? 'square' : layout === 'topBottom' ? 'topBottom' : 'none',
-                        })
-                      }}>
-                        <option value="front">In front (overlap text)</option>
-                        <option value="behind">Behind text (watermark)</option>
-                        <option value="square">Square text wrap</option>
-                        <option value="topBottom">Top and bottom wrap</option>
-                      </select>
-                    </label>
-                    <button type="button" className="table-delete" onClick={() => { setInsertedImages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setPreviewedDraft(false); setReviewFields(null) }}>Remove picture</button>
-                  </div>)}
+                  <small>Select a picture directly on the paper. Drag it to move, or use its corner handle to resize. Picture controls appear here only after selection.</small>
+                  {activePicture
+                    ? <div className="certificate-editor-inserted-image is-selected">
+                      <img src={activePicture.editorType === 'existing' ? imageReplacements[activePicture.path]?.dataUrl || activePicture.dataUrl : activePicture.dataUrl} alt="" />
+                      <strong>{activePicture.altText || activePicture.path?.split('/').pop() || 'Inserted picture'}</strong>
+                      <label>Left (px)<input type="number" min="-4000" max="4000" value={Math.round(activePicture.x)} onChange={(event) => updateSelectedPicture({ x: Number(event.target.value) })} /></label>
+                      <label>Top (px)<input type="number" min="-4000" max="4000" value={Math.round(activePicture.y)} onChange={(event) => updateSelectedPicture({ y: Number(event.target.value) })} /></label>
+                      <label>Width (px)<input type="number" min="12" max="2000" value={Math.round(activePicture.widthPx)} onChange={(event) => updateSelectedPicture({ widthPx: Number(event.target.value) })} /></label>
+                      <label>Height (px)<input type="number" min="12" max="2000" value={Math.round(activePicture.heightPx)} onChange={(event) => updateSelectedPicture({ heightPx: Number(event.target.value) })} /></label>
+                      <label className="certificate-editor-opacity">Opacity <output>{activePicture.opacity ?? 100}%</output>
+                        <input type="range" min="0" max="100" step="1" value={activePicture.opacity ?? 100} onChange={(event) => updateSelectedPicture({ opacity: Number(event.target.value) })} />
+                      </label>
+                      <label className="certificate-editor-picture-layout">Layer
+                        <select value={activePicture.behindText ? 'back' : 'front'} onChange={(event) => updateSelectedPicture({ behindText: event.target.value === 'back' })}>
+                          <option value="front">Move to front</option>
+                          <option value="back">Send to back</option>
+                        </select>
+                      </label>
+                      <label className="certificate-editor-picture-layout">Text wrap
+                        <select value={activePicture.wrapMode} onChange={(event) => updateSelectedPicture({ wrapMode: event.target.value })}>
+                          <option value="none">No wrap · overlap</option>
+                          <option value="square">Square</option>
+                          <option value="topBottom">Top and bottom</option>
+                        </select>
+                      </label>
+                      {activePicture.editorType === 'existing'
+                        ? <label className="certificate-editor-picture-upload">Replace picture<input type="file" accept={activePicture.mimeType} onChange={(event) => { replaceImage(activePicture, event.target.files?.[0]); event.target.value = '' }} /></label>
+                        : <button type="button" className="table-delete" onClick={() => {
+                          setInsertedImages((current) => current.filter((image) => image.id !== activePicture.id))
+                          setActiveInsertedImageId('')
+                          setPreviewedDraft(false)
+                          setReviewFields(null)
+                        }}>Remove picture</button>}
+                    </div>
+                    : <p className="certificate-editor-no-fields">No picture is selected. Select one on the page to edit its position, size, opacity, or layer.</p>}
                 </section>
               </aside>
               <main className="certificate-template-editor-paper-area">
@@ -1988,15 +2077,16 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         <footer className="certificate-content-editor-actions">
           <span>{paragraphs.length} paragraphs · {images.length + insertedImages.length} pictures · {reviewFields ? `${reviewFields.length} resident fields detected` : 'Original paper geometry retained'}{!previewedDraft ? ' · Preview again after each change' : ''}</span>
           <button type="button" className="resident-table-action" disabled={!isRendered || isSaving || !sourceBlob} onClick={draftPreview}>Preview edits</button>
-          <button type="button" className="check-button" disabled={!isRendered || isSaving || !sourceBlob || !previewedDraft} onClick={saveEdits}>{isSaving ? 'Preparing…' : reviewFields ? 'Save template' : 'Review fields'}</button>
+          <button type="button" className="check-button" disabled={!isRendered || isSaving || !sourceBlob || !previewedDraft} onClick={saveEdits}>{isSaving ? 'Preparing…' : reviewFields ? uploadedFile ? 'Apply edits' : 'Save template' : 'Review fields'}</button>
         </footer>
-        {previewFile && <CertificateTemplatePreview document={document} uploadedFile={previewFile} onClose={() => setPreviewFile(null)} />}
+        {previewFile && <CertificateTemplatePreview document={document} uploadedFile={previewFile} aboveEditor onClose={() => setPreviewFile(null)} />}
       </section>
-    </div>
+    </div>,
+    window.document.body,
   )
 }
 
-function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY_CERTIFICATE_TEMPLATES, uploadedFile = null }) {
+function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY_CERTIFICATE_TEMPLATES, uploadedFile = null, aboveEditor = false }) {
   const previewRef = useRef(null)
   const scrollRef = useRef(null)
   const pageSizeRef = useRef(null)
@@ -2046,16 +2136,8 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
         if (!uploadedFile && (!template || (!template.file && !template.custom))) {
           throw new Error(`No template file is mapped for ${document}.`)
         }
-        const blob = uploadedFile || await createFilledCertificateDocx(document, {}, customTemplates)
-        const { renderAsync } = await import('docx-preview')
-        await renderAsync(blob, previewRef.current, null, {
-          className: 'certificate-docx',
-          inWrapper: true,
-          breakPages: true,
-          useBase64URL: true,
-        })
-        if (!isCurrent) return
-        await decorateCertificateDocxPages(previewRef.current, blob, document)
+        const blob = uploadedFile || await getCertificateTemplateSourceBlob(document, customTemplates)
+        await renderCertificateDocxPages(previewRef.current, blob, document)
         if (!isCurrent) return
         previewRef.current?.querySelectorAll('section.certificate-docx').forEach((page) => {
           page.setAttribute('contenteditable', 'false')
@@ -2091,8 +2173,8 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
     return () => observer.disconnect()
   }, [fitDocumentToPage, isFitToPage, isLoading])
 
-  return (
-    <div className="certificate-template-preview-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+  return createPortal(
+    <div className={`certificate-template-preview-backdrop${aboveEditor ? ' certificate-template-draft-preview-backdrop' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section className="docx-preview-panel certificate-template-preview-modal" role="dialog" aria-modal="true" aria-label={`${document} template preview`}>
         <div className="docx-preview-toolbar">
           <div><p className="section-number">CERTIFICATE TEMPLATE</p><h3>{document}</h3></div>
@@ -2112,7 +2194,8 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
           <div className="docx-preview-pages certificate-template-preview-pages" style={{ zoom: zoom / 100 }} ref={previewRef} />
         </div>
       </section>
-    </div>
+    </div>,
+    window.document.body,
   )
 }
 
@@ -10524,30 +10607,7 @@ function App() {
       } catch (scanError) {
         if (!/No fillable blank fields, checkbox options, or text boxes were found/i.test(scanError.message || '')) throw scanError
       }
-      const previousFields = currentTemplate.fields || []
-      return detectedFields.map((field) => {
-        const previousField = previousFields.find((candidate) => (
-          (candidate.type === field.type
-            || (!candidate.type && field.type !== 'checkbox')
-            || (field.type === 'checkbox' && candidate.options?.includes(field.choiceLabel)))
-          && ((Number.isInteger(candidate.paragraph) && candidate.paragraph === field.paragraph
-            && candidate.textNodeIndex === field.textNodeIndex)
-            || (!Number.isInteger(candidate.paragraph)
-              && ((candidate.key === field.key && candidate.label === field.label)
-                || String(candidate.label || '').trim().toLowerCase() === String(field.label || '').trim().toLowerCase())))
-          && (field.type !== 'checkbox' || candidate.choiceLabel === field.choiceLabel || candidate.options?.includes(field.choiceLabel))
-          && (!candidate.context || candidate.context === field.context)
-        ))
-        if (!previousField) {
-          return { ...field, needsReview: true, labelConfidence: 'low' }
-        }
-        return {
-          ...field,
-          label: previousField.label || field.label,
-          needsReview: Boolean(field.needsReview && previousField.labelConfidence !== 'reviewed'),
-          labelConfidence: previousField.labelConfidence === 'reviewed' ? 'reviewed' : field.labelConfidence,
-        }
-      })
+      return matchEditedCertificateFields(detectedFields, currentTemplate.fields || [])
     }
 
     if (reviewedFields.some((field) => field.needsReview || !String(field.label || '').trim())) {
@@ -10593,6 +10653,25 @@ function App() {
     setCustomCertificateTemplates(nextTemplates)
     setCustomTemplateError('')
     setCustomTemplateStatus(`The layout for “${name}” was saved online. Existing proof-document requirements, requests, fees, and availability settings were kept.`)
+    return true
+  }
+
+  const applyNewCertificateTemplateEditorChanges = async (file, reviewedFields) => {
+    if (!reviewedFields) {
+      const detectedFields = await scanCertificateTemplateFields(file)
+      if (!detectedFields.length) {
+        throw new Error('The new document needs at least one fillable blank or checkbox before it can be posted.')
+      }
+      return matchEditedCertificateFields(detectedFields, customTemplateDetectedFields)
+    }
+    if (reviewedFields.some((field) => field.needsReview || !String(field.label || '').trim())) {
+      throw new Error('Review every new or uncertain resident field before returning to the document form.')
+    }
+    setCustomTemplateFile(file)
+    setCustomTemplatePreserveHeader(true)
+    setCustomTemplateDetectedFields(reviewedFields)
+    setCustomTemplateError('')
+    setCustomTemplateStatus('Edited layout is ready. Save the document form to post this template for residents.')
     return true
   }
 
@@ -13203,7 +13282,10 @@ function App() {
                 <label>Document name<input type="text" value={customTemplateName} onChange={(event) => setCustomTemplateName(event.target.value)} maxLength="80" required readOnly={Boolean(editingCertificateTemplate)} /></label>
                 <label>{editingCertificateTemplate ? 'Replacement DOCX file' : 'Original DOCX file'}<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => inspectCustomCertificateFile(event.target.files?.[0])} required={!customTemplateFile} /><small>DOCX only · 1.5 MB maximum</small></label>
               </div>
-              {customTemplateFile && <button type="button" className="resident-table-action certificate-template-upload-preview-button" onClick={() => setIsCustomTemplatePreviewOpen(true)}>Preview uploaded DOCX</button>}
+              {customTemplateFile && <div className="certificate-template-upload-actions">
+                <button type="button" className="resident-table-action certificate-template-upload-preview-button" onClick={() => setIsCustomTemplatePreviewOpen(true)}>Preview uploaded DOCX</button>
+                <button type="button" className="resident-table-action certificate-template-upload-preview-button" onClick={() => setIsCertificateTemplateEditorOpen(true)}>Edit layout before posting</button>
+              </div>}
               {customTemplateFile && customTemplateDetectedFields.length > 0 && <section className="certificate-template-field-review" aria-label="Detected resident fields">
                 <header><div><h4>Detected resident fields</h4><p>Compare these totals with the blanks and checkbox choices in the original document.</p></div></header>
                 <div className="certificate-template-field-counts">
@@ -13277,11 +13359,12 @@ function App() {
               uploadedFile={customTemplateFile}
               onClose={() => setIsCustomTemplatePreviewOpen(false)}
             />}
-            {isCertificateTemplateEditorOpen && editingCertificateTemplate && <CertificateTemplateContentEditor
-              document={editingCertificateTemplate}
+            {isCertificateTemplateEditorOpen && (editingCertificateTemplate || (isCustomTemplateFormOpen && customTemplateFile)) && <CertificateTemplateContentEditor
+              document={editingCertificateTemplate || customTemplateName.trim() || customTemplateFile?.name || 'New document'}
               customTemplates={customCertificateTemplates}
+              uploadedFile={!editingCertificateTemplate && isCustomTemplateFormOpen ? customTemplateFile : null}
               onClose={() => setIsCertificateTemplateEditorOpen(false)}
-              onApply={applyCertificateTemplateEditorChanges}
+              onApply={editingCertificateTemplate ? applyCertificateTemplateEditorChanges : applyNewCertificateTemplateEditorChanges}
             />}
             {processingTemplateDocument && <CertificateTemplateRequestPicker
               document={processingTemplateDocument}

@@ -1677,6 +1677,8 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
         : picture.getElementsByTagNameNS(drawingNamespace, 'wrapTopAndBottom').length
           ? 'topBottom'
           : 'none'
+      const opacity = blip.getElementsByTagNameNS(drawingMainNamespace, 'alphaModFix')[0]
+        ?.getAttribute('amt')
       let paragraph = drawing.parentElement
       while (paragraph && !(paragraph.namespaceURI === wordNamespace && paragraph.localName === 'p')) {
         paragraph = paragraph.parentElement
@@ -1696,8 +1698,10 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
         heightPx: extent ? Number(extent.getAttribute('cy')) / 9525 : 120,
         x: position('H'),
         y: position('V'),
+        opacity: /^\d+$/.test(opacity || '') ? Math.round(Number(opacity) / 1000) : 100,
         wrapMode,
         behindText: picture.getAttribute('behindDoc') === '1',
+        relativeHeight: Number(picture.getAttribute('relativeHeight') || 0),
         isFloating: picture.localName === 'anchor',
       })
     }
@@ -1825,6 +1829,23 @@ const setCertificateEditorImagePosition = (anchor, axis, offsetPx) => {
   position.appendChild(offset)
 }
 
+const setCertificateEditorImageOpacity = (anchor, opacityValue) => {
+  const opacity = Number(opacityValue)
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 100) {
+    throw new Error('Picture opacity must be between 0 and 100 percent.')
+  }
+  const image = anchor.getElementsByTagNameNS(drawingMainNamespace, 'blip')[0]
+  if (!image) throw new Error('The selected picture is missing its image data.')
+  const alpha = image.getElementsByTagNameNS(drawingMainNamespace, 'alphaModFix')[0]
+  if (opacity === 100) {
+    alpha?.parentNode.removeChild(alpha)
+    return
+  }
+  const modifier = alpha || anchor.ownerDocument.createElementNS(drawingMainNamespace, 'a:alphaModFix')
+  modifier.setAttribute('amt', String(Math.round(opacity * 1000)))
+  if (!alpha) image.appendChild(modifier)
+}
+
 const convertCertificateEditorInlineImageToAnchor = (documentXml, drawing, imageIndex) => {
   const inline = drawing.getElementsByTagNameNS(drawingNamespace, 'inline')[0]
   if (!inline) return drawing.getElementsByTagNameNS(drawingNamespace, 'anchor')[0]
@@ -1887,7 +1908,9 @@ const updateCertificateEditorImageLayout = (documentXml, drawing, image, imageIn
     transformExtent.setAttribute('cy', String(Math.round(height)))
   }
   anchor.setAttribute('behindDoc', image.behindText ? '1' : '0')
+  anchor.setAttribute('relativeHeight', image.behindText ? '0' : String(251658240 + imageIndex))
   anchor.setAttribute('allowOverlap', '1')
+  setCertificateEditorImageOpacity(anchor, image.opacity ?? 100)
   const wrapNames = { none: 'wrapNone', square: 'wrapSquare', topBottom: 'wrapTopAndBottom' }
   const wrapName = wrapNames[image.wrapMode] || 'wrapNone'
   Array.from(anchor.children)
@@ -2113,6 +2136,7 @@ const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIn
   }
   anchor.setAttribute('allowOverlap', '1')
   anchor.setAttribute('behindDoc', imageFile.behindText ? '1' : '0')
+  anchor.setAttribute('relativeHeight', imageFile.behindText ? '0' : String(251658240 + imageIndex))
   const wrapNames = {
     none: 'wrapNone',
     square: 'wrapSquare',
@@ -2128,6 +2152,7 @@ const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIn
   setCertificateEditorImageExtent(anchor, imageFile.widthPx, imageFile.heightPx)
   setCertificateEditorImagePosition(anchor, 'H', imageFile.x)
   setCertificateEditorImagePosition(anchor, 'V', imageFile.y)
+  setCertificateEditorImageOpacity(anchor, imageFile.opacity ?? 100)
   const drawing = documentXml.createElementNS(wordNamespace, 'w:drawing')
   drawing.appendChild(anchor)
   const run = documentXml.createElementNS(wordNamespace, 'w:r')
