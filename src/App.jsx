@@ -821,6 +821,24 @@ const getCertificateTemplateContent = (blob) => {
   return content
 }
 
+const getCertificateHeaderPositions = (images) => images
+  .filter((image) => image.partPath.includes('/header') && image.isFloating)
+  .map((image) => ({
+    description: image.altText,
+    horizontal: { offset: image.x, relativeFrom: image.horizontalRelativeFrom },
+    vertical: { offset: image.y, relativeFrom: image.verticalRelativeFrom },
+    isWatermark: /BB1 LOGO WATERMARK/i.test(image.altText),
+    isGreenLogo: /BB1 LOGO/i.test(image.altText) && !/WATERMARK/i.test(image.altText),
+  }))
+
+const waitForCertificatePreviewAssets = async (container) => {
+  const images = Array.from(container?.querySelectorAll('img') || [])
+  await Promise.all([
+    window.document.fonts?.ready,
+    ...images.map((image) => image.decode()),
+  ])
+}
+
 const wrapLongCertificateUnderlines = (container) => {
   if (!container) return
   const textNodes = []
@@ -847,6 +865,108 @@ const wrapLongCertificateUnderlines = (container) => {
   })
 }
 
+const positionCertificateWatermark = (page, image) => {
+  const anchor = image.parentElement
+  if (!anchor) throw new Error('The certificate watermark is missing its positioning element.')
+  page.style.position = 'relative'
+  anchor.style.position = 'absolute'
+  anchor.style.display = 'block'
+  anchor.style.left = '50%'
+  anchor.style.top = '50%'
+  anchor.style.width = '62%'
+  anchor.style.height = 'auto'
+  anchor.style.margin = '0'
+  anchor.style.transform = 'translate(-50%, -50%)'
+  anchor.style.opacity = '0.18'
+  anchor.style.zIndex = '0'
+  anchor.setAttribute('aria-hidden', 'true')
+  anchor.classList.add('certificate-watermark-anchor')
+  image.style.display = 'block'
+  image.style.width = '100%'
+  image.style.height = 'auto'
+  image.style.maxWidth = 'none'
+  image.classList.add('certificate-watermark')
+  page.querySelectorAll('header, article, footer').forEach((content) => {
+    content.style.position = 'relative'
+    content.style.zIndex = '1'
+  })
+  page.appendChild(anchor)
+}
+
+const positionCertificateHeaderLogos = (page, positions) => {
+  const header = page.querySelector('header')
+  const images = Array.from(header?.querySelectorAll('img') || [])
+  if (!header) return
+  header.style.position = 'relative'
+  header.style.width = '100%'
+  Array.from(header.querySelectorAll('p'))
+    .filter((paragraph) => (paragraph.textContent || '').trim())
+    .forEach((paragraph) => {
+      paragraph.style.textAlign = 'center'
+      paragraph.style.paddingLeft = '100px'
+      paragraph.style.paddingRight = '100px'
+      paragraph.style.boxSizing = 'border-box'
+      paragraph.style.whiteSpace = 'nowrap'
+    })
+  if (images.length !== positions.length || !positions.length) return
+  const pagePaddingLeft = Number.parseFloat(window.getComputedStyle(page).paddingLeft) || 0
+  const pagePaddingTop = Number.parseFloat(window.getComputedStyle(page).paddingTop) || 0
+  const logoPositions = positions.filter((position) => !position.isWatermark)
+  const taggedRightLogo = logoPositions.find((position) => position.isGreenLogo)
+  const rightLogoPosition = taggedRightLogo || (logoPositions.length === 2
+    ? logoPositions.reduce((right, position) => position.horizontal.offset > right.horizontal.offset ? position : right)
+    : null)
+  const leftLogoPosition = logoPositions.find((position) => position !== rightLogoPosition)
+  const redLeft = leftLogoPosition
+    ? leftLogoPosition.horizontal.offset - (leftLogoPosition.horizontal.relativeFrom === 'page' ? pagePaddingLeft : 0)
+    : 0
+
+  images.forEach((image, index) => {
+    const position = positions[index]
+    const anchor = image.parentElement
+    if (!anchor) return
+    if (position.isWatermark) {
+      positionCertificateWatermark(page, image)
+      return
+    }
+    const isRightLogo = position === rightLogoPosition
+    anchor.style.position = 'absolute'
+    anchor.style.float = 'none'
+    anchor.style.left = isRightLogo
+      ? `${header.clientWidth - redLeft - image.offsetWidth}px`
+      : `${position.horizontal.offset - (position.horizontal.relativeFrom === 'page' ? pagePaddingLeft : 0)}px`
+    anchor.style.top = `${(isRightLogo ? leftLogoPosition?.vertical.offset ?? position.vertical.offset : position.vertical.offset)
+      - (position.vertical.relativeFrom === 'page' ? pagePaddingTop : 0)}px`
+    image.draggable = false
+  })
+}
+
+const positionLargeCertificateBodyImages = (page) => {
+  const pageWidth = page.clientWidth
+  const pageHeight = page.clientHeight
+  if (!pageWidth || !pageHeight) return
+
+  page.querySelectorAll('p').forEach((paragraph) => {
+    if (!/_{30,}/.test(paragraph.textContent || '')) return
+    paragraph.style.whiteSpace = 'normal'
+    paragraph.style.overflowWrap = 'anywhere'
+    paragraph.style.wordBreak = 'break-word'
+  })
+
+  Array.from(page.querySelectorAll('img')).forEach((image) => {
+    const anchor = image.parentElement
+    if (!anchor || anchor.classList.contains('certificate-watermark-anchor') || anchor.closest('header')) return
+    const bounds = image.getBoundingClientRect()
+    const isLarge = bounds.width >= pageWidth * 0.42 || bounds.height >= pageHeight * 0.28
+    if (!isLarge) return
+    const label = `${image.alt || ''} ${image.title || ''} ${anchor.getAttribute('title') || ''}`
+    const aspectRatio = bounds.height ? bounds.width / bounds.height : 0
+    const looksLikeLogo = /logo|seal|emblem|watermark/i.test(label)
+      || (aspectRatio >= 0.55 && aspectRatio <= 1.8)
+    if (looksLikeLogo) positionCertificateWatermark(page, image)
+  })
+}
+
 const positionCertificateFloatingImages = (page, imagePlacements) => {
   const scopes = {
     'word/document.xml': page.querySelector('article'),
@@ -855,7 +975,7 @@ const positionCertificateFloatingImages = (page, imagePlacements) => {
   }
   const groups = new Map()
   imagePlacements
-    .filter((image) => image.isFloating)
+    .filter((image) => image.isFloating && !image.partPath.includes('/header'))
     .forEach((image) => {
       const scopeName = image.partPath === 'word/document.xml'
         ? 'word/document.xml'
@@ -903,11 +1023,13 @@ const positionCertificateFloatingImages = (page, imagePlacements) => {
   })
 }
 
-const decorateCertificateDocxPages = (container, documentName, imagePlacements) => {
+const decorateCertificateDocxPages = (container, documentName, imagePlacements, headerPositions) => {
   wrapLongCertificateUnderlines(container)
   const pages = Array.from(container.querySelectorAll('section.certificate-docx'))
   pages.forEach((page) => {
+    positionCertificateHeaderLogos(page, headerPositions)
     positionCertificateFloatingImages(page, imagePlacements)
+    positionLargeCertificateBodyImages(page)
     page.setAttribute('aria-label', `${documentName} certificate preview`)
   })
   return pages
@@ -918,18 +1040,28 @@ const renderCertificateDocxPages = async (container, blob, documentName, provide
   if (!renderedDocument) {
     renderedDocument = (async () => {
       const staging = window.document.createElement('div')
-      const [{ renderAsync }, templateContent] = await Promise.all([
-        import('docx-preview'),
-        providedImages ? Promise.resolve({ images: providedImages }) : getCertificateTemplateContent(blob),
-      ])
-      await renderAsync(blob, staging, null, {
-        className: 'certificate-docx',
-        inWrapper: true,
-        breakPages: true,
-        useBase64URL: true,
-      })
-      decorateCertificateDocxPages(staging, documentName, templateContent.images)
-      return staging
+      staging.style.cssText = 'position:fixed;left:-100000px;top:0;width:max-content;visibility:hidden;pointer-events:none;'
+      window.document.body.appendChild(staging)
+      try {
+        const [{ renderAsync }, templateContent] = await Promise.all([
+          import('docx-preview'),
+          providedImages ? Promise.resolve({ images: providedImages }) : getCertificateTemplateContent(blob),
+        ])
+        const headerPositions = getCertificateHeaderPositions(templateContent.images)
+        await renderAsync(blob, staging, null, {
+          className: 'certificate-docx',
+          inWrapper: true,
+          breakPages: true,
+          useBase64URL: true,
+        })
+        await waitForCertificatePreviewAssets(staging)
+        decorateCertificateDocxPages(staging, documentName, templateContent.images, headerPositions)
+        staging.remove()
+        return staging
+      } catch (error) {
+        staging.remove()
+        throw error
+      }
     })()
     certificatePreviewDomCache.set(blob, renderedDocument)
     try {
@@ -1608,6 +1740,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         widthPx: image.widthPx,
         heightPx: image.heightPx,
         opacity: image.opacity,
+        crop: image.crop,
         wrapMode: image.wrapMode,
         behindText: image.behindText,
       }))
@@ -1679,6 +1812,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         widthPx: image.widthPx,
         heightPx: image.heightPx,
         opacity: image.opacity,
+        crop: image.crop,
         wrapMode: image.wrapMode,
         behindText: image.behindText,
       }))
@@ -1743,6 +1877,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         widthPx: 160,
         heightPx: 120,
         opacity: 100,
+        crop: { left: 0, top: 0, right: 0, bottom: 0 },
         behindText: false,
         wrapMode: 'none',
       }])
@@ -1779,6 +1914,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     : activeInsertedImageIndex >= 0
       ? { ...insertedImages[activeInsertedImageIndex], editorType: 'inserted' }
       : null
+  const activePictureCrop = activePicture?.crop || { left: 0, top: 0, right: 0, bottom: 0 }
   const changeActivePart = (partPath) => {
     setActivePart(partPath)
     setActiveExistingImageId('')
@@ -1880,7 +2016,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     Array.from(container.querySelectorAll('.certificate-editor-image-overlay')).forEach((overlay) => {
       if (!activeIds.has(overlay.dataset.imageId)) overlay.remove()
     })
-    const getOverlay = (id, page, altText, dataUrl, opacity = 100) => {
+    const getOverlay = (id, page, altText, dataUrl, opacity = 100, crop = {}) => {
       let overlay = Array.from(container.querySelectorAll('.certificate-editor-image-overlay'))
         .find((candidate) => candidate.dataset.imageId === id)
       if (!overlay) {
@@ -1889,11 +2025,14 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         overlay.dataset.imageId = id
         overlay.setAttribute('role', 'button')
         overlay.tabIndex = 0
+        const viewport = window.document.createElement('span')
+        viewport.className = 'certificate-editor-image-viewport'
         const picture = window.document.createElement('img')
+        viewport.appendChild(picture)
         const resizeHandle = window.document.createElement('button')
         resizeHandle.type = 'button'
         resizeHandle.className = 'certificate-editor-image-resize'
-        overlay.append(picture, resizeHandle)
+        overlay.append(viewport, resizeHandle)
       }
       if (overlay.parentElement !== page) page.appendChild(overlay)
       const picture = overlay.querySelector('img')
@@ -1901,6 +2040,16 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       picture.alt = altText || ''
       const opacityValue = Number(opacity)
       picture.style.opacity = `${Number.isFinite(opacityValue) ? Math.min(100, Math.max(0, opacityValue)) / 100 : 1}`
+      const cropLeft = Math.max(0, Number(crop.left) || 0)
+      const cropTop = Math.max(0, Number(crop.top) || 0)
+      const cropRight = Math.max(0, Number(crop.right) || 0)
+      const cropBottom = Math.max(0, Number(crop.bottom) || 0)
+      const visibleWidth = Math.max(10000, 100000 - cropLeft - cropRight)
+      const visibleHeight = Math.max(10000, 100000 - cropTop - cropBottom)
+      picture.style.left = `${-(cropLeft / visibleWidth) * 100}%`
+      picture.style.top = `${-(cropTop / visibleHeight) * 100}%`
+      picture.style.width = `${100000 / visibleWidth * 100}%`
+      picture.style.height = `${100000 / visibleHeight * 100}%`
       overlay.setAttribute('aria-label', `Select or move ${altText || 'picture'}`)
       overlay.querySelector('.certificate-editor-image-resize')
         .setAttribute('aria-label', `Resize ${altText || 'picture'}`)
@@ -1926,6 +2075,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           image.altText || image.path.split('/').pop(),
           imageReplacements[image.path]?.dataUrl || image.dataUrl,
           image.opacity,
+          image.crop,
         )
         overlay.style.left = `${image.x}px`
         overlay.style.top = `${image.y}px`
@@ -2001,7 +2151,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       const page = paragraphElement?.closest('section.certificate-docx')
       if (!page) return
       page.style.position = 'relative'
-      const overlay = getOverlay(`inserted/${image.id}`, page, image.altText, image.dataUrl, image.opacity)
+      const overlay = getOverlay(`inserted/${image.id}`, page, image.altText, image.dataUrl, image.opacity, image.crop)
       overlay.style.left = `${image.x}px`
       overlay.style.top = `${image.y}px`
       overlay.style.width = `${image.widthPx}px`
@@ -2111,21 +2261,29 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                     <strong>Select picture</strong>
                     {selectablePictures.length
                       ? <div className="certificate-editor-picture-picker-list">{selectablePictures.map((picture) => (
-                        <button type="button" key={picture.editorType === 'existing' ? picture.placementId : picture.id} className={picture.selected ? 'is-selected' : ''} aria-pressed={picture.selected} onClick={() => selectPicture(picture)}>
-                          <img src={picture.previewDataUrl} alt="" />
-                          <span>{picture.altText || (picture.editorType === 'existing' ? picture.path.split('/').pop() : 'Inserted picture')}</span>
+                        <button type="button" key={picture.editorType === 'existing' ? picture.placementId : picture.id} className={picture.selected ? 'is-selected' : ''} aria-pressed={picture.selected} aria-label={`Select ${picture.altText || 'picture'}`} onClick={() => selectPicture(picture)}>
+                          <img src={picture.previewDataUrl} alt={picture.altText || 'Document picture'} />
                         </button>
                       ))}</div>
                       : <p className="certificate-editor-no-fields">This document has no pictures yet.</p>}
                   </div>
                   {activePicture
                     ? <div className="certificate-editor-inserted-image is-selected">
-                      <img src={activePicture.editorType === 'existing' ? imageReplacements[activePicture.path]?.dataUrl || activePicture.dataUrl : activePicture.dataUrl} alt="" />
-                      <strong>{activePicture.altText || activePicture.path?.split('/').pop() || 'Inserted picture'}</strong>
                       <label>Left (px)<input type="number" min="-4000" max="4000" value={Math.round(activePicture.x)} onChange={(event) => updateSelectedPicture({ x: Number(event.target.value) })} /></label>
                       <label>Top (px)<input type="number" min="-4000" max="4000" value={Math.round(activePicture.y)} onChange={(event) => updateSelectedPicture({ y: Number(event.target.value) })} /></label>
                       <label>Width (px)<input type="number" min="12" max="2000" value={Math.round(activePicture.widthPx)} onChange={(event) => updateSelectedPicture({ widthPx: Number(event.target.value) })} /></label>
                       <label>Height (px)<input type="number" min="12" max="2000" value={Math.round(activePicture.heightPx)} onChange={(event) => updateSelectedPicture({ heightPx: Number(event.target.value) })} /></label>
+                      {['left', 'top', 'right', 'bottom'].map((side) => {
+                        const oppositeSide = side === 'left' ? 'right' : side === 'right' ? 'left' : side === 'top' ? 'bottom' : 'top'
+                        const value = Math.round(activePictureCrop[side] / 1000)
+                        const max = Math.max(0, Math.min(90, 99 - Math.round(activePictureCrop[oppositeSide] / 1000)))
+                        return <label className="certificate-editor-crop-control" key={side}>
+                          Crop {side} <output>{value}%</output>
+                          <input type="range" min="0" max={max} step="1" value={Math.min(max, value)} onChange={(event) => updateSelectedPicture({
+                            crop: { ...activePictureCrop, [side]: Number(event.target.value) * 1000 },
+                          })} />
+                        </label>
+                      })}
                       <label className="certificate-editor-opacity">Opacity <output>{activePicture.opacity ?? 100}%</output>
                         <input type="range" min="0" max="100" step="1" value={activePicture.opacity ?? 100} onChange={(event) => updateSelectedPicture({ opacity: Number(event.target.value) })} />
                       </label>

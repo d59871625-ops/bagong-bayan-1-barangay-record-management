@@ -205,6 +205,7 @@ const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/m
 const wordCheckboxNamespace = 'http://schemas.microsoft.com/office/word/2010/wordml'
 const drawingNamespace = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
 const drawingMainNamespace = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+const pictureNamespace = 'http://schemas.openxmlformats.org/drawingml/2006/picture'
 const relationshipsNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const packageRelationshipsNamespace = 'http://schemas.openxmlformats.org/package/2006/relationships'
 const packageContentTypesNamespace = 'http://schemas.openxmlformats.org/package/2006/content-types'
@@ -1701,7 +1702,10 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
       const position = (axis) => {
         const element = picture.getElementsByTagNameNS(drawingNamespace, `position${axis}`)[0]
         const offset = element?.getElementsByTagNameNS(drawingNamespace, 'posOffset')[0]?.textContent
-        return offset ? Number(offset) / 9525 : 0
+        return {
+          offset: offset ? Number(offset) / 9525 : 0,
+          relativeFrom: element?.getAttribute('relativeFrom') || '',
+        }
       }
       const wrapMode = picture.getElementsByTagNameNS(drawingNamespace, 'wrapSquare').length
         ? 'square'
@@ -1710,10 +1714,20 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
           : 'none'
       const opacity = blip.getElementsByTagNameNS(drawingMainNamespace, 'alphaModFix')[0]
         ?.getAttribute('amt')
+      const sourceRect = drawing.getElementsByTagNameNS(drawingMainNamespace, 'srcRect')[0]
+      const crop = Object.fromEntries(['left', 'top', 'right', 'bottom'].map((side) => {
+        const attribute = { left: 'l', top: 't', right: 'r', bottom: 'b' }[side]
+        return [side, Math.max(0, Math.min(99000, Number(sourceRect?.getAttribute(attribute)) || 0))]
+      }))
       let paragraph = drawing.parentElement
       while (paragraph && !(paragraph.namespaceURI === wordNamespace && paragraph.localName === 'p')) {
         paragraph = paragraph.parentElement
       }
+      const horizontalPosition = position('H')
+      const verticalPosition = position('V')
+      const altText = picture.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]?.getAttribute('descr')
+        || picture.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]?.getAttribute('title')
+        || ''
       images.push({
         placementId: `${partPath}:${drawingIndex}`,
         partPath,
@@ -1722,14 +1736,15 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
         path,
         mimeType,
         dataUrl: `data:${mimeType};base64,${await mediaFile.async('base64')}`,
-        altText: picture.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]?.getAttribute('descr')
-          || picture.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]?.getAttribute('title')
-          || '',
+        altText,
         widthPx: extent ? Number(extent.getAttribute('cx')) / 9525 : 160,
         heightPx: extent ? Number(extent.getAttribute('cy')) / 9525 : 120,
-        x: position('H'),
-        y: position('V'),
+        x: horizontalPosition.offset,
+        y: verticalPosition.offset,
+        horizontalRelativeFrom: horizontalPosition.relativeFrom,
+        verticalRelativeFrom: verticalPosition.relativeFrom,
         opacity: /^\d+$/.test(opacity || '') ? Math.round(Number(opacity) / 1000) : 100,
+        crop,
         wrapMode,
         behindText: picture.getAttribute('behindDoc') === '1',
         relativeHeight: Number(picture.getAttribute('relativeHeight') || 0),
@@ -1884,6 +1899,38 @@ const setCertificateEditorImageOpacity = (anchor, opacityValue) => {
   if (!alpha) image.appendChild(modifier)
 }
 
+const setCertificateEditorImageCrop = (anchor, crop = {}) => {
+  const values = {
+    left: Number(crop.left) || 0,
+    top: Number(crop.top) || 0,
+    right: Number(crop.right) || 0,
+    bottom: Number(crop.bottom) || 0,
+  }
+  if (Object.values(values).some((value) => !Number.isInteger(value) || value < 0 || value > 99000)
+    || values.left + values.right >= 100000 || values.top + values.bottom >= 100000) {
+    throw new Error('Picture crop values must leave part of the image visible on every side.')
+  }
+  const blipFill = anchor.getElementsByTagNameNS(pictureNamespace, 'blipFill')[0]
+  if (!blipFill) throw new Error('The selected picture is missing its fill settings.')
+  let sourceRect = blipFill.getElementsByTagNameNS(drawingMainNamespace, 'srcRect')[0]
+  if (Object.values(values).every((value) => value === 0)) {
+    sourceRect?.parentNode.removeChild(sourceRect)
+    return
+  }
+  if (!sourceRect) {
+    sourceRect = anchor.ownerDocument.createElementNS(drawingMainNamespace, 'a:srcRect')
+    const fillMode = Array.from(blipFill.children)
+      .find((child) => child.namespaceURI === drawingMainNamespace && ['stretch', 'tile'].includes(child.localName))
+    blipFill.insertBefore(sourceRect, fillMode || null)
+  }
+  const attributes = { left: 'l', top: 't', right: 'r', bottom: 'b' }
+  Object.entries(values).forEach(([side, value]) => {
+    const attribute = attributes[side]
+    if (value) sourceRect.setAttribute(attribute, String(value))
+    else sourceRect.removeAttribute(attribute)
+  })
+}
+
 const convertCertificateEditorInlineImageToAnchor = (documentXml, drawing, imageIndex) => {
   const inline = drawing.getElementsByTagNameNS(drawingNamespace, 'inline')[0]
   if (!inline) return drawing.getElementsByTagNameNS(drawingNamespace, 'anchor')[0]
@@ -1949,6 +1996,7 @@ const updateCertificateEditorImageLayout = (documentXml, drawing, image, imageIn
   anchor.setAttribute('relativeHeight', image.behindText ? '0' : String(251658240 + imageIndex))
   anchor.setAttribute('allowOverlap', '1')
   setCertificateEditorImageOpacity(anchor, image.opacity ?? 100)
+  setCertificateEditorImageCrop(anchor, image.crop)
   const wrapNames = { none: 'wrapNone', square: 'wrapSquare', topBottom: 'wrapTopAndBottom' }
   const wrapName = wrapNames[image.wrapMode] || 'wrapNone'
   Array.from(anchor.children)
@@ -2160,8 +2208,6 @@ const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIn
   const blip = anchor.getElementsByTagNameNS(drawingMainNamespace, 'blip')[0]
   if (!blip) throw new Error('The picture placement in this Word template has no image reference.')
   blip.setAttributeNS(relationshipsNamespace, 'r:embed', relationshipId)
-  const crop = anchor.getElementsByTagNameNS(drawingMainNamespace, 'srcRect')[0]
-  crop?.parentNode.removeChild(crop)
   const drawingProperties = anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]
   if (drawingProperties) {
     const newDrawingPropertyId = String(maxDrawingPropertyId + 1)
@@ -2191,6 +2237,7 @@ const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIn
   setCertificateEditorImagePosition(anchor, 'H', imageFile.x)
   setCertificateEditorImagePosition(anchor, 'V', imageFile.y)
   setCertificateEditorImageOpacity(anchor, imageFile.opacity ?? 100)
+  setCertificateEditorImageCrop(anchor, imageFile.crop)
   const drawing = documentXml.createElementNS(wordNamespace, 'w:drawing')
   drawing.appendChild(anchor)
   const run = documentXml.createElementNS(wordNamespace, 'w:r')
