@@ -34,32 +34,54 @@ function ensurePasswordResetTable(PDO $pdo): void
 
 function sendPasswordResetEmail(string $recipient, string $code): void
 {
-    $username = trim((string) getenv("BRGY_GMAIL_USERNAME"));
-    $appPassword = preg_replace('/\s+/', '', (string) getenv("BRGY_GMAIL_APP_PASSWORD"));
-    $senderName = trim((string) getenv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I";
+    $username = trim((string) backendEnv("BRGY_GMAIL_USERNAME"));
+    $appPassword = preg_replace('/\s+/', '', (string) backendEnv("BRGY_GMAIL_APP_PASSWORD"));
+    $senderName = trim((string) backendEnv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I";
     if ($username === "" || $appPassword === "") {
         throw new RuntimeException("Email delivery is not configured on the backend.");
     }
 
-    $mail = new PHPMailer(true);
-    $mail->isSMTP();
-    $mail->Host = "smtp.gmail.com";
-    $mail->SMTPAuth = true;
-    $mail->Username = $username;
-    $mail->Password = $appPassword;
-    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-    $mail->Port = 587;
-    $mail->CharSet = "UTF-8";
-    $mail->setFrom($username, $senderName);
-    $mail->addAddress($recipient);
-    $mail->Subject = "Barangay admin password reset code";
-    $mail->isHTML(true);
-    $mail->Body = "<p>Your Barangay Bagong Bayan I admin password reset code is:</p>"
-        . "<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">" . htmlspecialchars($code, ENT_QUOTES | ENT_SUBSTITUTE, "UTF-8") . "</p>"
-        . "<p>This code expires in 15 minutes. If you did not request it, ignore this email.</p>";
-    $mail->AltBody = "Your Barangay Bagong Bayan I admin password reset code is {$code}. "
-        . "It expires in 15 minutes. If you did not request it, ignore this email.";
-    $mail->send();
+    $transportAttempts = [
+        ["smtp.gmail.com", 587, PHPMailer::ENCRYPTION_STARTTLS],
+        ["smtp.gmail.com", 465, PHPMailer::ENCRYPTION_SMTPS],
+    ];
+    $lastError = null;
+
+    foreach ($transportAttempts as [$host, $port, $secure]) {
+        try {
+            $mail = new PHPMailer(true);
+            $mail->isSMTP();
+            $mail->Host = $host;
+            $mail->SMTPAuth = true;
+            $mail->Username = $username;
+            $mail->Password = $appPassword;
+            $mail->SMTPSecure = $secure;
+            $mail->Port = $port;
+            $mail->Timeout = 20;
+            $mail->SMTPKeepAlive = false;
+            $mail->CharSet = "UTF-8";
+            $mail->setFrom($username, $senderName);
+            $mail->addAddress($recipient);
+            $mail->Subject = "Barangay admin password reset code";
+            $mail->isHTML(true);
+            $mail->Body = "<p>Your Barangay Bagong Bayan I admin password reset code is:</p>"
+                . "<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">" . htmlspecialchars($code, ENT_QUOTES | ENT_SUBSTITUTE, "UTF-8") . "</p>"
+                . "<p>This code expires in 15 minutes. If you did not request it, ignore this email.</p>";
+            $mail->AltBody = "Your Barangay Bagong Bayan I admin password reset code is {$code}. "
+                . "It expires in 15 minutes. If you did not request it, ignore this email.";
+            $mail->send();
+            return;
+        } catch (Throwable $error) {
+            $lastError = $error;
+            error_log("Admin password reset SMTP attempt failed on port {$port}: " . $error->getMessage());
+        }
+    }
+
+    throw new RuntimeException(
+        $lastError instanceof Throwable
+            ? "Gmail SMTP delivery failed: " . $lastError->getMessage()
+            : "Gmail SMTP delivery failed."
+    );
 }
 
 if (($_SERVER["REQUEST_METHOD"] ?? "") !== "POST") {

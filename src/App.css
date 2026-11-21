@@ -335,6 +335,12 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-login-form .check-button { min-height: 46px; margin-top: 12px; background: #d7edbd; color: #17462b; }
 .official-login-form .check-button:hover { border-color: #e2f2ce; background: #e2f2ce; color: #17462b; }
 .official-dashboard { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: none; min-height: 0; flex: 1; margin: 0; padding: 18px 4vw; overflow-y: auto; animation: rise 0.6s ease both; }
+.official-dashboard .admin-content { font-size: 14px; }
+.official-dashboard .admin-table th { font-size: 12px; }
+.official-dashboard .admin-table td { font-size: 13px; }
+.official-dashboard .open-request,
+.official-dashboard .table-actions button,
+.official-dashboard .resident-table-action { min-height: 40px; font-size: 12px; }
 .dashboard-heading { display: flex; align-items: end; justify-content: space-between; border-bottom: 1px solid rgba(60, 122, 69, 0.35); padding-bottom: 12px; }
 .dashboard-heading h1 { margin: 0; font-size: clamp(28px, 3vw, 42px); }
 .dashboard-logout { padding: 7px 12px; border: 1px solid #3c7a45; border-radius: 8px; background: transparent; color: #3c7a45; cursor: pointer; font: 700 12px var(--sans); }
@@ -2391,13 +2397,27 @@ h1 em { color: var(--accent); font-style: normal; }
 .certificate-template-request-select { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; color: #286334; font-size: 11px; font-weight: 700; }
 .certificate-template-request-select > span { font-size: 17px; }
 .certificate-template-request-empty { margin: 0; padding: 16px; border: 1px dashed #c4d9c7; border-radius: 10px; background: #f8fbf8; color: #526357; font-size: 13px; line-height: 1.55; }
-.certificate-template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
+.certificate-template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin: 16px 0; }
 .certificate-template-item { display: grid; align-content: start; gap: 5px; min-width: 0; }
-.certificate-template-card { display: grid; gap: 11px; align-content: start; padding: 15px; border: 1px solid #d0e3d2; border-radius: 11px; background: #fff; }
+.certificate-template-card { display: grid; gap: 13px; align-content: start; min-height: 198px; padding: 18px; border: 1px solid #d0e3d2; border-radius: 11px; background: #fff; }
 .certificate-template-card > div:first-child { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.certificate-template-card h3 { margin: 0; color: #294d31; font-size: 14px; }
-.certificate-template-card p { margin: 0; color: #68746a; font-size: 11px; overflow-wrap: anywhere; }
-.certificate-template-card .table-actions { align-items: center; flex-wrap: wrap; }
+.certificate-template-card h3 { margin: 0; color: #294d31; font-size: 16px; }
+.certificate-template-card p { margin: 0; color: #68746a; font-size: 12px; overflow-wrap: anywhere; }
+.certificate-template-card .table-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 8px;
+}
+.certificate-template-card .table-actions > button,
+.certificate-template-card .table-actions > label {
+  min-width: 0;
+  width: 100%;
+}
+.certificate-template-card .table-actions .certificate-template-edit {
+  grid-column: 1 / -1;
+  width: 100%;
+}
 .certificate-template-request-count { display: inline-grid; min-width: 18px; height: 18px; place-items: center; margin-left: 4px; padding: 0 4px; border-radius: 999px; background: #e7f2e8; color: #286334; font-size: 10px; font-variant-numeric: tabular-nums; }
 .certificate-template-fee { display: flex; align-items: center; justify-content: flex-end; gap: 5px; padding: 0 4px; color: #526357; font-size: 10px; font-weight: 700; }
 .certificate-template-fee > span { color: #286334; }
