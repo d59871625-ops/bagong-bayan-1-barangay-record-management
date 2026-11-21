@@ -6,7 +6,7 @@ Shared operational records, resident document requests and drafts, payment draft
 
 The database API and MySQL must both be running for cross-session and cross-device persistence. When they are unavailable, the app keeps using the current browser's localStorage and shows a warning; those local-only changes are not shared automatically. If the database reconnects during an open session, choose whether to reload the shared database copy or explicitly save this browser's copy before resuming synchronization.
 
-The certificate PDF converter is restricted to loopback requests for local development. The shared app-state API requires an authenticated admin or official token and contains resident and admin records; it is not a public data API. Do not expose it or other backend endpoints to the public internet until all resident operations use authenticated, role-limited endpoints. A public frontend can be hosted separately, but that does not make the resident/admin workflows safe or available online.
+The certificate PDF converter allows the production frontend origin and localhost development origins by default, and still requires an authenticated admin or official token. Keep the CORS origins exact if changing them. The shared app-state API requires an authenticated admin or official token and contains resident and admin records; it is not a public data API. Do not expose it or other backend endpoints to the public internet until all resident operations use authenticated, role-limited endpoints. A public frontend can be hosted separately, but that does not make the resident/admin workflows safe or available online.
 
 ## Public frontend hosting
 
@@ -78,7 +78,7 @@ Certificate PDFs are converted from the filled DOCX template by LibreOffice so t
 1. Install LibreOffice on the machine running PHP.
 2. Run the local PHP API using the Laragon steps above; `backend/certificate-to-pdf.php` is then available at `http://127.0.0.1:8000/certificate-to-pdf.php`.
 3. Ensure PHP allows `proc_open` and accepts uploads larger than 15 MB (set `upload_max_filesize` and `post_max_size` to at least `16M`).
-4. If LibreOffice is not on PHP's `PATH`, configure `LIBREOFFICE_PATH` to its `soffice` executable. Set `CERTIFICATE_PDF_ALLOWED_ORIGIN` to the frontend origin if it differs from the local Vite defaults.
+4. If LibreOffice is not on PHP's `PATH`, configure `LIBREOFFICE_PATH` to its `soffice` executable. The PDF endpoint allows `https://airi.infinityfreeapp.com` and the local Vite origins by default. If the frontend uses a different origin, set `CERTIFICATE_PDF_ALLOWED_ORIGIN` to its exact origin; a comma-separated list replaces the defaults.
 5. If the PDF endpoint has a different URL, set `VITE_CERTIFICATE_PDF_URL` in `.env` and restart Vite.
 
-The PDF action fills only values present in the resident's confirmed request. Missing values are left blank. The original DOCX files in `src/certificate-templates` are never modified. The endpoint is intended for local use; secure it before exposing it beyond a trusted environment.
+The PDF action fills only values present in the resident's confirmed request. Missing values are left blank. The original DOCX files in `src/certificate-templates` are never modified. Keep the endpoint's admin/official authentication enabled and its CORS allowlist limited to the exact frontend origins.

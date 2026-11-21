@@ -1758,6 +1758,8 @@ export const readCertificateTemplateForEditing = async (documentBlob) => {
     pageSize: {
       id: getCertificateEditorPageSizeId(normalizedPageWidth, normalizedPageHeight),
       orientation: pageOrientation,
+      widthTwips: normalizedPageWidth,
+      heightTwips: normalizedPageHeight,
     },
   }
 }

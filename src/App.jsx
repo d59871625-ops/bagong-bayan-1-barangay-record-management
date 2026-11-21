@@ -1451,11 +1451,47 @@ function CertificateTemplateRequestPicker({ document, requests, viewedState, onC
   )
 }
 
+const normalizeCertificateTitleText = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim()
+
+const getCertificateDocumentTitleKey = (paragraphs, document) => {
+  const normalizedDocument = normalizeCertificateTitleText(document)
+  const candidates = paragraphs.filter((paragraph) => (
+    paragraph.partPath === 'word/document.xml'
+    && paragraph.text.trim()
+    && paragraph.text.trim().length <= 120
+  ))
+  if (['income certification', 'solo parent certification'].includes(normalizedDocument)) {
+    const translatedTitle = candidates.find((paragraph) => (
+      normalizeCertificateTitleText(paragraph.text) === 'sertipikasyon'
+    ))
+    if (translatedTitle) return translatedTitle.key
+  }
+
+  const titleWords = normalizedDocument.split(' ').filter((word) => !['certificate', 'of', 'to'].includes(word))
+  const titleParagraph = candidates.find((paragraph) => {
+    const normalizedText = normalizeCertificateTitleText(paragraph.text)
+    const textWords = new Set(normalizedText.split(' '))
+    const isHeading = paragraph.text.trim() === paragraph.text.trim().toLocaleUpperCase()
+      || paragraph.style.bold
+      || Number(paragraph.style.fontSize) >= 14
+    return titleWords.length > 0 && isHeading && titleWords.every((word) => textWords.has(word))
+  })
+  return titleParagraph?.key || candidates.find((paragraph) => (
+    normalizeCertificateTitleText(paragraph.text) === normalizedDocument
+  ))?.key || ''
+}
+
 function CertificateTemplateContentEditor({ document, customTemplates, onClose, onApply, uploadedFile = null }) {
   const editorCanvasRef = useRef(null)
   const paragraphsRef = useRef([])
   const imagesRef = useRef([])
   const imageElementsRef = useRef(new Map())
+  const imageLayoutMeasuredRef = useRef(false)
   const [sourceBlob, setSourceBlob] = useState(null)
   const [paragraphs, setParagraphs] = useState([])
   const [images, setImages] = useState([])
@@ -1469,6 +1505,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   const [originalPageSizeId, setOriginalPageSizeId] = useState('short')
   const [pageOrientation, setPageOrientation] = useState('portrait')
   const [originalPageOrientation, setOriginalPageOrientation] = useState('portrait')
+  const [originalPageDimensions, setOriginalPageDimensions] = useState({ widthTwips: 12240, heightTwips: 15840 })
   const [isLoading, setIsLoading] = useState(true)
   const [isRendered, setIsRendered] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -1501,6 +1538,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
 
   useEffect(() => {
     imageElementsRef.current = new Map()
+    imageLayoutMeasuredRef.current = false
   }, [sourceBlob])
 
   useEffect(() => {
@@ -1511,8 +1549,9 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         const source = uploadedFile || await getCertificateTemplateSourceBlob(document, customTemplates)
         const content = await getCertificateTemplateContent(source)
         if (!isCurrent) return
+        const titleKey = getCertificateDocumentTitleKey(content.paragraphs, document)
         const editorParagraphs = content.paragraphs.map((paragraph) => (
-          paragraph.partPath.includes('/header') && paragraph.text.trim()
+          (paragraph.partPath.includes('/header') && paragraph.text.trim()) || paragraph.key === titleKey
             ? { ...paragraph, style: { ...paragraph.style, alignment: 'center' } }
             : paragraph
         ))
@@ -1527,6 +1566,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         setOriginalPageSizeId(content.pageSize.id)
         setPageOrientation(content.pageSize.id === 'a4' ? 'portrait' : content.pageSize.orientation)
         setOriginalPageOrientation(content.pageSize.orientation)
+        setOriginalPageDimensions(content.pageSize)
       } catch (loadError) {
         console.error(`Unable to open the ${document} template editor.`, loadError)
         if (isCurrent) setError(loadError.message || 'The certificate template could not be opened.')
@@ -1544,9 +1584,27 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     const renderEditableTemplate = async () => {
       setIsRendered(false)
       try {
-        editorCanvasRef.current.replaceChildren()
-        await renderCertificateDocxPages(editorCanvasRef.current, sourceBlob, document, imagesRef.current)
+        const pageSizeChanged = pageSizeId !== originalPageSizeId || pageOrientation !== originalPageOrientation
+        const renderBlob = pageSizeChanged
+          ? await updateCertificateTemplateDocx(sourceBlob, {
+            pageSize: { id: pageSizeId, orientation: pageOrientation },
+          })
+          : sourceBlob
+        await renderCertificateDocxPages(editorCanvasRef.current, renderBlob, document, imagesRef.current)
         if (!isCurrent) return
+        const pageSize = CERTIFICATE_EDITOR_PAGE_SIZES[pageSizeId]
+        const pageWidthTwips = pageSizeChanged
+          ? pageOrientation === 'landscape' ? pageSize.heightTwips : pageSize.widthTwips
+          : pageOrientation === 'landscape' ? originalPageDimensions.heightTwips : originalPageDimensions.widthTwips
+        const pageHeightTwips = pageSizeChanged
+          ? pageOrientation === 'landscape' ? pageSize.widthTwips : pageSize.heightTwips
+          : pageOrientation === 'landscape' ? originalPageDimensions.widthTwips : originalPageDimensions.heightTwips
+        editorCanvasRef.current.querySelectorAll('section.certificate-docx').forEach((page) => {
+          page.style.boxSizing = 'border-box'
+          page.style.width = `${pageWidthTwips / 15}px`
+          page.style.height = `${pageHeightTwips / 15}px`
+          page.style.minHeight = `${pageHeightTwips / 15}px`
+        })
         const renderedImages = Array.from(editorCanvasRef.current.querySelectorAll('img'))
         const sameSourceGroups = new Map()
         imagesRef.current.forEach((image) => {
@@ -1577,11 +1635,12 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           })
         })
         imageElementsRef.current = imageElements
-        if (measuredImages.size) {
+        if (measuredImages.size && !imageLayoutMeasuredRef.current) {
           setImages((current) => current.map((image) => {
             const layout = measuredImages.get(image.placementId)
             return layout ? { ...image, ...layout, originalLayout: { ...layout }, layoutEdited: false } : image
           }))
+          imageLayoutMeasuredRef.current = true
         }
         const candidates = paragraphsRef.current
         const claimed = new Set()
@@ -1610,6 +1669,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           }
           if (!paragraph) return
           claimed.add(paragraph.key)
+          if (paragraph.text !== paragraph.originalText) element.innerText = paragraph.text
           element.dataset.certificateParagraphKey = paragraph.key
           element.dataset.certificatePartPath = paragraph.partPath
           element.contentEditable = 'false'
@@ -1640,7 +1700,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     }
     renderEditableTemplate()
     return () => { isCurrent = false }
-  }, [document, sourceBlob])
+  }, [document, originalPageDimensions, originalPageOrientation, originalPageSizeId, pageOrientation, pageSizeId, sourceBlob])
 
   useEffect(() => {
     const closeOnEscape = (event) => {
@@ -1986,29 +2046,6 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   }, [activePart, activeParagraphKey, isRendered, paragraphs])
 
   useEffect(() => {
-    if (!isRendered) return
-    const pages = Array.from(editorCanvasRef.current?.querySelectorAll('section.certificate-docx') || [])
-    if (pageSizeId === originalPageSizeId && pageOrientation === originalPageOrientation) {
-      pages.forEach((page) => {
-        page.style.width = ''
-        page.style.height = ''
-        page.style.boxSizing = ''
-      })
-      return
-    }
-    const pageSize = CERTIFICATE_EDITOR_PAGE_SIZES[pageSizeId]
-    if (!pageSize) return
-    const widthTwips = pageOrientation === 'landscape' ? pageSize.heightTwips : pageSize.widthTwips
-    const heightTwips = pageOrientation === 'landscape' ? pageSize.widthTwips : pageSize.heightTwips
-    pages.forEach((page) => {
-      page.style.boxSizing = 'border-box'
-      page.style.width = `${widthTwips / 15}px`
-      page.style.height = `${heightTwips / 15}px`
-      page.style.minHeight = `${heightTwips / 15}px`
-    })
-  }, [isRendered, originalPageOrientation, originalPageSizeId, pageOrientation, pageSizeId])
-
-  useEffect(() => {
     const container = editorCanvasRef.current
     if (!isRendered || !container) return
     const activeIds = new Set(insertedImages
@@ -2343,7 +2380,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
             : <p className="certificate-editor-no-fields">No fillable resident fields remain. The document can still be saved as a template.</p>}
         </section>}
         <footer className="certificate-content-editor-actions">
-          <span>{paragraphs.length} paragraphs · {images.length + insertedImages.length} pictures · {reviewFields ? `${reviewFields.length} resident fields detected` : 'Original paper geometry retained'}{!previewedDraft ? ' · Preview again after each change' : ''}</span>
+          <span>{paragraphs.length} paragraphs · {images.length + insertedImages.length} pictures · {reviewFields ? `${reviewFields.length} resident fields detected` : 'Template content and margins retained'}{!previewedDraft ? ' · Preview again after each change' : ''}</span>
           <button type="button" className="resident-table-action" disabled={!isRendered || isSaving || !sourceBlob} onClick={draftPreview}>Preview edits</button>
           <button type="button" className="check-button" disabled={!isRendered || isSaving || !sourceBlob || !previewedDraft} onClick={saveEdits}>{isSaving ? 'Preparing…' : reviewFields ? uploadedFile ? 'Apply edits' : 'Save template' : 'Review fields'}</button>
         </footer>
