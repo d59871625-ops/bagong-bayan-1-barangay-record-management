@@ -6,7 +6,21 @@ Shared operational records, resident document requests and drafts, payment draft
 
 The database API and MySQL must both be running for cross-session and cross-device persistence. When they are unavailable, the app keeps using the current browser's localStorage and shows a warning; those local-only changes are not shared automatically. If the database reconnects during an open session, choose whether to reload the shared database copy or explicitly save this browser's copy before resuming synchronization.
 
-The shared app-state API and certificate PDF converter are restricted to loopback requests for local development. Do not remove these restrictions or publish the backend as-is: the app-state API contains resident and admin records and does not yet enforce role-scoped access. A public resident portal requires authenticated, role-limited endpoints before deployment.
+The certificate PDF converter is restricted to loopback requests for local development. The shared app-state API requires an authenticated admin or official token and contains resident and admin records; it is not a public data API. Do not expose it or other backend endpoints to the public internet until all resident operations use authenticated, role-limited endpoints. A public frontend can be hosted separately, but that does not make the resident/admin workflows safe or available online.
+
+## Public frontend hosting
+
+The production frontend defaults to the same-origin `https://<site>/backend` API path instead of trying to contact `127.0.0.1` on each visitor’s device. To use that default, build with `npm run build`, upload the **contents** of `dist` to the host’s web root, and upload the PHP `backend` directory alongside it so `backend/api.php` resolves at `/backend/api.php`. Do not upload `backend/.env`; configure database and mail settings through the host’s private PHP environment/configuration.
+
+This only fixes the frontend’s API address. The current shared app-state API accepts admin/official tokens and is not sufficient by itself for public resident data access. Do not publish resident records or enable resident workflows against a publicly exposed shared-state endpoint; role-scoped resident APIs and a protected production database are required first.
+
+For the InfinityFree deployment, the PHP backend uses the account's non-secret MySQL host, database name, and username as production defaults when those variables are absent. Set `BRGY_DB_PASSWORD` in the host's private PHP environment; never put the password in frontend files or public source control. Local requests retain the Laragon defaults.
+
+### Optional automatic deployment
+
+`.github/workflows/deploy-infinityfree.yml` builds the frontend and uploads the committed frontend/backend files to `/htdocs` whenever matching changes are pushed to `master`. To enable it, add the hosting FTP server, FTP username, and FTP password as GitHub Actions repository secrets named `FTP_SERVER`, `FTP_USERNAME`, and `FTP_PASSWORD`. Use FTP details from the hosting panel, not the dashboard or MySQL password. The workflow uses explicit FTPS and deliberately excludes `.env`, logs, SQL files, and local helper scripts; it does not migrate or overwrite database records. Keep the existing server-side `/htdocs/backend/.env` and protected `.htaccess` in place. Changes deploy only after they are committed and pushed; they do not sync directly from the editor. If the hosting FTP service does not support FTPS, do not switch to plaintext FTP for unattended deployment; use the hosting panel or another encrypted deployment method instead.
+
+GitHub Free supports Actions and repository secrets; Premium is not required. Only a repository owner or administrator can manage these secrets. If the repository Settings or Actions secrets page is unavailable or returns 404, ask the repository owner/admin to add them. Never send the FTP values in chat or commit them to the repository.
 
 ## Laragon database connection
 

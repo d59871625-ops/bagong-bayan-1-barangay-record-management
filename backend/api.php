@@ -1,16 +1,15 @@
 <?php
 
 header("Content-Type: application/json; charset=UTF-8");
-if (!in_array($_SERVER["REMOTE_ADDR"] ?? "", ["127.0.0.1", "::1"], true)) {
-    http_response_code(403);
-    echo json_encode([
-        "success" => false,
-        "message" => "The shared app-state API is restricted to local development."
-    ]);
-    exit;
-}
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Pragma: no-cache");
+header("Expires: 0");
 
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/auth.php";
+
+// Admin and officials only.
+$user = authenticateUser($pdo, ["admin", "official"]);
 
 function respond(int $status, array $payload): void
 {
@@ -92,12 +91,25 @@ try {
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
         $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
         $statement = $pdo->prepare(
-            "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders)"
+            "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
         $statement->execute($allowedKeys);
 
+        $rows = $statement->fetchAll();
+        $etagContext = hash_init("sha256");
+        foreach ($rows as $row) {
+            hash_update($etagContext, $row["data_key"] . "\0" . $row["data_value"] . "\0");
+        }
+        $etag = '"' . hash_final($etagContext) . '"';
+        header("ETag: " . $etag);
+        $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+        if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+            http_response_code(304);
+            exit;
+        }
+
         $data = [];
-        foreach ($statement->fetchAll() as $row) {
+        foreach ($rows as $row) {
             $data[$row["data_key"]] = json_decode($row["data_value"], false, 512, JSON_THROW_ON_ERROR);
         }
 
@@ -143,6 +155,25 @@ try {
                     respond(409, ["success" => false, "message" => "A resident with this name already exists. The duplicate record was not saved."]);
                 }
                 $names[$nameKey] = residentRecordIdentity($resident);
+            }
+        }
+        if ($key === "bb1-resident-requests") {
+            if (!is_array($recordValue) || ($recordValue && array_keys($recordValue) !== range(0, count($recordValue) - 1))) {
+                respond(400, ["success" => false, "message" => "Resident requests must be a list."]);
+            }
+            $requestIds = [];
+            foreach ($recordValue as $request) {
+                if (!($request instanceof stdClass)
+                    || !isset($request->id)
+                    || (!is_string($request->id) && !is_int($request->id))
+                    || trim((string) $request->id) === "") {
+                    respond(400, ["success" => false, "message" => "Each resident request must have an ID."]);
+                }
+                $requestId = (string) $request->id;
+                if (isset($requestIds[$requestId])) {
+                    respond(400, ["success" => false, "message" => "Resident request IDs must be unique."]);
+                }
+                $requestIds[$requestId] = true;
             }
         }
         $encodedRecords[$key] = json_encode(
@@ -197,6 +228,85 @@ try {
                         }
                     }
                 }
+            }
+            if ($key === "bb1-resident-requests") {
+                $ensureRequestState = $pdo->prepare("
+                    INSERT IGNORE INTO bb1_app_state (data_key, data_value)
+                    VALUES (?, '[]')
+                ");
+                $ensureRequestState->execute([$key]);
+                $existingRequestStatement = $pdo->prepare("
+                    SELECT data_value
+                    FROM bb1_app_state
+                    WHERE data_key = ?
+                    LIMIT 1
+                    FOR UPDATE
+                ");
+                $existingRequestStatement->execute([$key]);
+                $existingRequestJson = $existingRequestStatement->fetchColumn();
+                $existingRequests = json_decode($existingRequestJson, false, 512, JSON_THROW_ON_ERROR);
+                if (!is_array($existingRequests)) {
+                    throw new RuntimeException("Saved resident requests are not a list.");
+                }
+
+                $loadStateForMerge = static function (string $stateKey, $fallback) use ($pdo, $records) {
+                    if (property_exists($records, $stateKey)) {
+                        return $records->{$stateKey};
+                    }
+                    $stateStatement = $pdo->prepare("
+                        SELECT data_value
+                        FROM bb1_app_state
+                        WHERE data_key = ?
+                        LIMIT 1
+                        FOR UPDATE
+                    ");
+                    $stateStatement->execute([$stateKey]);
+                    $stateJson = $stateStatement->fetchColumn();
+                    return $stateJson === false
+                        ? $fallback
+                        : json_decode($stateJson, false, 512, JSON_THROW_ON_ERROR);
+                };
+                $deletedRequestIds = $loadStateForMerge("bb1-deleted-request-ids", []);
+                $residentHistory = $loadStateForMerge("bb1-resident-history", []);
+                if (!is_array($deletedRequestIds) || !is_array($residentHistory)) {
+                    throw new RuntimeException("Saved resident request history or deletion IDs are invalid.");
+                }
+
+                $excludedRequestIds = [];
+                foreach ($deletedRequestIds as $deletedRequestId) {
+                    if (is_string($deletedRequestId) || is_int($deletedRequestId)) {
+                        $excludedRequestIds[(string) $deletedRequestId] = true;
+                    }
+                }
+                foreach ($residentHistory as $historyRecord) {
+                    if ($historyRecord instanceof stdClass && isset($historyRecord->id)) {
+                        $excludedRequestIds[(string) $historyRecord->id] = true;
+                    }
+                }
+
+                $incomingRequestIds = [];
+                $mergedRequests = [];
+                foreach ($records->{$key} as $request) {
+                    $requestId = (string) $request->id;
+                    if (isset($excludedRequestIds[$requestId])) continue;
+                    $incomingRequestIds[$requestId] = true;
+                    $mergedRequests[] = $request;
+                }
+                foreach ($existingRequests as $existingRequest) {
+                    if (!($existingRequest instanceof stdClass) || !isset($existingRequest->id)) {
+                        throw new RuntimeException("A saved resident request is invalid.");
+                    }
+                    $existingRequestId = (string) $existingRequest->id;
+                    if (isset($incomingRequestIds[$existingRequestId])
+                        || isset($excludedRequestIds[$existingRequestId])) {
+                        continue;
+                    }
+                    $mergedRequests[] = $existingRequest;
+                }
+                $value = json_encode(
+                    array_values($mergedRequests),
+                    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+                );
             }
             $statement->execute([$key, $value]);
         }

@@ -1,9 +1,13 @@
 <?php
 declare(strict_types=1);
 
-if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
-    http_response_code(403);
-    exit('The certificate PDF converter is restricted to local development.');
+require_once __DIR__ . '/config.php';
+try {
+    loadBackendEnvironment(__DIR__ . '/.env');
+} catch (RuntimeException $error) {
+    error_log('Certificate PDF configuration error: ' . $error->getMessage());
+    http_response_code(500);
+    exit('The certificate PDF converter is not configured correctly.');
 }
 
 $allowedOrigins = [
@@ -12,7 +16,7 @@ $allowedOrigins = [
     'http://localhost:4173',
     'http://127.0.0.1:4173',
 ];
-$configuredOrigin = getenv('CERTIFICATE_PDF_ALLOWED_ORIGIN');
+$configuredOrigin = backendEnv('CERTIFICATE_PDF_ALLOWED_ORIGIN');
 if ($configuredOrigin !== false && $configuredOrigin !== '') {
     $allowedOrigins = array_filter(array_map('trim', explode(',', $configuredOrigin)));
 }
@@ -29,7 +33,10 @@ if ($origin !== '') {
 }
 
 header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -41,6 +48,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header('Allow: POST, OPTIONS');
     exit('Use POST to convert a filled certificate.');
 }
+
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+authenticateUser($pdo, ['admin', 'official']);
 
 $workingDirectory = '';
 
@@ -62,7 +73,7 @@ $removeDirectory = static function (string $directory) use (&$removeDirectory): 
 
 $resolveExecutable = static function (array $candidates): ?string {
     $extensions = PHP_OS_FAMILY === 'Windows' ? ['', '.com', '.exe'] : [''];
-    $pathDirectories = array_filter(explode(PATH_SEPARATOR, (string) getenv('PATH')));
+    $pathDirectories = array_filter(explode(PATH_SEPARATOR, (string) backendEnv('PATH')));
 
     foreach ($candidates as $candidate) {
         if (!is_string($candidate) || $candidate === '') {
@@ -152,7 +163,7 @@ try {
         throw new RuntimeException('The uploaded certificate is not a valid DOCX file.');
     }
 
-    $configuredBinary = getenv('LIBREOFFICE_PATH');
+    $configuredBinary = backendEnv('LIBREOFFICE_PATH');
     $officeBinary = $resolveExecutable(array_filter([
         $configuredBinary !== false && $configuredBinary !== '' ? $configuredBinary : null,
         'soffice',
@@ -192,16 +203,16 @@ try {
             throw new RuntimeException('LibreOffice could not convert this certificate to PDF.');
         }
     } elseif (PHP_OS_FAMILY === 'Windows') {
-        $programFiles = getenv('ProgramFiles') ?: 'C:\\Program Files';
-        $programFilesX86 = getenv('ProgramFiles(x86)') ?: 'C:\\Program Files (x86)';
+        $programFiles = backendEnv('ProgramFiles') ?: 'C:\\Program Files';
+        $programFilesX86 = backendEnv('ProgramFiles(x86)') ?: 'C:\\Program Files (x86)';
         $wordBinary = $resolveExecutable(array_filter([
-            getenv('MICROSOFT_WORD_PATH') ?: null,
+            backendEnv('MICROSOFT_WORD_PATH') ?: null,
             $programFiles . '\\Microsoft Office\\root\\Office16\\WINWORD.EXE',
             $programFilesX86 . '\\Microsoft Office\\root\\Office16\\WINWORD.EXE',
             'winword.exe',
         ]));
         $powerShellBinary = $resolveExecutable([
-            (getenv('SystemRoot') ?: 'C:\\Windows') . '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+            (backendEnv('SystemRoot') ?: 'C:\\Windows') . '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
             'powershell.exe',
         ]);
         if ($wordBinary === null || $powerShellBinary === null) {

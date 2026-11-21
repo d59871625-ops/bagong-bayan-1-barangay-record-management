@@ -24,6 +24,7 @@ import './App.css'
 const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(value)
 const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
+const DATABASE_REFRESH_INTERVAL_MS = 5000
 const productionBackendApiUrl = `${window.location.origin}/backend`
 const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredBackendApiUrl))
   ? configuredBackendApiUrl
@@ -31,24 +32,77 @@ const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !is
 const API_URL = configuredApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredApiUrl))
   ? configuredApiUrl
   : `${BACKEND_API_URL}/api.php`
+const PUBLIC_COMMUNITY_API_URL = `${BACKEND_API_URL}/public-community.php`
+const RESIDENT_REQUEST_SYNC_URL = `${BACKEND_API_URL}/resident-request-sync.php`
 const EMPTY_CERTIFICATE_TEMPLATES = Object.freeze([])
 const CERTIFICATE_PDF_URL = import.meta.env.VITE_CERTIFICATE_PDF_URL?.trim()
   || API_URL.replace(/\/api\.php$/, '/certificate-to-pdf.php')
 
-const saveDatabaseRecords = async (records) => {
-  const response = await fetch(API_URL, {
+const readJsonResponse = async (response, endpointName) => {
+  const body = await response.text()
+  try {
+    return JSON.parse(body)
+  } catch {
+    const contentType = response.headers.get('content-type') || ''
+    const responseType = contentType.includes('text/html') || /^\s*</.test(body)
+      ? 'an HTML error page'
+      : 'an invalid response'
+    throw new Error(`${endpointName} returned ${responseType} instead of JSON (HTTP ${response.status}).`)
+  }
+}
+
+const fetchWithTimeout = async (url, options = {}, timeoutMs = DATABASE_REFRESH_INTERVAL_MS) => {
+  const { signal: externalSignal, ...requestOptions } = options
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort()
+  if (externalSignal?.aborted) {
+    controller.abort()
+  } else {
+    externalSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  }
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    return await fetch(url, { ...requestOptions, signal: controller.signal })
+  } catch (error) {
+    if (timedOut && !externalSignal?.aborted) {
+      throw new Error(
+        `The server request timed out after ${timeoutMs / 1000} seconds.`,
+        { cause: error },
+      )
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+    externalSignal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+const saveDatabaseRecords = async (records, backendToken) => {
+  if (!backendToken) {
+    throw new Error('Sign in with an active backend administrator account before saving shared records.')
+  }
+  const response = await fetchWithTimeout(API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${backendToken}`,
+    },
     body: JSON.stringify({ records }),
   })
-  const result = await response.json()
+  const result = await readJsonResponse(response, 'Database save')
   if (!response.ok || !result.success) {
     throw new Error(result.message || `Database save failed with status ${response.status}.`)
   }
 }
 
-const queueDatabaseRecords = (queueRef, records) => {
-  const save = queueRef.current.catch(() => {}).then(() => saveDatabaseRecords(records))
+const queueDatabaseRecords = (queueRef, records, backendToken) => {
+  const save = queueRef.current.catch(() => {}).then(() => saveDatabaseRecords(records, backendToken))
   queueRef.current = save.catch(() => {})
   return save
 }
@@ -211,6 +265,59 @@ const createCommunityUpdateImage = async (file) => {
     reader.readAsDataURL(compressedImage)
   })
   return { fileName: file.name, mediaType: compressedImage.type, dataUrl }
+}
+
+const MAX_GCASH_QR_IMAGE_SIZE = 700 * 1024
+const MAX_GCASH_QR_DATA_URL_SIZE = 1000000
+const MAX_GCASH_QR_TOTAL_DATA_URL_SIZE = 1400000
+
+const createGcashQrImage = async (file) => {
+  const allowedTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
+  if (!file || !allowedTypes.has(file.type)) {
+    throw new Error('Choose a PNG, JPEG, or WebP QR image.')
+  }
+  if (file.size > MAX_GCASH_QR_IMAGE_SIZE) {
+    throw new Error('Choose a QR image smaller than 700 KB.')
+  }
+
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('The QR image could not be read.'))
+        return
+      }
+      resolve(reader.result)
+    }
+    reader.onerror = () => reject(new Error('The QR image could not be read.'))
+    reader.readAsDataURL(file)
+  })
+
+  return { fileName: file.name, mediaType: file.type, dataUrl }
+}
+
+const isValidGcashQrImage = (image) => (
+  image == null
+  || (typeof image === 'object'
+    && typeof image.fileName === 'string'
+    && ['image/png', 'image/jpeg', 'image/webp'].includes(image.mediaType)
+    && typeof image.dataUrl === 'string'
+    && image.dataUrl.length <= MAX_GCASH_QR_DATA_URL_SIZE
+    && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.dataUrl))
+)
+
+const isValidGcashRecipientList = (recipients) => {
+  if (!Array.isArray(recipients)) return false
+  const totalQrImageSize = recipients.reduce((total, recipient) => (
+    total + (typeof recipient?.qrImage?.dataUrl === 'string' ? recipient.qrImage.dataUrl.length : 0)
+  ), 0)
+  return totalQrImageSize <= MAX_GCASH_QR_TOTAL_DATA_URL_SIZE
+    && recipients.every((recipient) => (
+      recipient && typeof recipient.id === 'string'
+      && typeof recipient.displayName === 'string'
+      && typeof recipient.mobileNumber === 'string'
+      && isValidGcashQrImage(recipient.qrImage)
+    ))
 }
 
 const createOfficialPortrait = async (file) => {
@@ -795,7 +902,7 @@ const normalizeCertificatePreviewSignatory = (page) => {
 const positionCertificateHeaderLogos = (page, positions) => {
   const header = page.querySelector('header')
   const images = Array.from(header?.querySelectorAll('img') || [])
-  if (!header) return
+  if (!header || !images.length || !positions.length) return
   header.style.position = 'relative'
   header.style.width = '100%'
   Array.from(header.querySelectorAll('p'))
@@ -807,7 +914,6 @@ const positionCertificateHeaderLogos = (page, positions) => {
       paragraph.style.boxSizing = 'border-box'
       paragraph.style.whiteSpace = 'nowrap'
     })
-  if (images.length !== positions.length || !positions.length) return
   const pagePaddingLeft = Number.parseFloat(window.getComputedStyle(page).paddingLeft) || 0
   const pagePaddingTop = Number.parseFloat(window.getComputedStyle(page).paddingTop) || 0
   const logoPositions = positions.filter((position) => !position.isWatermark)
@@ -821,7 +927,13 @@ const positionCertificateHeaderLogos = (page, positions) => {
     : 0
 
   images.forEach((image, index) => {
-    const position = positions[index]
+    const imageDescription = `${image.alt || ''} ${image.title || ''} ${image.parentElement?.getAttribute('title') || ''}`
+      .trim()
+      .toLocaleLowerCase()
+    const position = positions.find((candidate) => (
+      candidate.description && imageDescription.includes(candidate.description.toLocaleLowerCase())
+    )) || positions[index]
+    if (!position) return
     const anchor = image.parentElement
     if (!anchor) return
     if (position.isWatermark) {
@@ -880,11 +992,13 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
     const page = previewContainer.current?.querySelector('section.certificate-docx')
     const container = scrollContainer.current
     if (!page || !container || !container.clientWidth || !container.clientHeight) return
-    const fitScale = Math.min(
-      2,
-      (container.clientWidth - 40) / page.offsetWidth,
-      (container.clientHeight - 36) / page.offsetHeight,
-    )
+    const fitScale = window.matchMedia('(max-width: 720px)').matches
+      ? Math.min(1, (container.clientWidth - 20) / page.offsetWidth)
+      : Math.min(
+        2,
+        (container.clientWidth - 40) / page.offsetWidth,
+        (container.clientHeight - 36) / page.offsetHeight,
+      )
     setZoom(Math.max(25, Math.floor(fitScale * 100)))
   }, [])
 
@@ -913,9 +1027,7 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
         if (!isCurrent) return
         wrapLongCertificateUnderlines(previewContainer.current)
         previewContainer.current?.querySelectorAll('section.certificate-docx').forEach((page) => {
-          if (!shouldPreserveCertificateSourceLayout(document)) {
-            positionCertificateHeaderLogos(page, headerPositions)
-          }
+          positionCertificateHeaderLogos(page, headerPositions)
           positionLargeCertificateBodyImages(page)
           if (!shouldPreserveCertificateSourceLayout(document)) {
             normalizeCertificatePreviewSignatory(page)
@@ -1182,11 +1294,13 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
     const pageHeight = pageSizeRef.current?.height || page.offsetHeight
     if (!pageWidth || !pageHeight || !container.clientWidth || !container.clientHeight) return
     pageSizeRef.current = { width: pageWidth, height: pageHeight }
-    const fitScale = Math.min(
-      1,
-      (container.clientWidth - 40) / pageWidth,
-      (container.clientHeight - 36) / pageHeight,
-    )
+    const fitScale = window.matchMedia('(max-width: 720px)').matches
+      ? Math.min(1, (container.clientWidth - 20) / pageWidth)
+      : Math.min(
+        1,
+        (container.clientWidth - 40) / pageWidth,
+        (container.clientHeight - 36) / pageHeight,
+      )
     setZoom(Math.max(25, Math.floor(fitScale * 100)))
   }, [])
 
@@ -1232,9 +1346,7 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
             fixedHeader.setAttribute('contenteditable', 'false')
             fixedHeader.setAttribute('aria-readonly', 'true')
           }
-          if (!shouldPreserveCertificateSourceLayout(document)) {
-            positionCertificateHeaderLogos(page, headerPositions)
-          }
+          positionCertificateHeaderLogos(page, headerPositions)
           positionLargeCertificateBodyImages(page)
           if (!shouldPreserveCertificateSourceLayout(document)) {
             normalizeCertificatePreviewSignatory(page)
@@ -2285,14 +2397,107 @@ const getPersistedRecordTimestamp = (record) => {
     record?.reviewedAt,
     record?.paymentSubmittedAt,
     record?.submittedAt,
+    record?.requestedAt,
+    record?.paymentDraftedAt,
     ...(Array.isArray(record?.statusHistory)
-      ? record.statusHistory.map((entry) => entry?.createdAt || entry?.timestamp)
+      ? record.statusHistory.map((entry) => entry?.changedAt || entry?.createdAt || entry?.timestamp)
       : []),
   ]
   return timestamps.reduce((latest, value) => {
     const timestamp = Date.parse(value || '')
     return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest
   }, 0)
+}
+
+const uniqueResidentRequestsById = (requests) => {
+  const requestsById = new Map()
+  const requestsWithoutId = []
+
+  requests.forEach((request) => {
+    if (!request || (typeof request.id !== 'string' && typeof request.id !== 'number')) {
+      requestsWithoutId.push(request)
+      return
+    }
+
+    const id = String(request.id)
+    const previous = requestsById.get(id)
+    if (!previous || getPersistedRecordTimestamp(request) >= getPersistedRecordTimestamp(previous)) {
+      requestsById.set(id, request)
+    }
+  })
+
+  return [...requestsById.values(), ...requestsWithoutId]
+}
+
+const getResidentRequestSubmissionTime = (request) => Date.parse(
+  request?.requestedAt
+    || request?.paymentDraftedAt
+    || request?.paymentSubmittedAt
+    || request?.submittedAt
+    || '',
+) || 0
+
+const getResidentRequestContentFingerprint = (request) => JSON.stringify([
+  normalizeResidentCode(request?.residentCode || request?.resident_code),
+  Array.isArray(request?.documents) ? [...request.documents].sort() : [],
+  request?.copyCount ?? 1,
+  request?.details || {},
+  request?.requirements || [],
+])
+
+const resolveResidentRequestIdCollisions = (requests, remoteRequests) => {
+  const requestsById = new Map()
+  requests.forEach((request) => {
+    if (!request?.id) return
+    const group = requestsById.get(request.id) || []
+    group.push(request)
+    requestsById.set(request.id, group)
+  })
+
+  const remappedSubmissions = new Map()
+  requestsById.forEach((idGroup, id) => {
+    const submissions = new Map()
+    idGroup.forEach((request) => {
+      const submittedAt = getResidentRequestSubmissionTime(request)
+      const submissionId = request.submissionId || request.id
+      const key = `${submissionId}:${submittedAt}`
+      const group = submissions.get(key) || []
+      group.push(request)
+      submissions.set(key, group)
+    })
+
+    if (submissions.size < 2) return
+
+    const submissionGroups = [...submissions.entries()].sort(([, first], [, second]) => (
+      getResidentRequestSubmissionTime(first[0]) - getResidentRequestSubmissionTime(second[0])
+    ))
+    const existingServerGroup = submissionGroups.find(([, group]) => remoteRequests.some((remote) => (
+      remote?.id === id
+      && getResidentRequestContentFingerprint(remote) === getResidentRequestContentFingerprint(group[0])
+    )))
+    const preservedGroupKey = existingServerGroup?.[0] || submissionGroups[0][0]
+
+    submissionGroups.forEach(([key, group]) => {
+      if (key === preservedGroupKey) return
+      const submittedAt = getResidentRequestSubmissionTime(group[0])
+      const originalSubmissionId = group[0].submissionId || id
+      remappedSubmissions.set(key, {
+        idSuffix: submittedAt || group[0].id,
+        submissionId: `${originalSubmissionId}-R${submittedAt || group[0].id}`,
+      })
+    })
+  })
+
+  const resolvedRequests = requests.map((request) => {
+    const submittedAt = getResidentRequestSubmissionTime(request)
+    const submissionId = request?.submissionId || request?.id
+    const remapping = remappedSubmissions.get(`${submissionId}:${submittedAt}`)
+    return remapping
+      ? { ...request, id: `${request.id}-R${remapping.idSuffix}`, submissionId: remapping.submissionId }
+      : request
+  })
+
+  return uniqueResidentRequestsById(resolvedRequests)
 }
 
 const mergePersistedRecordLists = (databaseRecords, browserRecords, label) => {
@@ -2810,6 +3015,19 @@ const residentRecordMatchesAccount = (record, resident) => {
   return recordCode
     ? recordCode === currentCode
     : residentNameMatches(registeredName, resident, record.data || record)
+}
+
+const mergeResidentSyncRecords = (currentRecords, remoteRecords, resident, archivedIds = new Set()) => {
+  const uniqueRemoteRecords = uniqueResidentRequestsById(remoteRecords)
+  const remoteIds = new Set(uniqueRemoteRecords.map((record) => record?.id).filter(Boolean))
+  const remoteOwned = uniqueRemoteRecords.filter((record) => !archivedIds.has(record?.id))
+  const localOnlyOwned = currentRecords.filter((record) => (
+    residentRecordMatchesAccount(record, resident)
+    && !remoteIds.has(record?.id)
+    && !archivedIds.has(record?.id)
+  ))
+  const otherResidents = currentRecords.filter((record) => !residentRecordMatchesAccount(record, resident))
+  return uniqueResidentRequestsById([...remoteOwned, ...localOnlyOwned, ...otherResidents])
 }
 
 const residentStatusLabels = {
@@ -3550,6 +3768,8 @@ function RequirementPhotoUpload({ requirement, selectedDocuments, currentRequest
 }
 
 function GcashTransferInstructions({ amount, recipients }) {
+  const [qrRecipient, setQrRecipient] = useState(null)
+
   return (
     <section className="resident-gcash-transfer-details" aria-label="GCash transfer details">
       <div><strong>Send with GCash</strong><span>Send the exact selected total of ₱{Number(amount || 0).toFixed(2)} and verify the recipient name in GCash before confirming.</span></div>
@@ -3557,13 +3777,107 @@ function GcashTransferInstructions({ amount, recipients }) {
         <article key={recipient.id}>
           <span>GCash recipient</span>
           <strong>{recipient.displayName}</strong>
-          <b>{recipient.mobileNumber}</b>
+          <div className="resident-gcash-recipient-number">
+            <b>{recipient.mobileNumber}</b>
+            {recipient.qrImage?.dataUrl && <button
+              type="button"
+              className="resident-gcash-qr-button"
+              aria-label={`View GCash QR for ${recipient.displayName}`}
+              onClick={() => setQrRecipient(recipient)}
+            >
+              <img src={recipient.qrImage.dataUrl} alt="" />
+              <span>View QR</span>
+            </button>}
+          </div>
         </article>
       ))}
       {!recipients.length && <p>GCash payment details are not configured. Please contact the Barangay Hall before sending payment.</p>}
-      <a className="resident-gcash-open-button" href="https://gcash.com/" target="_blank" rel="noopener noreferrer">Open GCash <span aria-hidden="true">↗</span></a>
-      <p>Confirm the recipient and amount in GCash before sending. This link does not prefill a transfer or access your balance. Enter your OTP only in GCash. If your balance is insufficient, GCash will not complete the transfer. Return here afterward to submit the receipt or reference number.</p>
+      <p>Open GCash directly on your phone, then verify the recipient and amount before sending. Never share your PIN or OTP. Return here afterward to submit the receipt or reference number.</p>
+      {qrRecipient?.qrImage?.dataUrl && <div className="resident-gcash-qr-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setQrRecipient(null)
+      }}>
+        <section className="resident-gcash-qr-dialog" role="dialog" aria-modal="true" aria-labelledby="resident-gcash-qr-title" onKeyDown={(event) => {
+          if (event.key === 'Escape') setQrRecipient(null)
+        }}>
+          <header>
+            <div><span className="section-number">GCASH RECIPIENT</span><h3 id="resident-gcash-qr-title">{qrRecipient.displayName}</h3><p>{qrRecipient.mobileNumber}</p></div>
+            <button type="button" aria-label="Close GCash QR" autoFocus onClick={() => setQrRecipient(null)}>×</button>
+          </header>
+          <img src={qrRecipient.qrImage.dataUrl} alt={`GCash QR code for ${qrRecipient.displayName}`} />
+        </section>
+      </div>}
     </section>
+  )
+}
+
+function TableSearch({ label, children }) {
+  const tableRegionRef = useRef(null)
+  const searchStatusRef = useRef(null)
+  const emptyStateRef = useRef(null)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+
+  useEffect(() => {
+    const table = tableRegionRef.current?.querySelector('table')
+    const rows = Array.from(table?.tBodies[0]?.rows || [])
+    let visibleRows = 0
+
+    rows.forEach((row) => {
+      if (row.classList.contains('registration-detail-row')) {
+        row.hidden = normalizedQuery.length > 0 && Boolean(row.previousElementSibling?.hidden)
+        return
+      }
+
+      const emptyStateRow = row.children.length === 1
+        && row.firstElementChild?.matches('td[colspan]')
+      const matches = !normalizedQuery
+        || (!emptyStateRow && row.textContent.toLocaleLowerCase().includes(normalizedQuery))
+      row.hidden = !matches
+      if (matches && !emptyStateRow) visibleRows += 1
+    })
+
+    if (searchStatusRef.current) {
+      searchStatusRef.current.textContent = `${visibleRows} results`
+    }
+    if (emptyStateRef.current) {
+      emptyStateRef.current.hidden = !normalizedQuery || visibleRows > 0
+    }
+  }, [children, normalizedQuery])
+
+  const toggleSearch = () => {
+    if (searchOpen) setQuery('')
+    setSearchOpen((open) => !open)
+  }
+
+  return (
+    <div className="table-search-group">
+      <div className="table-search-toolbar">
+        <button
+          type="button"
+          className="table-search-toggle"
+          aria-label={`${searchOpen ? 'Close' : 'Open'} search for ${label}`}
+          aria-expanded={searchOpen}
+          onClick={toggleSearch}
+        >
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="10.8" cy="10.8" r="6.8" />
+            <path d="m16 16 4.5 4.5" />
+          </svg>
+        </button>
+        {searchOpen && <input
+          type="search"
+          autoFocus
+          aria-label={`Search ${label}`}
+          placeholder={`Search ${label}`}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />}
+        {searchOpen && normalizedQuery && <span ref={searchStatusRef} className="table-search-count" aria-live="polite" />}
+      </div>
+      <div className="table-search-content" ref={tableRegionRef}>{children}</div>
+      {searchOpen && normalizedQuery && <p ref={emptyStateRef} className="table-search-empty" role="status" hidden>No {label} match this search.</p>}
+    </div>
   )
 }
 
@@ -3578,9 +3892,12 @@ function PaymentWorkflowTabs({ activeView, onSelect }) {
 
 function App() {
   const welcomePageRef = useRef(null)
+  const adminContentRef = useRef(null)
   const skipNextDatabaseSaveRef = useRef(false)
   const databaseSaveQueueRef = useRef(Promise.resolve())
   const databaseRecordsRef = useRef(null)
+  const publicCommunityEtagRef = useRef('')
+  const databaseEtagRef = useRef('')
   const [selectedRole, setSelectedRole] = useState('')
   const [hasStarted, setHasStarted] = useState(false)
   const [showOfficials, setShowOfficials] = useState(false)
@@ -3592,6 +3909,7 @@ function App() {
   const [cancellationGcashNumber, setCancellationGcashNumber] = useState('')
   const [cancellationGcashError, setCancellationGcashError] = useState('')
   const [residentDashboardSection, setResidentDashboardSection] = useState('community')
+  const [residentMobileMenuOpen, setResidentMobileMenuOpen] = useState(false)
   const [residentCommunityTab, setResidentCommunityTab] = useState('announcements')
   const [residentDraftsCorrectionsTab, setResidentDraftsCorrectionsTab] = useState('drafts')
   const [residentDocumentGuideOpen, setResidentDocumentGuideOpen] = useState(false)
@@ -3686,7 +4004,7 @@ function App() {
   })
   const [registrationFiles, setRegistrationFiles] = useState({ validId: null, proofOfResidence: null })
   const [residentName, setResidentName] = useState({ firstName: '', middleName: '', lastName: '', suffix: '', code: '' })
-  const [, setResidentToken] = useState('')
+  const [residentToken, setResidentToken] = useState('')
   const [, setAuthenticatedResidentProfile] = useState(null)
   const [selectedDocuments, setSelectedDocuments] = useState([])
   const [residentStatus, setResidentStatus] = useState('')
@@ -3699,9 +4017,12 @@ function App() {
   const [showOfficialDashboard, setShowOfficialDashboard] = useState(false)
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
-  const [databaseReconnectAvailable, setDatabaseReconnectAvailable] = useState(false)
+  const [isPublicCommunityConnected, setIsPublicCommunityConnected] = useState(false)
+  const [isResidentDatabaseConnected, setIsResidentDatabaseConnected] = useState(false)
+  const [residentDatabaseSyncError, setResidentDatabaseSyncError] = useState('')
   const [databaseSaveStatus, setDatabaseSaveStatus] = useState('checking')
   const [databaseSaveError, setDatabaseSaveError] = useState('')
+  const [databaseLoadVersion, setDatabaseLoadVersion] = useState(0)
   const [residentRequests, setResidentRequests] = useState(() => {
     const storedRequests = loadResidentRequests()
     const storedHistory = readStoredList(residentHistoryStorageKey, [])
@@ -3742,9 +4063,15 @@ function App() {
   })
   const residentRequestsRef = useRef(residentRequests)
   const residentHistoryRef = useRef(residentHistory)
+  const residentRequestSyncSnapshotRef = useRef(new Map())
   const residentRequestSaveQueueRef = useRef(Promise.resolve())
   const residentRequestSavePendingRef = useRef(0)
   const residentRequestSyncPauseUntilRef = useRef(0)
+  const resetResidentSyncConnection = () => {
+    residentRequestSyncSnapshotRef.current = new Map()
+    setIsResidentDatabaseConnected(false)
+    setResidentDatabaseSyncError('')
+  }
   useEffect(() => {
     residentRequestsRef.current = residentRequests
   }, [residentRequests])
@@ -3839,7 +4166,17 @@ function App() {
     })
     return () => window.cancelAnimationFrame(frame)
   }, [isCustomTemplateFormOpen])
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 720)
+  useEffect(() => {
+    const mobileNavigationQuery = window.matchMedia('(max-width: 720px)')
+    const updateSidebarForViewport = (event) => setSidebarOpen(!event.matches)
+    if (mobileNavigationQuery.addEventListener) {
+      mobileNavigationQuery.addEventListener('change', updateSidebarForViewport)
+      return () => mobileNavigationQuery.removeEventListener('change', updateSidebarForViewport)
+    }
+    mobileNavigationQuery.addListener(updateSidebarForViewport)
+    return () => mobileNavigationQuery.removeListener(updateSidebarForViewport)
+  }, [])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [darkMode, setDarkMode] = useState(() => loadAdminPreferences().darkMode)
@@ -3856,10 +4193,13 @@ function App() {
       return undefined
     }
     const controller = new AbortController()
+    let requestPending = false
     const loadInvitations = async () => {
+      if (document.visibilityState !== 'visible' || requestPending) return
+      requestPending = true
       setIsLoadingAdminInvitations(true)
       try {
-        const response = await fetch(`${BACKEND_API_URL}/admin-invitations.php`, {
+        const response = await fetchWithTimeout(`${BACKEND_API_URL}/admin-invitations.php`, {
           cache: 'no-store',
           headers: { Authorization: `Bearer ${officialBackendToken}` },
           signal: controller.signal,
@@ -3876,13 +4216,23 @@ function App() {
           setAdminInvitationError(error.message || 'Admin invitations could not be loaded.')
         }
       } finally {
+        requestPending = false
         if (!controller.signal.aborted) setIsLoadingAdminInvitations(false)
       }
     }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') loadInvitations()
+    }
     loadInvitations()
-    const refreshTimer = window.setInterval(loadInvitations, 30000)
+    const refreshTimer = window.setInterval(loadInvitations, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', loadInvitations)
+    window.addEventListener('online', loadInvitations)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', loadInvitations)
+      window.removeEventListener('online', loadInvitations)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
   }, [adminView, isStorageLoaded, officialBackendToken, showOfficialDashboard])
@@ -3893,7 +4243,9 @@ function App() {
   const [residentAccountMessage, setResidentAccountMessage] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
   const [passwordFields, setPasswordFields] = useState({ current: '', next: '', confirm: '' })
-  const [adminPassword, setAdminPassword] = useState(import.meta.env.VITE_ADMIN_PASSWORD || '')
+  const [adminPassword, setAdminPassword] = useState(
+    import.meta.env.DEV ? import.meta.env.VITE_ADMIN_PASSWORD || '' : '',
+  )
   const [officialCredentials, setOfficialCredentials] = useState({ username: '', password: '' })
   const [loginStatus, setLoginStatus] = useState('')
   const [showReview, setShowReview] = useState(false)
@@ -3932,6 +4284,7 @@ function App() {
   const [gcashRecipients, setGcashRecipients] = useState(() => readStoredList(gcashRecipientsStorageKey, initialGcashRecipients))
   const [gcashRecipientEditor, setGcashRecipientEditor] = useState(null)
   const [gcashRecipientError, setGcashRecipientError] = useState('')
+  const [gcashQrUploadLoading, setGcashQrUploadLoading] = useState(false)
   const gcashRecipientsRef = useRef(gcashRecipients)
   useEffect(() => {
     gcashRecipientsRef.current = gcashRecipients
@@ -4015,26 +4368,22 @@ function App() {
       'official photos',
       normalizeOfficialPhotoMap,
     )
-    if (receivedRemoteChanges) skipNextDatabaseSaveRef.current = true
+    if (receivedRemoteChanges && isDatabaseConnected) skipNextDatabaseSaveRef.current = true
     setCommunityUpdatesError('')
-  }, [])
+  }, [isDatabaseConnected])
   const applySharedGcashRecipients = useCallback((data) => {
     if (!Object.prototype.hasOwnProperty.call(data, gcashRecipientsStorageKey)) return
     const recipients = data[gcashRecipientsStorageKey]
-    if (!Array.isArray(recipients) || !recipients.every((recipient) => (
-      recipient && typeof recipient.id === 'string'
-      && typeof recipient.displayName === 'string'
-      && typeof recipient.mobileNumber === 'string'
-    ))) {
+    if (!isValidGcashRecipientList(recipients)) {
       throw new Error('Saved GCash recipients must be a list of named phone numbers.')
     }
     const serializedRecipients = JSON.stringify(recipients)
     if (JSON.stringify(gcashRecipientsRef.current) === serializedRecipients) return
     window.localStorage.setItem(gcashRecipientsStorageKey, serializedRecipients)
-    skipNextDatabaseSaveRef.current = true
+    if (isDatabaseConnected) skipNextDatabaseSaveRef.current = true
     gcashRecipientsRef.current = recipients
     setGcashRecipients(recipients)
-  }, [])
+  }, [isDatabaseConnected])
   const applySharedCertificateCatalog = useCallback((data) => {
     let receivedRemoteChanges = false
     const refreshRecord = (key, currentValue, setValue, isValid, label) => {
@@ -4101,8 +4450,81 @@ function App() {
         && Object.values(value).every((fee) => Number.isFinite(Number(fee)) && Number(fee) >= 0)),
       'certificate document fees',
     )
-    if (receivedRemoteChanges) skipNextDatabaseSaveRef.current = true
-  }, [])
+    if (receivedRemoteChanges && isDatabaseConnected) skipNextDatabaseSaveRef.current = true
+  }, [isDatabaseConnected])
+  const applySharedAdminSearchRecords = useCallback((data) => {
+    const currentDatabaseRecords = databaseRecordsRef.current
+    if (!currentDatabaseRecords) return
+
+    let nextDatabaseRecords = currentDatabaseRecords
+    const refreshList = (key, currentValue, setValue, label, normalize = (value) => value, allowLocalMerge = false) => {
+      if (!Object.prototype.hasOwnProperty.call(data, key)) return
+      const remoteValue = data[key]
+      if (!Array.isArray(remoteValue)) throw new Error(`Saved ${label} must be a list.`)
+
+      const baseline = currentDatabaseRecords[key]
+      if (!allowLocalMerge && JSON.stringify(currentValue) !== JSON.stringify(baseline)) return
+
+      const nextValue = normalize(remoteValue)
+      if (JSON.stringify(currentValue) !== JSON.stringify(nextValue)) setValue(nextValue)
+      nextDatabaseRecords = { ...nextDatabaseRecords, [key]: nextValue }
+    }
+
+    refreshList(
+      residentCodeRecoveryRequestsStorageKey,
+      residentCodeRecoveryRequests,
+      setResidentCodeRecoveryRequests,
+      'resident code recovery requests',
+    )
+    refreshList(
+      residentProfileUpdateRequestsStorageKey,
+      residentProfileUpdateRequests,
+      setResidentProfileUpdateRequests,
+      'resident profile update requests',
+    )
+    refreshList(
+      residentRecordsStorageKey,
+      adminResidents,
+      setAdminResidents,
+      'resident records',
+      (records) => {
+        const recoveryRequests = Array.isArray(data[residentCodeRecoveryRequestsStorageKey])
+          ? data[residentCodeRecoveryRequestsStorageKey]
+          : residentCodeRecoveryRequests
+        const reconciledResidents = reconcileResidentCodeRotationRecords(records, recoveryRequests)
+        return deduplicateResidentRecordsByName(reconciledResidents).residents
+      },
+    )
+    refreshList(
+      registrationRequestsStorageKey,
+      registrationRequests,
+      setRegistrationRequests,
+      'registration requests',
+      (records) => mergeRegistrationRequestLists(records, registrationRequests),
+      true,
+    )
+    refreshList(
+      archivedResidentsStorageKey,
+      archivedResidents,
+      setArchivedResidents,
+      'archived residents',
+    )
+    refreshList(
+      issuedDocumentsStorageKey,
+      issuedDocuments,
+      setIssuedDocuments,
+      'issued documents',
+    )
+
+    databaseRecordsRef.current = nextDatabaseRecords
+  }, [
+    adminResidents,
+    archivedResidents,
+    issuedDocuments,
+    registrationRequests,
+    residentCodeRecoveryRequests,
+    residentProfileUpdateRequests,
+  ])
   const [communityUpdateForm, setCommunityUpdateForm] = useState({ type: 'announcement', title: '', location: '', startTime: '', endTime: '', description: '', date: '' })
   const [communityUpdateTimeError, setCommunityUpdateTimeError] = useState('')
   const [communityUpdateImage, setCommunityUpdateImage] = useState(null)
@@ -4244,6 +4666,10 @@ function App() {
     return () => window.cancelAnimationFrame(frame)
   }, [adminView, showOfficialDashboard])
 
+  useEffect(() => {
+    if (adminContentRef.current) adminContentRef.current.scrollTop = 0
+  }, [adminView, showOfficialDashboard])
+
   const registrationInboxRequests = registrationRequests.filter((request) => {
     const requestName = request.data
       ? [request.data.firstName, request.data.middleName, request.data.lastName].filter(Boolean).join(' ')
@@ -4254,43 +4680,71 @@ function App() {
   })
 
   useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
     const loadDatabaseData = async () => {
+      if (officialBackendToken) {
+        setDatabaseSaveStatus('checking')
+        setDatabaseSaveError('')
+      }
       const browserResidentRecords = {}
-      await Promise.all(residentLocalRecordKeys.map(async (key) => {
-        const fallback = key === residentRequestsStorageKey ? initialRequests : []
+      let localRegistrations = []
+      let localOfficialPhotos = {}
+      if (!officialBackendToken) {
+        await Promise.all(residentLocalRecordKeys.map(async (key) => {
+          const fallback = key === residentRequestsStorageKey ? initialRequests : []
+          try {
+            const records = await loadLocalResidentRecord(key, fallback)
+            if (!Array.isArray(records)) throw new Error(`Saved ${key} must be a list.`)
+            browserResidentRecords[key] = records
+          } catch (error) {
+            console.error(`Unable to restore ${key} from browser storage.`, error)
+            browserResidentRecords[key] = readStoredList(key, fallback)
+          }
+        }))
+        localRegistrations = readStoredList(registrationRequestsStorageKey, [])
+        localOfficialPhotos = readStoredImageMap(officialPhotosStorageKey)
         try {
-          const records = await loadLocalResidentRecord(key, fallback)
-          if (!Array.isArray(records)) throw new Error(`Saved ${key} must be a list.`)
-          browserResidentRecords[key] = records
+          localRegistrations = await loadLocalRegistrationRequests()
         } catch (error) {
-          console.error(`Unable to restore ${key} from browser storage.`, error)
-          browserResidentRecords[key] = readStoredList(key, fallback)
+          console.error('Unable to restore registration requests from local browser storage.', error)
         }
-      }))
-      let localRegistrations = readStoredList(registrationRequestsStorageKey, [])
-      let localOfficialPhotos = readStoredImageMap(officialPhotosStorageKey)
-      try {
-        localRegistrations = await loadLocalRegistrationRequests()
-      } catch (error) {
-        console.error('Unable to restore registration requests from local browser storage.', error)
+        try {
+          localOfficialPhotos = await loadLocalOfficialPhotos()
+        } catch (error) {
+          console.error('Unable to restore official photos from local browser storage.', error)
+        }
       }
-      try {
-        localOfficialPhotos = await loadLocalOfficialPhotos()
-      } catch (error) {
-        console.error('Unable to restore official photos from local browser storage.', error)
+      if (cancelled) return
+      if (!officialBackendToken) {
+        setRegistrationRequests(localRegistrations)
+        setOfficialPhotos(localOfficialPhotos)
       }
-      setRegistrationRequests(localRegistrations)
-      setOfficialPhotos(localOfficialPhotos)
 
       try {
-        const response = await fetch(API_URL)
-        if (!response.ok) throw new Error(`Database request failed with status ${response.status}.`)
-
-        const result = await response.json()
+        const response = await fetchWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+          method: 'GET',
+          cache: 'no-store',
+          ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
+          signal: controller.signal,
+        })
+        if (cancelled) return
+        const result = await readJsonResponse(response, 'Database request')
+        if (!response.ok) {
+          if (officialBackendToken && response.status === 401) {
+            setOfficialBackendToken('')
+            setIsDatabaseConnected(false)
+            setShowOfficialDashboard(false)
+            setShowOfficialLogin(true)
+            setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
+          }
+          throw new Error(result?.message || `Database request failed with status ${response.status}.`)
+        }
 
         if (!result.success) {
           throw new Error('Unable to load database records.')
         }
+        if (officialBackendToken) databaseEtagRef.current = response.headers.get('ETag') || ''
 
         const data = result.data || {}
 
@@ -4298,6 +4752,8 @@ function App() {
           if (Object.prototype.hasOwnProperty.call(data, key)) {
             return data[key]
           }
+
+          if (officialBackendToken) return fallback
 
           const localData = window.localStorage.getItem(key)
 
@@ -4313,6 +4769,9 @@ function App() {
         }
         const loadMergedList = (key, fallback, label) => {
           const databaseRecords = loadValue(key, fallback)
+          if (officialBackendToken) {
+            return mergePersistedRecordLists(databaseRecords, [], label)
+          }
           const browserRecords = Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
             ? browserResidentRecords[key]
             : readStoredList(key, [])
@@ -4404,7 +4863,7 @@ function App() {
           throw new Error('Saved registration requests must be a list.')
         }
         const registrations = migrateInitialResidentsToRegistrationHistory(
-          mergeRegistrationRequestLists(remoteRegistrations, localRegistrations),
+          mergeRegistrationRequestLists(remoteRegistrations, officialBackendToken ? [] : localRegistrations),
           residents,
         )
         const profileUpdates = loadMergedList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
@@ -4412,15 +4871,11 @@ function App() {
         const photos = normalizeOfficialPhotoMap(
           Object.prototype.hasOwnProperty.call(data, officialPhotosStorageKey)
             ? data[officialPhotosStorageKey]
-            : localOfficialPhotos,
+            : officialBackendToken ? {} : localOfficialPhotos,
         )
         if (!photos) throw new Error('Saved official photos must be an image map or a legacy list of photo strings.')
         const recipients = loadValue(gcashRecipientsStorageKey, initialGcashRecipients)
-        if (!Array.isArray(recipients) || !recipients.every((recipient) => (
-          recipient && typeof recipient.id === 'string'
-          && typeof recipient.displayName === 'string'
-          && typeof recipient.mobileNumber === 'string'
-        ))) {
+        if (!isValidGcashRecipientList(recipients)) {
           throw new Error('Saved GCash recipients must be a list of named phone numbers.')
         }
         const savedFees = loadValue(documentFeesStorageKey, initialDocumentFees)
@@ -4496,7 +4951,9 @@ function App() {
             || JSON.stringify(data[key]) !== JSON.stringify(value)
           )),
         )
-        if (Object.keys(recoveredRecords).length) await saveDatabaseRecords(recoveredRecords)
+        if (officialBackendToken && Object.keys(recoveredRecords).length) {
+          await saveDatabaseRecords(recoveredRecords, officialBackendToken)
+        }
         databaseRecordsRef.current = records
         try {
           window.localStorage.setItem(residentRequestDeletionsStorageKey, JSON.stringify(deletedRequestIds))
@@ -4505,12 +4962,16 @@ function App() {
         }
 
         setDatabaseSaveError('')
-        setDatabaseSaveStatus('saved')
-        setDatabaseReconnectAvailable(false)
-        setIsDatabaseConnected(true)
-        console.log('Barangay records loaded from database.')
+        setDatabaseSaveStatus(officialBackendToken ? 'saved' : 'offline')
+        setIsDatabaseConnected(Boolean(officialBackendToken))
+        setIsPublicCommunityConnected(true)
+        console.log(officialBackendToken
+          ? 'Barangay records loaded from database.'
+          : 'Public community records loaded from database.')
       } catch (error) {
+        if (cancelled) return
         console.error('Database loading error:', error)
+        setIsPublicCommunityConnected(false)
         const localTemplates = readStoredList(certificateTemplatesStorageKey, [])
         const localRequests = splitMultiDocumentRequests(
           (browserResidentRecords[residentRequestsStorageKey] || loadResidentRequests()).map(withRequestStatusHistory),
@@ -4529,25 +4990,29 @@ function App() {
         setResidentDrafts(browserResidentRecords[residentDraftsStorageKey] || [])
         setDatabaseSaveError(error.message || 'The database could not be loaded.')
         setDatabaseSaveStatus('offline')
-        setDatabaseReconnectAvailable(false)
         setIsDatabaseConnected(false)
       } finally {
-        setIsStorageLoaded(true)
+        if (!cancelled) setIsStorageLoaded(true)
       }
     }
 
     loadDatabaseData()
-  }, [])
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [databaseLoadVersion, officialBackendToken])
 
   useEffect(() => {
     if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshBackendRegistrations = async () => {
+      if (document.visibilityState !== 'visible') return
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(`${BACKEND_API_URL}/pending-registrations.php`, {
+        const response = await fetchWithTimeout(`${BACKEND_API_URL}/pending-registrations.php`, {
           cache: 'no-store',
           headers: { Authorization: `Bearer ${officialBackendToken}` },
           signal: controller.signal,
@@ -4573,31 +5038,59 @@ function App() {
       }
     }
 
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshBackendRegistrations()
+    }
     refreshBackendRegistrations()
-    const refreshTimer = window.setInterval(refreshBackendRegistrations, 15000)
+    const refreshTimer = window.setInterval(refreshBackendRegistrations, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', refreshBackendRegistrations)
+    window.addEventListener('online', refreshBackendRegistrations)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', refreshBackendRegistrations)
+      window.removeEventListener('online', refreshBackendRegistrations)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
   }, [isStorageLoaded, officialBackendToken, showOfficialDashboard])
 
   useEffect(() => {
-    if (!isStorageLoaded || isDatabaseConnected) return undefined
+    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const retryDatabaseConnection = async () => {
+      if (document.visibilityState !== 'visible') return
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(API_URL, { cache: 'no-store', signal: controller.signal })
+        const response = await fetchWithTimeout(API_URL, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${officialBackendToken}` },
+          signal: controller.signal,
+        })
+        if (response.status === 401) {
+          setOfficialBackendToken('')
+          setIsDatabaseConnected(false)
+          setShowOfficialDashboard(false)
+          setShowOfficialLogin(true)
+          setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
+          return
+        }
         if (!response.ok) throw new Error(`Database reconnection failed with status ${response.status}.`)
         const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
           throw new Error('The server returned invalid database records during reconnection.')
         }
+        databaseEtagRef.current = response.headers.get('ETag') || ''
 
-        setDatabaseReconnectAvailable(true)
-        setDatabaseSaveError('')
+        if (databaseRecordsRef.current) {
+          setDatabaseSaveError('')
+          setIsDatabaseConnected(true)
+        } else {
+          setDatabaseSaveStatus('checking')
+          setDatabaseLoadVersion((version) => version + 1)
+        }
       } catch (error) {
         if (error.name !== 'AbortError') {
           console.error('Unable to reconnect to the application database.', error)
@@ -4607,13 +5100,22 @@ function App() {
       }
     }
 
+    const retryWhenVisible = () => {
+      if (document.visibilityState === 'visible') retryDatabaseConnection()
+    }
     retryDatabaseConnection()
-    const retryTimer = window.setInterval(retryDatabaseConnection, 15000)
+    const retryTimer = window.setInterval(retryDatabaseConnection, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', retryDatabaseConnection)
+    window.addEventListener('online', retryDatabaseConnection)
+    document.addEventListener('visibilitychange', retryWhenVisible)
     return () => {
       window.clearInterval(retryTimer)
+      window.removeEventListener('focus', retryDatabaseConnection)
+      window.removeEventListener('online', retryDatabaseConnection)
+      document.removeEventListener('visibilitychange', retryWhenVisible)
       controller.abort()
     }
-  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected])
+  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, officialBackendToken])
 
   const archivedDocumentRequests = residentHistory
     .filter((entry) => entry.type === 'documentRequest' && entry.request)
@@ -4996,9 +5498,19 @@ function App() {
   const documentInboxRequests = residentRequests.filter(isRequestSubmittedToAdmin)
   const pendingRegistrationRequests = registrationRequests.filter((request) => request.status === 'Pending')
   const registrationHistoryRequests = registrationRequests.filter((request) => request.status !== 'Pending')
-  const filteredPendingRegistrationRequests = pendingRegistrationRequests.filter((request) => (
-    `${request.name || ''} ${request.id || ''} ${request.address || ''}`.toLowerCase().includes(registrationQueueSearch.trim().toLowerCase())
-  ))
+  const registrationSearchQuery = registrationQueueSearch.trim().toLowerCase()
+  const filteredPendingRegistrationRequests = pendingRegistrationRequests.filter((request) => [
+    request.name,
+    request.fullName,
+    request.full_name,
+    request.id,
+    request.address,
+    request.assignedResidentCode,
+    request.data?.firstName,
+    request.data?.middleName,
+    request.data?.lastName,
+    request.data?.residentCode,
+  ].some((value) => String(value || '').toLowerCase().includes(registrationSearchQuery)))
   const pendingRegistrationCount = pendingRegistrationRequests.length
   const activeRegistrationReviewRequest = pendingRegistrationRequests.find((request) => request.id === expandedRegistrationId) || null
   const pendingRecoveryRequestCount = residentCodeRecoveryRequests.filter((request) => request.status === 'Pending').length
@@ -5347,17 +5859,41 @@ function App() {
     const matchesSearch = [
       request.id || '',
       request.resident || '',
+      request.name || '',
+      request.fullName || '',
+      request.full_name || '',
       request.residentCode || '',
+      request.resident_code || '',
       (request.documents || []).join(' '),
       request.status || '',
-    ].some((value) => value.toLowerCase().includes(historySearch.trim().toLowerCase()))
+    ].some((value) => String(value || '').toLowerCase().includes(historySearch.trim().toLowerCase()))
     return matchesStatus && matchesSearch
   })
   const residentRecordsQuery = residentRecordsSearch.trim().toLowerCase()
-  const filteredAdminResidents = adminResidents.filter((resident) => [resident.name, resident.address, resident.code]
-    .some((value) => (value || '').toLowerCase().includes(residentRecordsQuery)))
-  const filteredDeclinedRegistrationRequests = declinedRegistrationRequests.filter((request) => [request.id, request.name, request.address]
-    .some((value) => (value || '').toLowerCase().includes(residentRecordsQuery)))
+  const filteredAdminResidents = adminResidents.filter((resident) => [
+    resident.name,
+    resident.fullName,
+    resident.full_name,
+    resident.firstName,
+    resident.middleName,
+    resident.lastName,
+    resident.address,
+    resident.code,
+    resident.residentCode,
+    resident.resident_code,
+  ].some((value) => String(value || '').toLowerCase().includes(residentRecordsQuery)))
+  const filteredDeclinedRegistrationRequests = declinedRegistrationRequests.filter((request) => [
+    request.id,
+    request.name,
+    request.fullName,
+    request.full_name,
+    request.address,
+    request.assignedResidentCode,
+    request.data?.firstName,
+    request.data?.middleName,
+    request.data?.lastName,
+    request.data?.residentCode,
+  ].some((value) => String(value || '').toLowerCase().includes(residentRecordsQuery)))
   useEffect(() => {
     const syncCommunityUpdates = (event) => {
       if (event.key !== communityUpdatesStorageKey || !event.newValue) return
@@ -5446,35 +5982,98 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!isDatabaseConnected || (!showPublicSidebar && (!showResidentInboxPage || residentDashboardSection !== 'community'))) return undefined
+    if (!isStorageLoaded || (
+      !showPublicSidebar
+      && !showResidentInboxPage
+      && !showResidentCheck
+      && !residentToken
+    )) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshCommunityRecords = async () => {
+      if (document.visibilityState !== 'visible') return
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(API_URL, { cache: 'no-store', signal: controller.signal })
+        const response = await fetchWithTimeout(PUBLIC_COMMUNITY_API_URL, {
+          cache: 'no-store',
+          headers: publicCommunityEtagRef.current
+            ? { 'X-Public-Data-Match': publicCommunityEtagRef.current }
+            : {},
+          signal: controller.signal,
+        })
+        if (response.status === 304) {
+          setIsPublicCommunityConnected(true)
+          return
+        }
         if (!response.ok) throw new Error(`Community refresh failed with status ${response.status}.`)
         const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
           throw new Error('The server returned invalid community records.')
         }
 
+        publicCommunityEtagRef.current = response.headers.get('X-Public-Data-ETag') || ''
         applySharedCommunityRecords(result.data)
+        applySharedCertificateCatalog(result.data)
+        applySharedGcashRecipients(result.data)
+        if (Object.prototype.hasOwnProperty.call(result.data, barangayContactInformationStorageKey)) {
+          const contactInformation = normalizeBarangayContactInformation(result.data[barangayContactInformationStorageKey])
+          const currentMatchesDatabase = !isDatabaseConnected
+            || !databaseRecordsRef.current
+            || JSON.stringify(barangayContactInformation) === JSON.stringify(
+              databaseRecordsRef.current[barangayContactInformationStorageKey],
+            )
+          if (currentMatchesDatabase && JSON.stringify(barangayContactInformation) !== JSON.stringify(contactInformation)) {
+            try {
+              window.localStorage.setItem(barangayContactInformationStorageKey, JSON.stringify(contactInformation))
+            } catch (error) {
+              console.error('Unable to cache refreshed barangay contact information.', error)
+            }
+            if (isDatabaseConnected && databaseRecordsRef.current) {
+              databaseRecordsRef.current = {
+                ...databaseRecordsRef.current,
+                [barangayContactInformationStorageKey]: contactInformation,
+              }
+            }
+            setBarangayContactInformation(contactInformation)
+          }
+        }
+        setIsPublicCommunityConnected(true)
       } catch (error) {
         if (error.name === 'AbortError') return
+        setIsPublicCommunityConnected(false)
         console.error('Unable to refresh admin-managed announcements, events, and official details.', error)
       } finally {
         requestPending = false
       }
     }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshCommunityRecords()
+    }
     refreshCommunityRecords()
-    const refreshTimer = window.setInterval(refreshCommunityRecords, 15000)
+    const refreshTimer = window.setInterval(refreshCommunityRecords, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', refreshCommunityRecords)
+    window.addEventListener('online', refreshCommunityRecords)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', refreshCommunityRecords)
+      window.removeEventListener('online', refreshCommunityRecords)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [applySharedCommunityRecords, isDatabaseConnected, residentDashboardSection, showPublicSidebar, showResidentInboxPage])
+  }, [
+    applySharedCertificateCatalog,
+    applySharedCommunityRecords,
+    applySharedGcashRecipients,
+    barangayContactInformation,
+    isDatabaseConnected,
+    isStorageLoaded,
+    residentToken,
+    showPublicSidebar,
+    showResidentCheck,
+    showResidentInboxPage,
+  ])
 
   useEffect(() => {
     if (!isStorageLoaded) return
@@ -5528,14 +6127,19 @@ function App() {
   }, [isStorageLoaded, residentPaymentDrafts])
 
   useEffect(() => {
-    if (!isStorageLoaded || !isDatabaseConnected || !showResidentInboxPage) return undefined
+    if (!isStorageLoaded || !isDatabaseConnected || !officialBackendToken || !showResidentInboxPage) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshResidentRequests = async () => {
+      if (document.visibilityState !== 'visible') return
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(API_URL, { cache: 'no-store', signal: controller.signal })
+        const response = await fetchWithTimeout(API_URL, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${officialBackendToken}` },
+          signal: controller.signal,
+        })
         if (!response.ok) throw new Error(`Resident updates refresh failed with status ${response.status}.`)
         const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
@@ -5576,38 +6180,97 @@ function App() {
       }
     }
 
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshResidentRequests()
+    }
     refreshResidentRequests()
-    const refreshTimer = window.setInterval(refreshResidentRequests, 15000)
+    const refreshTimer = window.setInterval(refreshResidentRequests, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', refreshResidentRequests)
+    window.addEventListener('online', refreshResidentRequests)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', refreshResidentRequests)
+      window.removeEventListener('online', refreshResidentRequests)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [applySharedCertificateCatalog, applySharedGcashRecipients, customCertificateTemplates, isDatabaseConnected, isStorageLoaded, residentDashboardSection, showResidentInboxPage])
+  }, [applySharedCertificateCatalog, applySharedGcashRecipients, customCertificateTemplates, isDatabaseConnected, isStorageLoaded, officialBackendToken, residentDashboardSection, showResidentInboxPage])
 
   useEffect(() => {
-    if (!isStorageLoaded || !isDatabaseConnected || !showOfficialDashboard) return undefined
+    if (!isStorageLoaded || !isDatabaseConnected || !showOfficialDashboard || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshAdminRequests = async () => {
+      if (document.visibilityState !== 'visible') return
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(API_URL, { cache: 'no-store', signal: controller.signal })
+        const response = await fetchWithTimeout(API_URL, {
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${officialBackendToken}`,
+            ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
+          },
+          signal: controller.signal,
+        })
+        if (response.status === 304) return
+        if (response.status === 401) {
+          setOfficialBackendToken('')
+          setIsDatabaseConnected(false)
+          setShowOfficialDashboard(false)
+          setShowOfficialLogin(true)
+          setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
+          return
+        }
         if (!response.ok) throw new Error(`Admin request refresh failed with status ${response.status}.`)
         const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
           throw new Error('The server returned invalid admin request records.')
         }
+        databaseEtagRef.current = response.headers.get('ETag') || ''
+        applySharedCommunityRecords(result.data)
+        applySharedCertificateCatalog(result.data)
         applySharedGcashRecipients(result.data)
+        applySharedAdminSearchRecords(result.data)
         const remoteRequests = result.data[residentRequestsStorageKey]
+        let nextRequests = residentRequestsRef.current
         if (remoteRequests !== undefined) {
           if (!Array.isArray(remoteRequests)) throw new Error('Saved resident requests must be a list.')
           if (residentRequestSavePendingRef.current === 0 && Date.now() >= residentRequestSyncPauseUntilRef.current) {
-            const nextRequests = splitMultiDocumentRequests(remoteRequests.map(withRequestStatusHistory), customCertificateTemplates)
-            if (JSON.stringify(residentRequestsRef.current) !== JSON.stringify(nextRequests)) {
-              skipNextDatabaseSaveRef.current = true
-              residentRequestsRef.current = nextRequests
-              setResidentRequests(nextRequests)
+            nextRequests = splitMultiDocumentRequests(
+              remoteRequests.map(withRequestStatusHistory),
+              customCertificateTemplates,
+            )
+          }
+        }
+
+        const remoteHistory = result.data[residentHistoryStorageKey]
+        if (remoteHistory !== undefined && !Array.isArray(remoteHistory)) {
+          throw new Error('Saved resident history must be a list.')
+        }
+        let nextHistory = residentHistoryRef.current
+        if (remoteHistory !== undefined
+          && residentRequestSavePendingRef.current === 0
+          && Date.now() >= residentRequestSyncPauseUntilRef.current) {
+          nextHistory = remoteHistory
+        }
+        const restoredRequests = restoreUnprintedApprovedRequests(
+          nextRequests,
+          nextHistory,
+        )
+        const requestsChanged = JSON.stringify(residentRequestsRef.current) !== JSON.stringify(restoredRequests.requests)
+        const historyChanged = JSON.stringify(residentHistoryRef.current) !== JSON.stringify(restoredRequests.history)
+        if (requestsChanged || historyChanged) {
+          residentRequestsRef.current = restoredRequests.requests
+          residentHistoryRef.current = restoredRequests.history
+          if (requestsChanged) setResidentRequests(restoredRequests.requests)
+          if (historyChanged) setResidentHistory(restoredRequests.history)
+          if (databaseRecordsRef.current) {
+            databaseRecordsRef.current = {
+              ...databaseRecordsRef.current,
+              [residentRequestsStorageKey]: restoredRequests.requests,
+              [residentHistoryStorageKey]: restoredRequests.history,
             }
           }
         }
@@ -5615,13 +6278,23 @@ function App() {
         const remotePaymentDrafts = result.data[residentPaymentDraftsStorageKey]
         if (remotePaymentDrafts !== undefined) {
           if (!Array.isArray(remotePaymentDrafts)) throw new Error('Saved resident payment drafts must be a list.')
+          const currentDrafts = residentPaymentDraftsRef.current
+          const savedDrafts = databaseRecordsRef.current?.[residentPaymentDraftsStorageKey]
+          const hasLocalDraftChanges = JSON.stringify(currentDrafts) !== JSON.stringify(savedDrafts)
           const mergedDrafts = new Map(
-            [...residentPaymentDraftsRef.current, ...remotePaymentDrafts].map((request) => [request.id, request]),
+            [...(hasLocalDraftChanges ? currentDrafts : []), ...remotePaymentDrafts]
+              .map((request) => [request.id, request]),
           )
           const nextPaymentDrafts = Array.from(mergedDrafts.values())
           if (JSON.stringify(residentPaymentDraftsRef.current) !== JSON.stringify(nextPaymentDrafts)) {
             residentPaymentDraftsRef.current = nextPaymentDrafts
             setResidentPaymentDrafts(nextPaymentDrafts)
+          }
+          if (databaseRecordsRef.current) {
+            databaseRecordsRef.current = {
+              ...databaseRecordsRef.current,
+              [residentPaymentDraftsStorageKey]: nextPaymentDrafts,
+            }
           }
         }
       } catch (error) {
@@ -5632,14 +6305,32 @@ function App() {
         requestPending = false
       }
     }
-
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshAdminRequests()
+    }
     refreshAdminRequests()
-    const refreshTimer = window.setInterval(refreshAdminRequests, 5000)
+    const refreshTimer = window.setInterval(refreshAdminRequests, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', refreshAdminRequests)
+    window.addEventListener('online', refreshAdminRequests)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', refreshAdminRequests)
+      window.removeEventListener('online', refreshAdminRequests)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [applySharedGcashRecipients, customCertificateTemplates, isDatabaseConnected, isStorageLoaded, showOfficialDashboard])
+  }, [
+    applySharedAdminSearchRecords,
+    applySharedCertificateCatalog,
+    applySharedCommunityRecords,
+    applySharedGcashRecipients,
+    customCertificateTemplates,
+    isDatabaseConnected,
+    isStorageLoaded,
+    officialBackendToken,
+    showOfficialDashboard,
+  ])
 
   useEffect(() => {
     const syncResidentRequests = (event) => {
@@ -5751,6 +6442,152 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!isStorageLoaded || !residentToken || !residentName.code || registrationCommunityOnlyAccess) {
+      residentRequestSyncSnapshotRef.current = new Map()
+      return undefined
+    }
+
+    const controller = new AbortController()
+    const residentAccount = {
+      code: residentName.code,
+      firstName: residentName.firstName,
+      middleName: residentName.middleName,
+      lastName: residentName.lastName,
+      suffix: residentName.suffix,
+    }
+    let requestPending = false
+
+    const synchronizeRequests = async () => {
+      if (document.visibilityState !== 'visible') return
+      if (requestPending) return
+      requestPending = true
+      try {
+        const currentOwnedRequests = residentRequestsRef.current.filter((request) => (
+          request?.id && residentRecordMatchesAccount(request, residentAccount)
+        ))
+        const seenRequestIds = new Set()
+        const hasDuplicateRequestIds = currentOwnedRequests.some((request) => {
+          if (seenRequestIds.has(request.id)) return true
+          seenRequestIds.add(request.id)
+          return false
+        })
+        let remoteRequestsBeforeSubmit = []
+        if (hasDuplicateRequestIds) {
+          const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { Authorization: `Bearer ${residentToken}` },
+            signal: controller.signal,
+          })
+          const result = await readJsonResponse(response, 'Resident request sync')
+          if (!response.ok || !result.success || !result.data
+            || !Array.isArray(result.data.requests)
+            || !result.data.requests.every((request) => request && typeof request.id === 'string')) {
+            throw new Error(result.message || `Resident request sync failed with status ${response.status}.`)
+          }
+          remoteRequestsBeforeSubmit = result.data.requests
+        }
+        const ownedRequests = resolveResidentRequestIdCollisions(currentOwnedRequests, remoteRequestsBeforeSubmit)
+        const requestsToSubmit = ownedRequests.filter((request) => (
+          residentRequestSyncSnapshotRef.current.get(request.id) !== JSON.stringify(request)
+        ))
+        const shouldSubmit = requestsToSubmit.length > 0
+        const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
+          method: shouldSubmit ? 'POST' : 'GET',
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${residentToken}`,
+            ...(shouldSubmit ? { 'Content-Type': 'application/json' } : {}),
+          },
+          ...(shouldSubmit ? { body: JSON.stringify({ requests: requestsToSubmit }) } : {}),
+          signal: controller.signal,
+        })
+        const result = await readJsonResponse(response, 'Resident request sync')
+        if (!response.ok || !result.success || !result.data
+          || !Array.isArray(result.data.requests) || !Array.isArray(result.data.history)
+          || !result.data.requests.every((request) => request && typeof request.id === 'string')
+          || !result.data.history.every((request) => request && typeof request.id === 'string')) {
+          throw new Error(result.message || `Resident request sync failed with status ${response.status}.`)
+        }
+
+        const archivedIds = new Set(result.data.history.map((request) => request.id))
+        const remoteRequests = splitMultiDocumentRequests(
+          uniqueResidentRequestsById(result.data.requests).map(withRequestStatusHistory),
+          customCertificateTemplates,
+        )
+        const nextRequests = mergeResidentSyncRecords(
+          residentRequestsRef.current,
+          remoteRequests,
+          residentAccount,
+          archivedIds,
+        )
+        const nextHistory = mergeResidentSyncRecords(
+          residentHistoryRef.current,
+          result.data.history,
+          residentAccount,
+        )
+
+        if (JSON.stringify(residentRequestsRef.current) !== JSON.stringify(nextRequests)) {
+          residentRequestsRef.current = nextRequests
+          setResidentRequests(nextRequests)
+        }
+        if (JSON.stringify(residentHistoryRef.current) !== JSON.stringify(nextHistory)) {
+          residentHistoryRef.current = nextHistory
+          setResidentHistory(nextHistory)
+        }
+
+        const serverRequestIds = new Set(result.data.requests.map((request) => request.id))
+        const serverSubmissionIds = new Set(result.data.requests.map((request) => request.submissionId || request.id))
+        residentRequestSyncSnapshotRef.current = new Map(
+          nextRequests
+            .filter((request) => (
+              residentRecordMatchesAccount(request, residentAccount)
+              && (serverRequestIds.has(request.id) || serverSubmissionIds.has(request.submissionId || request.id))
+            ))
+            .map((request) => [request.id, JSON.stringify(request)]),
+        )
+        setResidentDatabaseSyncError('')
+        setIsResidentDatabaseConnected(true)
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error('Unable to synchronize resident requests with the shared database.', error)
+          setResidentDatabaseSyncError(error.message || 'Resident requests could not be synchronized.')
+          setIsResidentDatabaseConnected(false)
+        }
+      } finally {
+        requestPending = false
+      }
+    }
+
+    const synchronizeWhenVisible = () => {
+      if (document.visibilityState === 'visible') synchronizeRequests()
+    }
+    synchronizeRequests()
+    const refreshTimer = window.setInterval(synchronizeRequests, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', synchronizeRequests)
+    window.addEventListener('online', synchronizeRequests)
+    document.addEventListener('visibilitychange', synchronizeWhenVisible)
+    return () => {
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', synchronizeRequests)
+      window.removeEventListener('online', synchronizeRequests)
+      document.removeEventListener('visibilitychange', synchronizeWhenVisible)
+      controller.abort()
+    }
+  }, [
+    customCertificateTemplates,
+    isStorageLoaded,
+    registrationCommunityOnlyAccess,
+    residentName.code,
+    residentName.firstName,
+    residentName.lastName,
+    residentName.middleName,
+    residentName.suffix,
+    residentRequests,
+    residentToken,
+  ])
+
+  useEffect(() => {
     if (!isStorageLoaded) return
     if (shouldSkipResidentLocalCacheSave(residentRequestsStorageKey, residentRequests)) return
     saveResidentLocalRecord(residentRequestsStorageKey, residentRequests).catch((error) => {
@@ -5783,7 +6620,7 @@ function App() {
     const saveResidentRequests = async () => {
       try {
         setDatabaseSaveStatus('saving')
-        await queueDatabaseRecords(databaseSaveQueueRef, { [residentRequestsStorageKey]: residentRequests })
+        await queueDatabaseRecords(databaseSaveQueueRef, { [residentRequestsStorageKey]: residentRequests }, officialBackendToken)
         setDatabaseSaveError('')
         setDatabaseSaveStatus('saved')
       } catch (error) {
@@ -5797,7 +6634,7 @@ function App() {
     }
 
     residentRequestSaveQueueRef.current = residentRequestSaveQueueRef.current.then(saveResidentRequests)
-  }, [isDatabaseConnected, isStorageLoaded, residentRequests])
+  }, [isDatabaseConnected, isStorageLoaded, officialBackendToken, residentRequests])
 
   useEffect(() => {
     if (!isStorageLoaded) return
@@ -5986,12 +6823,11 @@ function App() {
 
     const saveTimer = window.setTimeout(() => {
       setDatabaseSaveStatus('saving')
-      queueDatabaseRecords(databaseSaveQueueRef, changedRecords)
+      queueDatabaseRecords(databaseSaveQueueRef, changedRecords, officialBackendToken)
         .then(() => {
           databaseRecordsRef.current = { ...databaseRecordsRef.current, ...changedRecords }
           setDatabaseSaveError('')
           setDatabaseSaveStatus('saved')
-          setDatabaseReconnectAvailable(false)
         })
         .catch((error) => {
           console.error('Database saving error:', error)
@@ -6005,6 +6841,7 @@ function App() {
   }, [
     isStorageLoaded,
     isDatabaseConnected,
+    officialBackendToken,
     communityUpdates,
     barangayContactInformation,
     residentPaymentDrafts,
@@ -6092,6 +6929,7 @@ function App() {
     setResidentName((currentName) => residentCode
       ? { ...currentName, code: residentCode }
       : currentName)
+    resetResidentSyncConnection()
     setResidentToken('')
     setAuthenticatedResidentProfile(null)
     setRegistrationCommunityOnlyAccess(true)
@@ -6114,7 +6952,7 @@ function App() {
     let refreshFailed = false
     if (/^(DB-)?REG-/i.test(enteredCode)) {
       try {
-        const response = await fetch(API_URL, { cache: 'no-store' })
+        const response = await fetchWithTimeout(API_URL, { cache: 'no-store' })
         if (!response.ok) throw new Error(`Registration status refresh failed with status ${response.status}.`)
         const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
@@ -6213,7 +7051,7 @@ function App() {
     try {
       const localStorageResult = await saveLocalRegistrationRequests(nextRequests)
       if (isDatabaseConnected) {
-        await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests })
+        await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
       }
       setRegistrationRequests(nextRequests)
       setRegistrationReferenceNotice(null)
@@ -6225,6 +7063,7 @@ function App() {
         setShowResidentCheck(true)
         setInboxAccessMode(false)
         setShowDocumentOptions(false)
+        resetResidentSyncConnection()
         setResidentToken('')
         setAuthenticatedResidentProfile(null)
         setSelectedInboxRequestId(null)
@@ -6248,6 +7087,7 @@ function App() {
     setShowResidentOptions(false)
     setShowDocumentOptions(false)
     setInboxAccessMode(false)
+    resetResidentSyncConnection()
     setResidentToken('')
     setAuthenticatedResidentProfile(null)
     setResidentName((currentName) => ({ ...currentName, code: '' }))
@@ -6258,6 +7098,7 @@ function App() {
   }
 
   const openResidentDashboard = (profile, token = '') => {
+    resetResidentSyncConnection()
     setResidentToken(token)
     setAuthenticatedResidentProfile(profile)
     setRegistrationCommunityOnlyAccess(false)
@@ -6333,40 +7174,6 @@ function App() {
       setResidentName((currentName) => ({ ...currentName, code: enteredCode }))
     }
 
-    // Preserve the existing registration inbox flow.
-    if (inboxAccessMode) {
-      const hasResidentRecord = adminResidents.some((resident) => (
-        resident.recordStatus !== 'inactive'
-        && normalizeResidentCode(resident.code) === normalizeResidentCode(enteredCode)
-        && residentNameMatches(resident.name, residentName, resident)
-      ))
-
-      const hasApprovedRegistration = registrationRequests.some((request) => (
-        request.status === 'Approved'
-        && normalizeResidentCode(request.assignedResidentCode) === normalizeResidentCode(enteredCode)
-        && residentNameMatches(request.name, residentName, request.data)
-        && adminResidents.find((resident) => normalizeResidentCode(resident.code) === normalizeResidentCode(enteredCode))?.recordStatus !== 'inactive'
-      ))
-
-      const isRegistered = Boolean(enteredCode) && (hasResidentRecord || hasApprovedRegistration)
-      const hasRegistrationInbox = registrationInboxRequests.length > 0
-      const hasInactiveResidentRecord = adminResidents.some((resident) => normalizeResidentCode(resident.code) === normalizeResidentCode(enteredCode) && resident.recordStatus === 'inactive')
-      const canOpenInbox = (isRegistered || hasRegistrationInbox) && !hasInactiveResidentRecord
-
-      setResidentStatus(canOpenInbox ? 'registered' : 'not-found')
-
-      if (canOpenInbox) {
-        setResidentDashboardSection('community')
-        setSelectedInboxRequestId(null)
-        setShowResidentInboxPage(true)
-        setShowDocumentOptions(false)
-      } else {
-        setShowDocumentOptions(false)
-      }
-
-      return
-    }
-
     if (!enteredCode) {
       setResidentStatus('not-found')
       setShowDocumentOptions(false)
@@ -6374,7 +7181,7 @@ function App() {
     }
 
     setShowDocumentOptions(false)
-    const localResident = findLocallyApprovedResident(enteredCode)
+    const localResident = import.meta.env.DEV ? findLocallyApprovedResident(enteredCode) : null
     if (localResident) {
       openResidentDashboard(localResident)
       return
@@ -6395,15 +7202,16 @@ function App() {
         }),
       })
 
-      const loginResult = await loginResponse.json()
+      const loginResult = await readJsonResponse(loginResponse, 'Resident login')
 
       if (!loginResponse.ok || !loginResult.success || !loginResult.token) {
-        if (loginResponse.status === 401) {
+        if (import.meta.env.DEV && loginResponse.status === 401) {
           const localFallback = findLocallyApprovedResident(enteredCode)
           if (localFallback) {
             openResidentDashboard(localFallback)
             return
           }
+          resetResidentSyncConnection()
           setResidentToken('')
           setAuthenticatedResidentProfile(null)
           setResidentStatus('not-found')
@@ -6419,7 +7227,7 @@ function App() {
         },
       })
 
-      const profileResult = await profileResponse.json()
+      const profileResult = await readJsonResponse(profileResponse, 'Resident profile')
 
       if (!profileResponse.ok || !profileResult.success || !profileResult.data) {
         throw new Error(profileResult.message || 'Unable to retrieve resident profile.')
@@ -6441,6 +7249,7 @@ function App() {
       )
 
       if (!matchesName || normalizeResidentCode(profile.resident_code) !== normalizeResidentCode(enteredCode)) {
+        resetResidentSyncConnection()
         setResidentToken('')
         setAuthenticatedResidentProfile(null)
         setResidentStatus('not-found')
@@ -6449,18 +7258,21 @@ function App() {
 
       openResidentDashboard(profile, loginResult.token)
     } catch (error) {
-      const localFallback = findLocallyApprovedResident(enteredCode)
+      const localFallback = import.meta.env.DEV ? findLocallyApprovedResident(enteredCode) : null
       if (localFallback && error instanceof TypeError) {
         openResidentDashboard(localFallback)
         return
       }
       console.error('Resident login error:', error)
+      resetResidentSyncConnection()
       setResidentToken('')
       setAuthenticatedResidentProfile(null)
       setResidentStatus('service-error')
       setResidentLoginError(
         error instanceof TypeError
-          ? 'Cannot connect to the resident login API. Start MySQL in Laragon and run start-local-system.cmd.'
+          ? import.meta.env.DEV
+            ? 'Cannot connect to the resident login API. Start MySQL in Laragon and run start-local-system.cmd.'
+            : 'Cannot connect to the online resident service. Check your connection and try again.'
           : error instanceof Error
             ? `Resident login could not be completed: ${error.message}`
             : 'Resident login could not be completed. Check the local API and database.'
@@ -6486,6 +7298,7 @@ function App() {
     setSubmittedRegistrationId('')
     setShowOfficialLogin(false)
     setShowOfficialDashboard(false)
+    resetResidentSyncConnection()
     setResidentToken('')
     setAuthenticatedResidentProfile(null)
     setResidentName({ firstName: '', middleName: '', lastName: '', suffix: '', code: '' })
@@ -6625,7 +7438,7 @@ function App() {
 
   const loadLatestRegistrationRequests = async () => {
     if (!isDatabaseConnected) return registrationRequests
-    const response = await fetch(API_URL, { cache: 'no-store' })
+    const response = await fetchWithTimeout(API_URL, { cache: 'no-store' })
     if (!response.ok) throw new Error(`Registration status refresh failed with status ${response.status}.`)
     const result = await response.json()
     if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
@@ -6795,7 +7608,7 @@ function App() {
       let storageWarning = ''
       if (isDatabaseConnected) {
         try {
-          await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests })
+          await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
         } catch (error) {
           if (localStorageError) {
             throw new Error(
@@ -7610,7 +8423,7 @@ function App() {
         }
         if (isDatabaseConnected) {
           try {
-            await saveDatabaseRecords({ [registrationRequestsStorageKey]: nextRequests })
+            await saveDatabaseRecords({ [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
           } catch (error) {
             console.error('Unable to sync the rejected registration notice to the shared database.', error)
             syncErrors.push('the note could not be synced to the shared database')
@@ -7709,7 +8522,7 @@ function App() {
       setOfficialPhotos(updatedPhotos)
       if (isDatabaseConnected) {
         try {
-          await saveDatabaseRecords({ [officialPhotosStorageKey]: updatedPhotos })
+          await saveDatabaseRecords({ [officialPhotosStorageKey]: updatedPhotos }, officialBackendToken)
         } catch (error) {
           console.error('Unable to sync official photos to the shared database.', error)
           setOfficialPhotoError('Photo saved on this device, but could not sync to the shared system. Check the database connection.')
@@ -7723,22 +8536,6 @@ function App() {
     } finally {
       event.target.value = ''
     }
-  }
-
-  const reloadSharedDatabaseRecords = () => {
-    const confirmed = window.confirm(
-      'Reload this page from the shared database? Changes made while the database was disconnected may be replaced by the saved server records.',
-    )
-    if (confirmed) window.location.reload()
-  }
-
-  const saveThisBrowserToDatabase = () => {
-    const confirmed = window.confirm(
-      'Save this browser’s records to the shared database? This can replace newer shared records with this device’s local copy.',
-    )
-    if (!confirmed) return
-    setDatabaseReconnectAvailable(false)
-    setIsDatabaseConnected(true)
   }
 
   const updateOfficialProfile = (index, field, value) => {
@@ -8177,7 +8974,10 @@ function App() {
         purpose: getNormalizedRequestPurpose({ ...documentValues, ...documentDetails }, certificateFields),
       }]
     }))
-    const submissionId = `BR-${requestedAt.getFullYear()}-${requestedAt.getTime().toString().slice(-6)}`
+    const randomSuffix = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID().replace(/-/g, '')
+      : Array.from(globalThis.crypto.getRandomValues(new Uint32Array(2)), (value) => value.toString(36)).join('')
+    const submissionId = `BR-${requestedAt.getFullYear()}-${requestedAt.getTime()}-${randomSuffix}`
     const requestsByDocument = availableDocuments.map((document, index) => {
       const documentPhotos = Object.fromEntries(getDocumentRequirements(document, customCertificateTemplates).flatMap((requirement) => (
         getRequirementPhotoKeys(requirement).flatMap((photoKey) => {
@@ -8526,9 +9326,29 @@ function App() {
     setGcashRecipientError('')
   }
 
+  const handleGcashQrUpload = async (event) => {
+    const file = event.target.files?.[0]
+    const editorId = gcashRecipientEditor?.recipient.id
+    event.target.value = ''
+    if (!file || !editorId) return
+
+    setGcashQrUploadLoading(true)
+    setGcashRecipientError('')
+    try {
+      const qrImage = await createGcashQrImage(file)
+      setGcashRecipientEditor((editor) => editor?.recipient.id === editorId
+        ? { ...editor, recipient: { ...editor.recipient, qrImage } }
+        : editor)
+    } catch (error) {
+      setGcashRecipientError(error.message || 'The QR image could not be uploaded.')
+    } finally {
+      setGcashQrUploadLoading(false)
+    }
+  }
+
   const saveGcashRecipient = (event) => {
     event.preventDefault()
-    if (!gcashRecipientEditor) return
+    if (!gcashRecipientEditor || gcashQrUploadLoading) return
 
     const recipient = {
       ...gcashRecipientEditor.recipient,
@@ -8540,16 +9360,23 @@ function App() {
       return
     }
 
-    setGcashRecipients((recipients) => gcashRecipientEditor.mode === 'add'
-      ? [...recipients, recipient]
-      : recipients.map((currentRecipient) => (
+    const updatedRecipients = gcashRecipientEditor.mode === 'add'
+      ? [...gcashRecipients, recipient]
+      : gcashRecipients.map((currentRecipient) => (
         currentRecipient.id === recipient.id ? recipient : currentRecipient
-      )))
+      ))
+    if (!isValidGcashRecipientList(updatedRecipients)) {
+      setGcashRecipientError('The combined QR images are too large to save. Use smaller QR images.')
+      return
+    }
+
+    setGcashRecipients(updatedRecipients)
     setGcashRecipientEditor(null)
     setGcashRecipientError('')
   }
 
   const cancelGcashRecipientEdit = () => {
+    if (gcashQrUploadLoading) return
     setGcashRecipientEditor(null)
     setGcashRecipientError('')
   }
@@ -8701,6 +9528,9 @@ function App() {
     }
 
     setOfficialBackendToken('')
+    databaseRecordsRef.current = null
+    setDatabaseSaveStatus('checking')
+    setDatabaseSaveError('')
     setAdminRecoveryMessage('')
     try {
       const response = await fetch(`${BACKEND_API_URL}/login.php`, {
@@ -9080,7 +9910,7 @@ function App() {
         [certificateTemplatesStorageKey]: nextTemplates,
         [enabledCertificateTypesStorageKey]: nextEnabledTemplates,
         [documentFeesStorageKey]: nextFees,
-      })
+      }, officialBackendToken)
       setCustomCertificateTemplates(nextTemplates)
       setEnabledCertificateTypes(nextEnabledTemplates)
       setDocumentFees(nextFees)
@@ -9155,7 +9985,7 @@ function App() {
         [residentHistoryStorageKey]: nextHistory,
         [residentPaymentDraftsStorageKey]: nextPaymentDrafts,
         [issuedDocumentsStorageKey]: nextIssuedDocuments,
-      })
+      }, officialBackendToken)
       setCustomCertificateTemplates(nextTemplates)
       setEnabledCertificateTypes(nextEnabledTemplates)
       setDocumentFees(nextFees)
@@ -9371,9 +10201,20 @@ function App() {
     const safeDocumentName = document.replace(/[^a-z0-9-]+/gi, '-')
     formData.append('certificate', docx, `${safeRequestId}-${safeDocumentName}.docx`)
 
-    const response = await fetch(CERTIFICATE_PDF_URL, { method: 'POST', body: formData })
+    const response = await fetch(CERTIFICATE_PDF_URL, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${officialBackendToken}` },
+      body: formData,
+    })
     if (!response.ok) {
-      const errorMessage = await response.text()
+      const responseBody = await response.text()
+      let errorMessage
+      try {
+        errorMessage = JSON.parse(responseBody).message || responseBody
+      } catch {
+        errorMessage = responseBody
+      }
       throw new Error(errorMessage || `PDF conversion failed with status ${response.status}.`)
     }
 
@@ -10031,7 +10872,7 @@ function App() {
       ) : showOfficialDashboard ? (
         <section className={`official-dashboard ${darkMode ? 'dark-mode' : ''} dashboard-redesign font-${fontSize}`}>
           <header className="admin-header">
-            <button type="button" className="admin-menu-toggle" aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'} onClick={() => setSidebarOpen((open) => !open)}>☰</button>
+            <button type="button" className="admin-menu-toggle" aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'} aria-expanded={sidebarOpen} aria-controls="admin-sidebar-navigation" onClick={() => setSidebarOpen((open) => !open)}>☰</button>
             <div className="admin-brand"><img src={barangaySeal} alt="" /><span><strong>Barangay Bagong Bayan 1</strong><small>Records management</small></span></div>
             <div className="admin-header-actions">
               <button type="button" className="admin-icon-button about-icon-button" aria-label="About Barangay Bagong Bayan I" title="About" onClick={openAboutPage}>
@@ -10082,7 +10923,8 @@ function App() {
             </div>
           </header>
           <div className={`admin-layout ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
-            {sidebarOpen && <aside className="admin-sidebar" aria-label="Admin navigation">
+            {sidebarOpen && <button type="button" className="admin-sidebar-backdrop" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
+            {sidebarOpen && <aside id="admin-sidebar-navigation" className="admin-sidebar" aria-label="Admin navigation">
               <div className="admin-sidebar-identity">
                 <span className="admin-sidebar-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none">
@@ -10116,17 +10958,18 @@ function App() {
                   ].includes(view)
                     ? adminNavigationUnreadCounts[view]
                     : 0
-                  return <button type="button" key={view} className={`${isActive ? 'active' : ''}${unreadCount ? ' has-unread-updates' : ''}`} aria-current={isActive ? 'page' : undefined} onClick={() => { if (view !== 'certificateTemplates') setHighlightedCertificateTemplate(null); markAdminViewRead(view); setAdminView(view) }}><span aria-hidden="true">{icon}</span>{label}{unreadCount > 0 && <span className="resident-request-new-dot" role="img" aria-label="New update" title="New update" />}{unreadCount > 0 && <small className="admin-nav-unread-count" aria-label={`${unreadCount} new items`} title={`${unreadCount} new or updated items`}>{unreadCount}</small>}</button>
+                  return <button type="button" key={view} className={`${isActive ? 'active' : ''}${unreadCount ? ' has-unread-updates' : ''}`} aria-current={isActive ? 'page' : undefined} onClick={() => { if (view !== 'certificateTemplates') setHighlightedCertificateTemplate(null); markAdminViewRead(view); setAdminView(view); if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false) }}><span aria-hidden="true">{icon}</span>{label}{unreadCount > 0 && <span className="resident-request-new-dot" role="img" aria-label="New update" title="New update" />}{unreadCount > 0 && <small className="admin-nav-unread-count" aria-label={`${unreadCount} new items`} title={`${unreadCount} new or updated items`}>{unreadCount}</small>}</button>
                 })}
               </section>)}
             </aside>}
-            <div className="admin-content">
+            <div className="admin-content" ref={adminContentRef}>
           {!isDatabaseConnected
-            ? <section className={`database-sync-banner${databaseReconnectAvailable ? ' is-reconnected' : ''}`} role="status">
+            ? <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
-              <div><strong>{databaseReconnectAvailable ? 'Shared database is available' : 'Shared database unavailable'}</strong><p>{databaseReconnectAvailable ? 'This page is still using this browser’s saved copy. Choose which copy to keep before syncing.' : 'Changes are saved only in this browser until the connection is restored.'}</p></div>
-              {databaseReconnectAvailable && <div className="database-sync-actions"><button type="button" onClick={reloadSharedDatabaseRecords}>Reload shared records</button><button type="button" onClick={saveThisBrowserToDatabase}>Save this browser</button></div>}
-            </section>
+              <span>{databaseSaveStatus === 'checking'
+                ? 'Connecting to shared database…'
+                : `Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
+            </div>
             : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{databaseSaveStatus === 'saving' ? 'Saving changes to shared database…' : databaseSaveStatus === 'error' ? `Database save failed. ${databaseSaveError}` : 'Changes saved to shared database'}</span></div>}
           {adminView === 'overview' && <div className="dashboard-heading admin-overview-heading">
             <h1>Overview</h1>
@@ -11013,13 +11856,13 @@ function App() {
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
               <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{adminResidents.length}</span></div>
-              <div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id}>
+              <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                 <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
               </tr>)}
               {!adminResidents.length && <tr><td colSpan="5">No resident records yet. Approved applications will be added here.</td></tr>}
-              </tbody></table></div>
+              </tbody></table></div></TableSearch>
             </section>
             {registrationResidentViewCode && (() => {
               const resident = adminResidents.find((candidate) => (
@@ -11137,12 +11980,19 @@ function App() {
                         ? <form className="payment-recipient-editor" onSubmit={saveGcashRecipient}>
                           <label htmlFor={`gcash-recipient-name-${recipient.id}`}>Account name<input id={`gcash-recipient-name-${recipient.id}`} value={gcashRecipientEditor.recipient.displayName} onChange={(event) => updateGcashRecipientDraft('displayName', event.target.value)} maxLength={100} placeholder="Name registered with GCash" required /></label>
                           <label htmlFor={`gcash-recipient-number-${recipient.id}`}>GCash mobile number<input id={`gcash-recipient-number-${recipient.id}`} type="tel" value={gcashRecipientEditor.recipient.mobileNumber} onChange={(event) => updateGcashRecipientDraft('mobileNumber', event.target.value)} maxLength={20} placeholder="09XX XXX XXXX" required /></label>
+                          <label htmlFor={`gcash-recipient-qr-${recipient.id}`}>GCash QR image<input id={`gcash-recipient-qr-${recipient.id}`} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleGcashQrUpload} disabled={gcashQrUploadLoading} /><small>Optional · PNG, JPEG, or WebP up to 700 KB</small></label>
+                          {gcashQrUploadLoading && <small role="status">Loading QR image…</small>}
+                          {gcashRecipientEditor.recipient.qrImage?.dataUrl && <div className="payment-recipient-qr-preview">
+                            <img src={gcashRecipientEditor.recipient.qrImage.dataUrl} alt={`GCash QR for ${gcashRecipientEditor.recipient.displayName || 'this recipient'}`} />
+                            <button type="button" className="payment-remove-recipient" onClick={() => updateGcashRecipientDraft('qrImage', null)} disabled={gcashQrUploadLoading}>Remove QR</button>
+                          </div>}
                           {gcashRecipientError && <p className="payment-recipient-error" role="alert">{gcashRecipientError}</p>}
-                          <div className="payment-recipient-editor-actions"><button type="submit" className="payment-save-recipient">Save account</button><button type="button" className="payment-cancel-recipient" onClick={cancelGcashRecipientEdit}>Cancel</button></div>
+                          <div className="payment-recipient-editor-actions"><button type="submit" className="payment-save-recipient" disabled={gcashQrUploadLoading}>Save account</button><button type="button" className="payment-cancel-recipient" onClick={cancelGcashRecipientEdit} disabled={gcashQrUploadLoading}>Cancel</button></div>
                         </form>
                         : <div className="payment-recipient-readonly">
                           <div><span>Account name</span><strong>{recipient.displayName || 'Name not set'}</strong></div>
                           <div><span>GCash mobile number</span><strong>{recipient.mobileNumber || 'Number not set'}</strong></div>
+                          {recipient.qrImage?.dataUrl && <img className="payment-recipient-qr-thumbnail" src={recipient.qrImage.dataUrl} alt={`GCash QR for ${recipient.displayName}`} />}
                         </div>}
                     </article>
                   })}
@@ -11151,8 +12001,14 @@ function App() {
                     <form className="payment-recipient-editor" onSubmit={saveGcashRecipient}>
                       <label htmlFor="gcash-recipient-name-new">Account name<input id="gcash-recipient-name-new" value={gcashRecipientEditor.recipient.displayName} onChange={(event) => updateGcashRecipientDraft('displayName', event.target.value)} maxLength={100} placeholder="Name registered with GCash" required /></label>
                       <label htmlFor="gcash-recipient-number-new">GCash mobile number<input id="gcash-recipient-number-new" type="tel" value={gcashRecipientEditor.recipient.mobileNumber} onChange={(event) => updateGcashRecipientDraft('mobileNumber', event.target.value)} maxLength={20} placeholder="09XX XXX XXXX" required /></label>
+                      <label htmlFor="gcash-recipient-qr-new">GCash QR image<input id="gcash-recipient-qr-new" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleGcashQrUpload} disabled={gcashQrUploadLoading} /><small>Optional · PNG, JPEG, or WebP up to 700 KB</small></label>
+                      {gcashQrUploadLoading && <small role="status">Loading QR image…</small>}
+                      {gcashRecipientEditor.recipient.qrImage?.dataUrl && <div className="payment-recipient-qr-preview">
+                        <img src={gcashRecipientEditor.recipient.qrImage.dataUrl} alt={`GCash QR for ${gcashRecipientEditor.recipient.displayName || 'this recipient'}`} />
+                        <button type="button" className="payment-remove-recipient" onClick={() => updateGcashRecipientDraft('qrImage', null)} disabled={gcashQrUploadLoading}>Remove QR</button>
+                      </div>}
                       {gcashRecipientError && <p className="payment-recipient-error" role="alert">{gcashRecipientError}</p>}
-                      <div className="payment-recipient-editor-actions"><button type="submit" className="payment-save-recipient">Save account</button><button type="button" className="payment-cancel-recipient" onClick={cancelGcashRecipientEdit}>Cancel</button></div>
+                      <div className="payment-recipient-editor-actions"><button type="submit" className="payment-save-recipient" disabled={gcashQrUploadLoading}>Save account</button><button type="button" className="payment-cancel-recipient" onClick={cancelGcashRecipientEdit} disabled={gcashQrUploadLoading}>Cancel</button></div>
                     </form>
                   </article>}
                   {!gcashRecipients.length && <p className="payment-recipient-empty">No GCash recipient is configured. Add a verified account before asking residents to pay.</p>}
@@ -11165,7 +12021,7 @@ function App() {
                 <div><span className="section-number">VERIFIED PAYMENTS</span><h3 id="payment-history-title">Payment history</h3><p>Verified payments remain here even when a request is later cancelled or refunded.</p></div>
                 <span className="admin-panel-count">{paymentHistoryRecords.length} records</span>
               </header>
-              <div className="table-scroll"><table className="admin-table payment-history-table"><thead><tr><th>Resident</th><th>Resident code</th><th>Request</th><th>Payment submitted</th><th>Amount</th><th>Payment reference</th><th>Status</th></tr></thead><tbody>
+              <TableSearch label="payment history"><div className="table-scroll"><table className="admin-table payment-history-table"><thead><tr><th>Resident</th><th>Resident code</th><th>Request</th><th>Payment submitted</th><th>Amount</th><th>Payment reference</th><th>Status</th></tr></thead><tbody>
                 {paymentHistoryRecords.map((payment) => {
                   const cancelledRequests = payment.requests.filter((request) => request.status === 'Cancelled')
                   const refundedAmount = payment.requests
@@ -11186,7 +12042,7 @@ function App() {
                   </tr>
                 })}
                 {!paymentHistoryRecords.length && <tr><td colSpan="7">No payments have been verified yet.</td></tr>}
-              </tbody></table></div>
+              </tbody></table></div></TableSearch>
             </section>
           </section>}
           {adminView === 'refunds' && <section className="refund-management-page">
@@ -11316,7 +12172,7 @@ function App() {
               </form>}
               {residentFormError && <p className="community-update-error" role="alert">{residentFormError}</p>}
               <p className="resident-record-result-count" aria-live="polite">Showing {filteredAdminResidents.length} of {adminResidents.length} current residents</p>
-              <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
+              <TableSearch label="resident records"><div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
                 const profileRequests = residentProfileUpdateRequests.filter((request) => request.residentCode?.toLowerCase() === resident.code.toLowerCase())
                 const pendingProfileRequests = profileRequests.filter((request) => request.status === 'Pending').length
                 const isRecoveryNameMatch = resident.id === highlightedResidentId
@@ -11333,7 +12189,7 @@ function App() {
                     {profileRequests.length > 0 && <button type="button" className="resident-profile-update-icon" aria-label={`Open ${profileRequests.length} profile update request${profileRequests.length === 1 ? '' : 's'} for ${resident.name}`} title="Review profile update requests" onClick={() => { setResidentProfileUpdateResidentCode(resident.code); setProfileUpdateError(''); setResidentAccountMessage('') }}><span aria-hidden="true">✎</span>{pendingProfileRequests > 0 && <small>{pendingProfileRequests}</small>}</button>}
                   </div></td>
                 </tr>
-              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length ? 'No current residents match your search.' : 'No resident records yet.'}</td></tr>}</tbody></table></div>
+              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length ? 'No current residents match your search.' : 'No resident records yet.'}</td></tr>}</tbody></table></div></TableSearch>
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
               <div className="requests-heading"><div><span className="section-number">EXISTING RESIDENT ACCESS</span><h3>Resident code recovery requests</h3><p>Verify against an existing resident record. Recovery never creates a new resident account.</p></div><span className="request-notification">{pendingRecoveryRequestCount} pending</span></div>
               {adminRecoveryMessage && <p className="recovery-admin-message" role="status">{adminRecoveryMessage}</p>}
@@ -11370,7 +12226,7 @@ function App() {
                   <button type="button" className="community-cancel-button" disabled={isSendingRecoveryCode} onClick={() => setRecoveryDeliveryRequest(null)}>Cancel</button>
                 </section>
               </div>}
-              <div className="table-scroll"><table className="admin-table"><thead><tr><th>Request</th><th>Resident</th><th>Birthday</th><th>Email address</th><th>Status</th><th>Action</th></tr></thead><tbody>
+              <TableSearch label="resident code recovery requests"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Request</th><th>Resident</th><th>Birthday</th><th>Email address</th><th>Status</th><th>Action</th></tr></thead><tbody>
                 {residentCodeRecoveryRequests.map((request) => {
                   const closestResident = getClosestResidentRecord(request.fullName, adminResidents)
                   const comparisonResident = adminResidents.find((resident) => resident.id === request.matchedResidentId) || closestResident
@@ -11405,7 +12261,7 @@ function App() {
                       </dl>
                       {comparisonResident ? <section className="recovery-record-comparison" aria-label="Compare recovery form with resident record">
                         <div><h4>{request.matchedResidentId ? 'Verified resident record' : 'Closest resident record for comparison'}</h4><p>Compare the submitted information with the saved record before verifying. The closest name is only a suggestion; confirm identity from the details.</p></div>
-                        <div className="table-scroll"><table className="admin-table"><thead><tr><th>Information</th><th>Submitted in recovery form</th><th>Saved resident record</th><th>Comparison</th></tr></thead><tbody>
+                        <TableSearch label="recovery record comparison"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Information</th><th>Submitted in recovery form</th><th>Saved resident record</th><th>Comparison</th></tr></thead><tbody>
                           {[
                             ['Full name', request.fullName, comparisonResident.name, (value) => normalizeRecoveryIdentity(value)],
                             ['Date of birth', request.birthDate, savedBirthDate, (value) => normalizeRecoveryDate(value)],
@@ -11422,7 +12278,7 @@ function App() {
                             </tr>
                           })}
                           <tr><th scope="row">Resident code</th><td>Not requested on this form</td><td>{comparisonResident.code || 'Not recorded'}</td><td><span className="recovery-comparison-status is-unavailable">Staff reference</span></td></tr>
-                        </tbody></table></div>
+                        </tbody></table></div></TableSearch>
                       </section> : <p className="recovery-admin-warning">No existing resident record is available for comparison. Do not approve this recovery request until the resident is matched to an existing record.</p>}
                       {request.idPhoto?.dataUrl && <figure className="recovery-id-evidence"><a href={request.idPhoto.dataUrl} target="_blank" rel="noreferrer"><img src={request.idPhoto.dataUrl} alt={`ID evidence submitted by ${request.fullName}`} /></a><figcaption>{request.idPhoto.fileName || 'Submitted ID evidence'}</figcaption></figure>}
                       <div className="recovery-request-actions">
@@ -11436,18 +12292,18 @@ function App() {
                 </Fragment>
                 })}
                 {!residentCodeRecoveryRequests.length && <tr><td colSpan="6">No resident code recovery requests have been submitted.</td></tr>}
-              </tbody></table></div>
+              </tbody></table></div></TableSearch>
             </section> : <section className="resident-record-tab-panel">
               <section className="resident-record-subsection">
                 <div className="requests-heading"><div><span className="section-number">REGISTRATION DECISIONS</span><h3>Rejected registration applications</h3><p>Review declined applications and the reason recorded for each decision.</p></div><span className="request-notification">{filteredDeclinedRegistrationRequests.length} of {declinedRegistrationRequests.length}</span></div>
-                <div className="table-scroll rejected-registration-table-scroll"><table className="admin-table rejected-registration-table"><thead><tr><th>Request</th><th>Applicant</th><th>Address</th><th>Submitted</th><th>Reason for rejection</th><th>Decision date</th></tr></thead><tbody>{filteredDeclinedRegistrationRequests.map((request) => <tr key={request.id}>
+                <TableSearch label="rejected registration applications"><div className="table-scroll rejected-registration-table-scroll"><table className="admin-table rejected-registration-table"><thead><tr><th>Request</th><th>Applicant</th><th>Address</th><th>Submitted</th><th>Reason for rejection</th><th>Decision date</th></tr></thead><tbody>{filteredDeclinedRegistrationRequests.map((request) => <tr key={request.id}>
                   <td data-label="Request"><span className="rejected-registration-request-id">{request.id}</span></td>
                   <td data-label="Applicant"><strong>{request.name}</strong></td>
                   <td data-label="Address">{request.address || 'Address not recorded'}</td>
                   <td data-label="Submitted">{request.submittedAt ? new Date(request.submittedAt).toLocaleDateString('en-PH') : 'Date not recorded'}</td>
                   <td data-label="Reason for rejection"><span className="rejected-registration-reason"><strong>Admin note</strong><span>{request.rejectionReason || 'No reason recorded'}</span></span></td>
                   <td data-label="Decision date">{request.reviewedAt ? new Date(request.reviewedAt).toLocaleDateString('en-PH') : 'Date not recorded'}</td>
-                </tr>)}{filteredDeclinedRegistrationRequests.length === 0 && <tr><td colSpan="6">{declinedRegistrationRequests.length ? 'No rejected applications match your search.' : 'No rejected registration applications.'}</td></tr>}</tbody></table></div>
+                </tr>)}{filteredDeclinedRegistrationRequests.length === 0 && <tr><td colSpan="6">{declinedRegistrationRequests.length ? 'No rejected applications match your search.' : 'No rejected registration applications.'}</td></tr>}</tbody></table></div></TableSearch>
               </section>
             </section>}
             {residentProfileUpdateResidentCode && (() => {
@@ -11583,7 +12439,7 @@ function App() {
           {adminView === 'issuedDocuments' && <section className="compliance-panel issued-documents-workspace">
             <div className="requests-heading"><div><span className="section-number">ISSUANCE REGISTER</span><h2>Issued documents</h2></div><span className="request-notification">{issuedDocuments.length} documents</span></div>
             <p className="resident-report-note">Each released certificate receives a unique control number and records its date, purpose, OR number, recipient, and issuing officer.</p>
-            <div className="table-scroll"><table className="admin-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th></tr></thead><tbody>{issuedDocuments.map((entry) => <tr key={entry.id}><td>{entry.controlNumber}</td><td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td><td>{entry.releasedTo || entry.resident}</td><td>{entry.document}</td><td>{entry.purpose || 'Not provided'}</td><td>{entry.orNumber || '—'}</td><td>{entry.issuingOfficer || '—'}</td></tr>)}{issuedDocuments.length === 0 && <tr><td colSpan="7">No documents have been released yet.</td></tr>}</tbody></table></div>
+            <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th></tr></thead><tbody>{issuedDocuments.map((entry) => <tr key={entry.id}><td>{entry.controlNumber}</td><td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td><td>{entry.releasedTo || entry.resident}</td><td>{entry.document}</td><td>{entry.purpose || 'Not provided'}</td><td>{entry.orNumber || '—'}</td><td>{entry.issuingOfficer || '—'}</td></tr>)}{issuedDocuments.length === 0 && <tr><td colSpan="7">No documents have been released yet.</td></tr>}</tbody></table></div></TableSearch>
           </section>}
           {adminView === 'residentHistory' && <section className="resident-history-page">
             <section className="compliance-panel resident-compliance-report">
@@ -11598,7 +12454,7 @@ function App() {
                 {(historySearch || historyStatusFilter !== 'all') && <button type="button" className="history-filter-reset" onClick={() => { setHistorySearch(''); setHistoryStatusFilter('all') }}>Clear filters</button>}
                 <p className="history-result-count" aria-live="polite">Showing <strong>{filteredHistoryRequests.length}</strong> of {historyRequestList.length} requests</p>
               </div>
-              <div className="resident-history-table-wrap">
+              <TableSearch label="request history"><div className="resident-history-table-wrap">
                 <table className="resident-history-table resident-admin-request-history">
                   <thead><tr><th>Resident</th><th>Request ID</th><th>Documents</th><th>Submitted</th><th>Status</th><th>Action</th></tr></thead>
                   <tbody>{filteredHistoryRequests.map((request) => <tr key={request.id}>
@@ -11612,7 +12468,7 @@ function App() {
                     {filteredHistoryRequests.length === 0 && <tr><td className="resident-table-empty" colSpan="6">{historyRequestList.length ? 'No request history matches your search or status filter.' : 'No document requests have been recorded yet.'}</td></tr>}
                   </tbody>
                 </table>
-              </div>
+              </div></TableSearch>
               {selectedHistoryRequest && <div className="resident-history-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelectedHistoryRequestId(null); setSelectedFinishedCertificate(null) } }}>
                 <section className="resident-history-modal" role="dialog" aria-modal="true" aria-labelledby="resident-history-modal-title">
                   <header className="resident-history-modal-header"><div><span className="section-number">REQUEST DETAILS</span><h2 id="resident-history-modal-title">{selectedHistoryRequest.resident}</h2><p>{selectedHistoryRequest.id} · {selectedHistoryRequest.residentCode || 'Resident code not recorded'}</p></div><button type="button" className="resident-history-modal-close" onClick={() => { setSelectedHistoryRequestId(null); setSelectedFinishedCertificate(null) }} aria-label="Close request details">×</button></header>
@@ -11639,7 +12495,7 @@ function App() {
             <section className="compliance-panel resident-history-log">
               <div className="requests-heading"><div><span className="section-number">EXPORTABLE REPORT</span><h2>Document request reports</h2></div><button type="button" className="check-button" onClick={exportDocumentReport}>Export CSV</button></div>
               <p className="resident-report-note">Request counts grouped by document type, request month, and current status. Export the same report as a spreadsheet-ready CSV.</p>
-              <div className="table-scroll"><table className="admin-table"><thead><tr><th>Month</th><th>Document type</th><th>Status</th><th>Requests</th></tr></thead><tbody>{documentReportRows.map((row) => <tr key={row.key}><td>{row.month}</td><td>{row.document}</td><td>{row.status}</td><td>{row.count}</td></tr>)}{documentReportRows.length === 0 && <tr><td colSpan="4">No document request data is available for reporting.</td></tr>}</tbody></table></div>
+              <TableSearch label="document request reports"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Month</th><th>Document type</th><th>Status</th><th>Requests</th></tr></thead><tbody>{documentReportRows.map((row) => <tr key={row.key}><td>{row.month}</td><td>{row.document}</td><td>{row.status}</td><td>{row.count}</td></tr>)}{documentReportRows.length === 0 && <tr><td colSpan="4">No document request data is available for reporting.</td></tr>}</tbody></table></div></TableSearch>
             </section>
           </section>}
           {adminView === 'settings' && <section className="admin-account-page">
@@ -11797,6 +12653,7 @@ function App() {
                 setSelectedResidentHistoryRequestId(null)
                 markResidentDashboardSectionRead('profile')
                 setResidentDashboardSection('profile')
+                setResidentMobileMenuOpen(false)
                 setProfileOpen(false)
                 setNotificationsOpen(false)
               }}>
@@ -11804,8 +12661,18 @@ function App() {
                 <span><strong>{fullName}</strong><small>{residentName.code || 'Resident account'}</small><small className="resident-dashboard-sidebar-date">{new Date().toLocaleDateString('en-PH', { dateStyle: 'medium' })}</small></span>
                 {residentProfileUnreadCount > 0 && <span className="resident-request-new-dot" role="img" aria-label="New profile update" title="New profile update" />}
               </button>}
+              <button
+                type="button"
+                className="resident-mobile-menu-toggle"
+                aria-expanded={residentMobileMenuOpen}
+                aria-controls="resident-dashboard-navigation"
+                onClick={() => setResidentMobileMenuOpen((open) => !open)}
+              >
+                <span><span className="resident-mobile-menu-icon" aria-hidden="true">☰</span>{residentDashboardSection === 'profile' ? 'My Profile' : residentDashboardSections.find((section) => section.id === residentDashboardSection)?.title || 'Dashboard menu'}</span>
+                <span>{residentMobileMenuOpen ? 'Close menu' : 'Menu'}</span>
+              </button>
               <p className="resident-dashboard-sidebar-label">MENU</p>
-              <nav className="resident-dashboard-nav" aria-label="Resident dashboard">
+              <nav id="resident-dashboard-navigation" className={`resident-dashboard-nav${residentMobileMenuOpen ? ' is-mobile-menu-open' : ''}`} aria-label="Resident dashboard">
                 {residentDashboardSections.filter((section) => registrationCommunityOnlyAccess
                   ? section.id === 'community'
                   : section.id !== 'profile').map((section) => {
@@ -11827,6 +12694,7 @@ function App() {
                       setSelectedInboxRequestId(null)
                       setSelectedResidentHistoryRequestId(null)
                       setResidentDashboardSection(section.id)
+                      setResidentMobileMenuOpen(false)
                     }}>
                       <span className="resident-dashboard-nav-icon" aria-hidden="true">{section.icon}</span>{section.title}
                       {unreadCount > 0 && <span className="resident-request-new-dot" role="img" aria-label="New update" title="New update" />}
@@ -11836,10 +12704,10 @@ function App() {
               </nav>
             </aside>
             <main className="resident-dashboard-main">
-              {!registrationCommunityOnlyAccess && !isDatabaseConnected && <div className="resident-database-sync-warning" role="status">
+              {!registrationCommunityOnlyAccess && !isDatabaseConnected && !isResidentDatabaseConnected && (residentDatabaseSyncError || databaseSaveError) && <div className="resident-database-sync-warning" role="status">
                 <strong>Shared database is not connected</strong>
                 <p>Changes made now are saved only in this browser and will not appear on the barangay’s other devices until the connection is restored.</p>
-                {databaseSaveError && <small>{databaseSaveError}</small>}
+                {(residentDatabaseSyncError || databaseSaveError) && <small>{residentDatabaseSyncError || databaseSaveError}</small>}
               </div>}
               <div className="resident-inbox-page-content" ref={residentDashboardContentRef}>
             {selectedInboxRequest && residentDashboardSection !== 'requests' ? (
@@ -12290,7 +13158,7 @@ function App() {
                     </div>
                     <span className="admin-panel-count">{residentPaymentHistoryRequests.length} records</span>
                   </header>
-                  <div className="table-scroll">
+                  <TableSearch label="resident payment history"><div className="table-scroll">
                     <table className="admin-table payment-history-table">
                       <thead><tr><th>Date</th><th>Request</th><th>Amount</th><th>Payment method</th><th>Reference</th><th>Status</th></tr></thead>
                       <tbody>
@@ -12322,7 +13190,7 @@ function App() {
                         {!residentPaymentHistoryRequests.length && <tr><td colSpan="6">No paid documents in your history yet.</td></tr>}
                       </tbody>
                     </table>
-                  </div>
+                  </div></TableSearch>
                 </section>
                 </div>
               </section>
@@ -12332,7 +13200,7 @@ function App() {
                   <div><span className="section-number">REQUEST ARCHIVE</span><h2>Request History</h2><p>Review past requests, their final status, and processing timeline.</p></div>
                   <span className="admin-panel-count">{residentHistoryRequests.length} records</span>
                 </header>
-                <div className="resident-history-table-wrap">
+                <TableSearch label="resident request history"><div className="resident-history-table-wrap">
                   <table className="resident-history-table resident-request-history-table">
                     <thead><tr><th>Submitted</th><th>Request ID</th><th>Documents requested</th><th>Final status</th><th>Final date</th><th>Updates</th><th>Timeline</th></tr></thead>
                     <tbody>
@@ -12358,7 +13226,7 @@ function App() {
                       {!residentHistoryRequests.length && <tr><td className="resident-table-empty" colSpan="7">Completed, declined, and cancelled requests will appear here. Active requests remain in My Requests.</td></tr>}
                     </tbody>
                   </table>
-                </div>
+                </div></TableSearch>
                 {selectedResidentHistoryRequest && <div className="resident-request-history-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelectedResidentHistoryRequestId(null); setSelectedFinishedCertificate(null) } }}>
                   <section className="resident-request-history-modal" role="dialog" aria-modal="true" aria-labelledby="resident-request-history-title">
                     <header><div><span className="section-number">REQUEST PROCESS</span><h2 id="resident-request-history-title">{(selectedResidentHistoryRequest.documents || []).join(' · ')}</h2><p>{selectedResidentHistoryRequest.id}</p></div><button type="button" aria-label="Close request history" onClick={() => { setSelectedResidentHistoryRequestId(null); setSelectedFinishedCertificate(null) }}>×</button></header>
@@ -12441,7 +13309,7 @@ function App() {
                     </div>
                   </section>
                 </div>}
-                {!isDatabaseConnected && <p className="resident-community-sync-warning" role="status">Showing locally saved announcements, events, and official details; live updates are unavailable right now.</p>}
+                {!isPublicCommunityConnected && <p className="resident-community-sync-warning" role="status">Showing locally saved announcements, events, and official details; live updates are unavailable right now.</p>}
                 <div className="resident-community-tabs" role="group" aria-label="Community categories">
                   <button type="button" id="resident-community-tab-announcements" aria-pressed={residentCommunityTab === 'announcements'} aria-controls="resident-community-panel" className={residentCommunityTab === 'announcements' ? 'active' : ''} onClick={() => setResidentCommunityTab('announcements')}>
                     <span className="resident-community-tab-icon" aria-hidden="true">▦</span><span><strong>Announcements &amp; Events</strong><small>News, notices, and community calendar</small></span><span className="resident-community-tab-arrow" aria-hidden="true">›</span>

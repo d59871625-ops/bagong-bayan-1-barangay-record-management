@@ -1785,6 +1785,7 @@ export const getCertificateHeaderDrawingPositions = async (documentBlob) => {
 
       const description = anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]?.getAttribute('descr') || ''
       return {
+        description,
         horizontal: readPosition('H'),
         vertical: readPosition('V'),
         isWatermark: /BB1 LOGO WATERMARK/i.test(description),

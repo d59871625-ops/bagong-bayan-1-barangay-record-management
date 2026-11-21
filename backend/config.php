@@ -36,9 +36,33 @@ function loadBackendEnvironment(string $path): void
             $value = substr($value, 1, -1);
         }
 
-        $currentValue = getenv($name);
-        if ($currentValue === false || $currentValue === "") {
-            putenv($name . "=" . $value);
+        $existing = backendEnv($name);
+        if ($existing === false || $existing === "") {
+            backendEnvStore($name, $value);
         }
     }
+}
+
+function &backendEnvStorage(): array
+{
+    static $store = [];
+    return $store;
+}
+
+function backendEnvStore(string $name, string $value): void
+{
+    $store = &backendEnvStorage();
+    $store[$name] = $value;
+    $_ENV[$name] = $value;
+    @putenv($name . "=" . $value);
+}
+
+function backendEnv(string $name)
+{
+    $store = &backendEnvStorage();
+    if (array_key_exists($name, $store)) {
+        return $store[$name];
+    }
+    $value = getenv($name);
+    return $value === false ? false : $value;
 }

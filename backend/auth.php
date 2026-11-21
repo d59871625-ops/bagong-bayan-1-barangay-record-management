@@ -9,6 +9,8 @@ function authenticateUser(PDO $pdo, array $allowedRoles = ["admin", "official"])
     $authorization = $headers["Authorization"]
         ?? $headers["authorization"]
         ?? $_SERVER["HTTP_AUTHORIZATION"]
+        ?? $_SERVER["REDIRECT_HTTP_AUTHORIZATION"]
+        ?? $_SERVER["REDIRECT_REDIRECT_HTTP_AUTHORIZATION"]
         ?? "";
 
     if (!preg_match('/^Bearer\s+([a-f0-9]{64})$/i', trim($authorization), $matches)) {

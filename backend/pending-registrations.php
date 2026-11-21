@@ -1,7 +1,9 @@
 <?php
 
 header("Content-Type: application/json; charset=UTF-8");
-header("Cache-Control: no-store");
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Pragma: no-cache");
+header("Expires: 0");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     require_once __DIR__ . "/db.php";

@@ -28,8 +28,8 @@ function respond(int $status, array $data): void
 
 function sendRecoveryEmail(string $recipient, string $recipientName, string $subject, string $body): void
 {
-    $username = trim((string) getenv("BRGY_GMAIL_USERNAME"));
-    $appPassword = preg_replace('/\s+/', '', (string) getenv("BRGY_GMAIL_APP_PASSWORD"));
+    $username = trim((string) backendEnv("BRGY_GMAIL_USERNAME"));
+    $appPassword = preg_replace('/\s+/', '', (string) backendEnv("BRGY_GMAIL_APP_PASSWORD"));
     if ($username === "" || $appPassword === "") {
         throw new RecoveryDeliveryException("Email delivery is not configured on the backend.", 503);
     }
@@ -44,7 +44,7 @@ function sendRecoveryEmail(string $recipient, string $recipientName, string $sub
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         $mail->CharSet = "UTF-8";
-        $mail->setFrom($username, trim((string) getenv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I");
+        $mail->setFrom($username, trim((string) backendEnv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I");
         $mail->addAddress($recipient, $recipientName);
         $mail->Subject = $subject;
         $mail->Body = $body;
