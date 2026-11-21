@@ -262,7 +262,7 @@ const getCertificateHeaderFile = async (zip, documentXml) => {
 }
 
 export const getCertificateTemplate = (document, customTemplates = []) => (
-  templates[document] || customTemplates.find((template) => template.name === document) || null
+  customTemplates.find((template) => template.name === document) || templates[document] || null
 )
 
 const getCertificateFieldType = (label, type) => (

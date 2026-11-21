@@ -3773,24 +3773,28 @@ function GcashTransferInstructions({ amount, recipients }) {
   return (
     <section className="resident-gcash-transfer-details" aria-label="GCash transfer details">
       <div><strong>Send with GCash</strong><span>Send the exact selected total of ₱{Number(amount || 0).toFixed(2)} and verify the recipient name in GCash before confirming.</span></div>
-      {recipients.map((recipient) => (
-        <article key={recipient.id}>
-          <span>GCash recipient</span>
-          <strong>{recipient.displayName}</strong>
-          <div className="resident-gcash-recipient-number">
-            <b>{recipient.mobileNumber}</b>
-            {recipient.qrImage?.dataUrl && <button
-              type="button"
-              className="resident-gcash-qr-button"
-              aria-label={`View GCash QR for ${recipient.displayName}`}
-              onClick={() => setQrRecipient(recipient)}
-            >
-              <img src={recipient.qrImage.dataUrl} alt="" />
-              <span>View QR</span>
-            </button>}
-          </div>
-        </article>
-      ))}
+      {recipients.length > 0 && <TableSearch label="GCash recipients"><div className="resident-gcash-recipient-table-wrap">
+        <table className="resident-gcash-recipient-table">
+          <thead><tr><th scope="col">Name</th><th scope="col">GCash number</th><th scope="col">QR</th></tr></thead>
+          <tbody>{recipients.map((recipient) => (
+            <tr key={recipient.id}>
+              <th scope="row">{recipient.displayName || 'Name not set'}</th>
+              <td>{recipient.mobileNumber || 'Number not set'}</td>
+              <td>{recipient.qrImage?.dataUrl
+                ? <button
+                  type="button"
+                  className="resident-gcash-qr-button"
+                  aria-label={`View GCash QR for ${recipient.displayName}`}
+                  onClick={() => setQrRecipient(recipient)}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM19 14v2M14 19h2M19 19h2v2h-2M19 17h2" /></svg>
+                  <span>View QR</span>
+                </button>
+                : <span className="resident-gcash-no-qr">Not available</span>}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div></TableSearch>}
       {!recipients.length && <p>GCash payment details are not configured. Please contact the Barangay Hall before sending payment.</p>}
       <p>Open GCash directly on your phone, then verify the recipient and amount before sending. Never share your PIN or OTP. Return here afterward to submit the receipt or reference number.</p>
       {qrRecipient?.qrImage?.dataUrl && <div className="resident-gcash-qr-backdrop" onMouseDown={(event) => {
@@ -3814,7 +3818,6 @@ function TableSearch({ label, children }) {
   const tableRegionRef = useRef(null)
   const searchStatusRef = useRef(null)
   const emptyStateRef = useRef(null)
-  const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLocaleLowerCase()
 
@@ -3845,38 +3848,20 @@ function TableSearch({ label, children }) {
     }
   }, [children, normalizedQuery])
 
-  const toggleSearch = () => {
-    if (searchOpen) setQuery('')
-    setSearchOpen((open) => !open)
-  }
-
   return (
     <div className="table-search-group">
       <div className="table-search-toolbar">
-        <button
-          type="button"
-          className="table-search-toggle"
-          aria-label={`${searchOpen ? 'Close' : 'Open'} search for ${label}`}
-          aria-expanded={searchOpen}
-          onClick={toggleSearch}
-        >
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="10.8" cy="10.8" r="6.8" />
-            <path d="m16 16 4.5 4.5" />
-          </svg>
-        </button>
-        {searchOpen && <input
+        <input
           type="search"
-          autoFocus
           aria-label={`Search ${label}`}
           placeholder={`Search ${label}`}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-        />}
-        {searchOpen && normalizedQuery && <span ref={searchStatusRef} className="table-search-count" aria-live="polite" />}
+        />
+        {normalizedQuery && <span ref={searchStatusRef} className="table-search-count" aria-live="polite" />}
       </div>
       <div className="table-search-content" ref={tableRegionRef}>{children}</div>
-      {searchOpen && normalizedQuery && <p ref={emptyStateRef} className="table-search-empty" role="status" hidden>No {label} match this search.</p>}
+      {normalizedQuery && <p ref={emptyStateRef} className="table-search-empty" role="status" hidden>No {label} match this search.</p>}
     </div>
   )
 }
@@ -4104,7 +4089,7 @@ function App() {
   const [isSendingRecoveryNotice, setIsSendingRecoveryNotice] = useState(false)
   const [officialBackendToken, setOfficialBackendToken] = useState('')
   const [adminView, setAdminView] = useState('overview')
-  const allCertificateDocuments = [...barangayDocuments, ...customCertificateTemplates.map((template) => template.name)]
+  const allCertificateDocuments = [...new Set([...barangayDocuments, ...customCertificateTemplates.map((template) => template.name)])]
   const getCertificateTemplateTarget = (request) => {
     const targets = (request?.documents || []).filter((document) => (
       allCertificateDocuments.includes(document)
@@ -4142,6 +4127,8 @@ function App() {
   const [isCustomTemplateFormOpen, setIsCustomTemplateFormOpen] = useState(false)
   const [isCustomTemplatePreviewOpen, setIsCustomTemplatePreviewOpen] = useState(false)
   const [customTemplateName, setCustomTemplateName] = useState('')
+  const [editingCertificateTemplate, setEditingCertificateTemplate] = useState('')
+  const [editingCustomTemplateId, setEditingCustomTemplateId] = useState('')
   const [customTemplateFile, setCustomTemplateFile] = useState(null)
   const certificateTemplateUploadRef = useRef(null)
   const [customTemplateDetectedFields, setCustomTemplateDetectedFields] = useState([])
@@ -9785,6 +9772,40 @@ function App() {
       : [...documents, document])
   }
 
+  const resetCustomTemplateForm = () => {
+    setEditingCertificateTemplate('')
+    setEditingCustomTemplateId('')
+    setCustomTemplateName('')
+    setCustomTemplateFile(null)
+    setCustomTemplateDetectedFields([])
+    setCustomTemplateRequirements('Valid government ID')
+    setCustomTemplateError('')
+    setCustomTemplateStatus('')
+    setIsCustomTemplatePreviewOpen(false)
+  }
+
+  const openCertificateTemplateEditor = (document) => {
+    const template = getCertificateTemplate(document, customCertificateTemplates)
+    if (!template) return
+    const customTemplate = customCertificateTemplates.find((item) => item.name === document)
+    const requirements = template.requirements || getDocumentRequirements(document, customCertificateTemplates)
+    setEditingCertificateTemplate(document)
+    setEditingCustomTemplateId(customTemplate?.id || '')
+    setCustomTemplateName(document)
+    setCustomTemplateFile(null)
+    setCustomTemplateDetectedFields([])
+    setCustomTemplateRequirements((requirements.length ? requirements : ['Valid government ID']).join('\n'))
+    setCustomTemplateError('')
+    setCustomTemplateStatus('Upload a revised DOCX. Request details, fees, and availability settings will be kept.')
+    setIsCustomTemplatePreviewOpen(false)
+    setIsCustomTemplateFormOpen(true)
+  }
+
+  const startAddingCustomCertificateTemplate = () => {
+    resetCustomTemplateForm()
+    setIsCustomTemplateFormOpen(true)
+  }
+
   const inspectCustomCertificateFile = async (file) => {
     setCustomTemplateError('')
     setCustomTemplateStatus('')
@@ -9849,13 +9870,21 @@ function App() {
     event.preventDefault()
     setCustomTemplateError('')
     setCustomTemplateStatus('')
-    const name = customTemplateName.trim()
+    const isEditing = Boolean(editingCertificateTemplate)
+    const name = isEditing ? editingCertificateTemplate : customTemplateName.trim()
     if (name.length < 3 || name.length > 80) {
       setCustomTemplateError('Enter a document name between 3 and 80 characters.')
       return
     }
-    if (allCertificateDocuments.some((document) => document.toLowerCase() === name.toLowerCase())) {
+    if (!isEditing && allCertificateDocuments.some((document) => document.toLowerCase() === name.toLowerCase())) {
       setCustomTemplateError('A certificate template with this document name already exists.')
+      return
+    }
+    const templateToReplace = editingCustomTemplateId
+      ? customCertificateTemplates.find((template) => template.id === editingCustomTemplateId)
+      : null
+    if (editingCustomTemplateId && !templateToReplace) {
+      setCustomTemplateError('This template changed while the editor was open. Close the form and reopen the template before updating it.')
       return
     }
     if (!customTemplateFile || !customTemplateDetectedFields.length) {
@@ -9889,23 +9918,33 @@ function App() {
         reader.onerror = () => reject(reader.error || new Error('The DOCX file could not be read.'))
         reader.readAsDataURL(customTemplateFile)
       })
-      const usedTemplateStorage = customCertificateTemplates.reduce((total, template) => total + template.contentBase64.length, 0)
+      const usedTemplateStorage = customCertificateTemplates
+        .filter((template) => template.id !== templateToReplace?.id)
+        .reduce((total, template) => total + template.contentBase64.length, 0)
       if (usedTemplateStorage + contentBase64.length > 5000000) {
         throw new Error('The custom certificate templates exceed the 5 MB shared-storage limit. Remove an unused template or use a smaller DOCX file.')
       }
+      const isBuiltInTemplate = Boolean(getCertificateTemplate(name, []))
       const template = {
-        id: createCustomCertificateTemplateId(),
+        ...templateToReplace,
+        id: templateToReplace?.id || createCustomCertificateTemplateId(),
         name,
         originalFilename: customTemplateFile.name,
         contentBase64,
         custom: true,
+        overridesBuiltIn: Boolean(templateToReplace?.overridesBuiltIn || (!templateToReplace && isBuiltInTemplate)),
         fields: customTemplateDetectedFields,
         requirements,
-        createdAt: new Date().toISOString(),
+        createdAt: templateToReplace?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       }
-      const nextTemplates = [...customCertificateTemplates, template]
-      const nextEnabledTemplates = [...new Set([...enabledCertificateTypes, name])]
-      const nextFees = { ...documentFees, [name]: 0 }
+      const nextTemplates = templateToReplace
+        ? customCertificateTemplates.map((item) => item.id === templateToReplace.id ? template : item)
+        : [...customCertificateTemplates, template]
+      const nextEnabledTemplates = isEditing
+        ? enabledCertificateTypes
+        : [...new Set([...enabledCertificateTypes, name])]
+      const nextFees = isEditing ? documentFees : { ...documentFees, [name]: 0 }
       await saveDatabaseRecords({
         [certificateTemplatesStorageKey]: nextTemplates,
         [enabledCertificateTypesStorageKey]: nextEnabledTemplates,
@@ -9915,10 +9954,14 @@ function App() {
       setEnabledCertificateTypes(nextEnabledTemplates)
       setDocumentFees(nextFees)
       setCustomTemplateName('')
+      setEditingCertificateTemplate('')
+      setEditingCustomTemplateId('')
       setCustomTemplateFile(null)
       setCustomTemplateDetectedFields([])
       setCustomTemplateRequirements('Valid government ID')
-      setCustomTemplateStatus(`“${name}” was saved and is available to residents.`)
+      setCustomTemplateStatus(isEditing
+        ? `The layout for “${name}” was updated. Existing request and fee records were kept.`
+        : `“${name}” was saved and is available to residents.`)
       setIsCustomTemplatePreviewOpen(false)
       setIsCustomTemplateFormOpen(false)
       setPreviewTemplateDocument(name)
@@ -9927,6 +9970,26 @@ function App() {
       setCustomTemplateError(error.message || 'The certificate template could not be saved to the database.')
     } finally {
       setIsSavingCustomTemplate(false)
+    }
+  }
+
+  const restoreBuiltInCertificateTemplate = async (template) => {
+    if (!isDatabaseConnected) {
+      setCustomTemplateError('Connect to the application database before restoring a template.')
+      return
+    }
+    if (!window.confirm(`Restore the original built-in layout for “${template.name}”? Existing requests, fees, and availability settings will be kept.`)) return
+    const nextTemplates = customCertificateTemplates.filter((item) => item.id !== template.id)
+    try {
+      await saveDatabaseRecords({
+        [certificateTemplatesStorageKey]: nextTemplates,
+      }, officialBackendToken)
+      setCustomCertificateTemplates(nextTemplates)
+      setCustomTemplateError('')
+      setCustomTemplateStatus(`The original layout for “${template.name}” was restored. Existing request records were kept.`)
+    } catch (error) {
+      console.error(`Unable to restore the built-in ${template.name} template.`, error)
+      setCustomTemplateError(error.message || 'The original template could not be restored.')
     }
   }
 
@@ -12334,16 +12397,23 @@ function App() {
             <div className="requests-heading">
               <div><span className="section-number">SOURCE DOCUMENTS</span><h2>Certificate templates</h2></div>
               <div className="certificate-template-header-actions">
-                <button type="button" className="resident-table-action" aria-expanded={isCustomTemplateFormOpen} aria-controls="certificate-template-upload-form" onClick={() => setIsCustomTemplateFormOpen((isOpen) => !isOpen)}>{isCustomTemplateFormOpen ? 'Close form' : 'Add document'}</button>
+                <button type="button" className="resident-table-action" aria-expanded={isCustomTemplateFormOpen} aria-controls="certificate-template-upload-form" onClick={() => {
+                  if (isCustomTemplateFormOpen) {
+                    resetCustomTemplateForm()
+                    setIsCustomTemplateFormOpen(false)
+                  } else {
+                    startAddingCustomCertificateTemplate()
+                  }
+                }}>{isCustomTemplateFormOpen ? (editingCertificateTemplate ? 'Cancel edit' : 'Close form') : 'Add document'}</button>
                 <span className="request-notification">{enabledCertificateTypes.length} enabled</span>
               </div>
             </div>
             <p className="resident-report-note">Manage resident document types and their fees. Uploaded DOCX files receive the standard barangay header shown in the preview; the remaining layout and content are preserved, with only confirmed values inserted when a certificate is prepared.</p>
             {isCustomTemplateFormOpen && <form id="certificate-template-upload-form" ref={certificateTemplateUploadRef} className="certificate-template-upload" onSubmit={saveCustomCertificateTemplate}>
-              <div><span className="section-number">ADD A TEMPLATE</span><h3>Upload a resident document</h3><p>The scan reads the document text, underlined blanks, checkbox symbols, and checkbox-style lists. Each blank stays separate; checkbox options are grouped by their question. Review the counts and edit any unclear labels before residents use the form. Add required proof documents below.</p></div>
+              <div><span className="section-number">{editingCertificateTemplate ? 'EDIT TEMPLATE' : 'ADD A TEMPLATE'}</span><h3>{editingCertificateTemplate ? `Replace the ${editingCertificateTemplate} layout` : 'Upload a resident document'}</h3><p>The scan reads the document text, underlined blanks, checkbox symbols, and checkbox-style lists. Each blank stays separate; checkbox options are grouped by their question. Review the counts and edit any unclear labels before residents use the form. Add required proof documents below.</p></div>
               <div className="certificate-template-upload-fields">
-                <label>Document name<input type="text" value={customTemplateName} onChange={(event) => setCustomTemplateName(event.target.value)} maxLength="80" required /></label>
-                <label>Original DOCX file<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => inspectCustomCertificateFile(event.target.files?.[0])} required={!customTemplateFile} /><small>DOCX only · 1.5 MB maximum</small></label>
+                <label>Document name<input type="text" value={customTemplateName} onChange={(event) => setCustomTemplateName(event.target.value)} maxLength="80" required readOnly={Boolean(editingCertificateTemplate)} /></label>
+                <label>{editingCertificateTemplate ? 'Replacement DOCX file' : 'Original DOCX file'}<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => inspectCustomCertificateFile(event.target.files?.[0])} required={!customTemplateFile} /><small>DOCX only · 1.5 MB maximum</small></label>
               </div>
               {customTemplateFile && <button type="button" className="resident-table-action certificate-template-upload-preview-button" onClick={() => setIsCustomTemplatePreviewOpen(true)}>Preview uploaded DOCX</button>}
               {customTemplateFile && customTemplateDetectedFields.length > 0 && <section className="certificate-template-field-review" aria-label="Detected resident fields">
@@ -12383,7 +12453,7 @@ function App() {
               <label className="certificate-template-proof-fields">Required proof documents<textarea value={customTemplateRequirements} onChange={(event) => setCustomTemplateRequirements(event.target.value)} rows="2" placeholder={'Valid government ID\nProof of residency'} required /><small>One requirement per line. Use the exact text “Valid government ID” to show the existing front/back ID and PhilSys verification workflow.</small></label>
               {customTemplateError && <p className="community-update-error" role="alert">{customTemplateError}</p>}
               {customTemplateStatus && <p className="resident-account-message" role="status">{customTemplateStatus}</p>}
-              <button type="submit" className="check-button" disabled={isSavingCustomTemplate || !customTemplateFile || !customTemplateDetectedFields.length || !isStorageLoaded}>{isSavingCustomTemplate ? 'Saving template…' : 'Save custom template'}</button>
+              <button type="submit" className="check-button" disabled={isSavingCustomTemplate || !customTemplateFile || !customTemplateDetectedFields.length || !isStorageLoaded}>{isSavingCustomTemplate ? 'Saving template…' : editingCertificateTemplate ? 'Update template layout' : 'Save custom template'}</button>
             </form>}
             {!isCustomTemplateFormOpen && customTemplateStatus && <p className="resident-account-message" role="status">{customTemplateStatus}</p>}
             <div className="certificate-template-grid">{allCertificateDocuments.map((document) => {
@@ -12403,8 +12473,11 @@ function App() {
                   <div className="table-actions">
                     <button type="button" disabled={!template} onClick={() => { setHighlightedCertificateTemplate(document); setProcessingTemplateDocument(document) }}>Process request <span className="certificate-template-request-count">{processingRequests.length}</span></button>
                     <button type="button" disabled={!template} onClick={() => setPreviewTemplateDocument(document)}>Preview template</button>
+                    <button type="button" className="certificate-template-edit" disabled={!template} onClick={() => openCertificateTemplateEditor(document)}>Edit layout</button>
                     <label className="template-enabled-toggle"><input type="checkbox" checked={isEnabled} onChange={() => toggleCertificateType(document)} />Available to residents</label>
-                    {template?.custom && <button type="button" className="table-delete" onClick={() => deleteCustomCertificateTemplate(template)}>Delete template</button>}
+                    {template?.overridesBuiltIn
+                      ? <button type="button" className="table-delete" onClick={() => restoreBuiltInCertificateTemplate(template)}>Restore original</button>
+                      : template?.custom && <button type="button" className="table-delete" onClick={() => deleteCustomCertificateTemplate(template)}>Delete template</button>}
                   </div>
                 </article>
                 <label className="certificate-template-fee">Fee per copy <span aria-hidden="true">₱</span><input type="number" min="0" step="0.01" value={documentFees[document] ?? 0} onChange={(event) => updateDocumentFee(document, event.target.value)} aria-label={`${document} fee per copy in pesos`} /></label>

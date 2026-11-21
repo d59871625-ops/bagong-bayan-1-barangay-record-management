@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Barangay Bagong Bayan 1",
+  "short_name": "Barangay BB1",
+  "description": "Official online services and community updates for Barangay Bagong Bayan 1, Bongabong, Oriental Mindoro.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f9f6",
+  "theme_color": "#0b7138",
+  "icons": [
+    {
+      "src": "/barangay-seal.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
