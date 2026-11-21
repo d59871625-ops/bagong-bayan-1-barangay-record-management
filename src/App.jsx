@@ -25,7 +25,7 @@ import './App.css'
 const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(value)
 const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
-const DATABASE_REFRESH_INTERVAL_MS = 5000
+const DATABASE_REFRESH_INTERVAL_MS = 1000
 const productionBackendApiUrl = `${window.location.origin}/backend`
 const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredBackendApiUrl))
   ? configuredBackendApiUrl
@@ -52,7 +52,7 @@ const readJsonResponse = async (response, endpointName) => {
   }
 }
 
-const fetchWithTimeout = async (url, options = {}, timeoutMs = DATABASE_REFRESH_INTERVAL_MS) => {
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   const { signal: externalSignal, ...requestOptions } = options
   const controller = new AbortController()
   let timedOut = false
@@ -7964,7 +7964,7 @@ function App() {
           setDatabaseSaveStatus('error')
           setIsDatabaseConnected(false)
         })
-    }, 350)
+    }, 50)
 
     return () => window.clearTimeout(saveTimer)
   }, [
