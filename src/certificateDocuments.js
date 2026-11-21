@@ -1728,7 +1728,268 @@ const updateCertificateEditorParagraph = (documentXml, paragraph, edit) => {
   })
 }
 
-export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs = [], imageFiles = [] }) => {
+const setCertificateEditorImageExtent = (anchor, widthPx, heightPx) => {
+  const width = Math.max(12, Math.min(960, Number(widthPx) || 160)) * 9525
+  const height = Math.max(12, Math.min(960, Number(heightPx) || 120)) * 9525
+  const extent = anchor.getElementsByTagNameNS(drawingNamespace, 'extent')[0]
+  if (!extent) throw new Error('The picture placement in this Word template has no dimensions.')
+  extent.setAttribute('cx', String(Math.round(width)))
+  extent.setAttribute('cy', String(Math.round(height)))
+  const transformExtent = anchor.getElementsByTagNameNS(drawingMainNamespace, 'xfrm')[0]
+    ?.getElementsByTagNameNS(drawingMainNamespace, 'ext')[0]
+  if (transformExtent) {
+    transformExtent.setAttribute('cx', String(Math.round(width)))
+    transformExtent.setAttribute('cy', String(Math.round(height)))
+  }
+}
+
+const setCertificateEditorImagePosition = (anchor, axis, offsetPx) => {
+  const positionName = `position${axis}`
+  let position = anchor.getElementsByTagNameNS(drawingNamespace, positionName)[0]
+  if (!position) {
+    position = anchor.ownerDocument.createElementNS(drawingNamespace, `wp:${positionName}`)
+    anchor.insertBefore(position, anchor.getElementsByTagNameNS(drawingNamespace, 'extent')[0] || null)
+  }
+  position.setAttribute('relativeFrom', 'page')
+  Array.from(position.children).forEach((child) => position.removeChild(child))
+  const offset = anchor.ownerDocument.createElementNS(drawingNamespace, 'wp:posOffset')
+  offset.textContent = String(Math.round(Math.max(0, Math.min(2000, Number(offsetPx) || 0) * 9525)))
+  position.appendChild(offset)
+}
+
+const createCertificateEditorPictureAnchor = (documentXml, imageIndex) => {
+  const create = (namespace, name) => documentXml.createElementNS(namespace, name)
+  const anchor = create(drawingNamespace, 'wp:anchor')
+  for (const [name, value] of Object.entries({
+    distT: '0',
+    distB: '0',
+    distL: '0',
+    distR: '0',
+    simplePos: '0',
+    relativeHeight: String(251658240 + imageIndex),
+    behindDoc: '0',
+    locked: '0',
+    layoutInCell: '1',
+    allowOverlap: '1',
+  })) anchor.setAttribute(name, value)
+  const simplePosition = create(drawingNamespace, 'wp:simplePos')
+  simplePosition.setAttribute('x', '0')
+  simplePosition.setAttribute('y', '0')
+  anchor.appendChild(simplePosition)
+  for (const axis of ['H', 'V']) {
+    const position = create(drawingNamespace, `wp:position${axis}`)
+    position.setAttribute('relativeFrom', 'page')
+    const offset = create(drawingNamespace, 'wp:posOffset')
+    offset.textContent = '0'
+    position.appendChild(offset)
+    anchor.appendChild(position)
+  }
+  const extent = create(drawingNamespace, 'wp:extent')
+  extent.setAttribute('cx', String(160 * 9525))
+  extent.setAttribute('cy', String(120 * 9525))
+  anchor.appendChild(extent)
+  const effectExtent = create(drawingNamespace, 'wp:effectExtent')
+  for (const side of ['l', 't', 'r', 'b']) effectExtent.setAttribute(side, '0')
+  anchor.appendChild(effectExtent)
+  anchor.appendChild(create(drawingNamespace, 'wp:wrapNone'))
+  const drawingProperties = create(drawingNamespace, 'wp:docPr')
+  drawingProperties.setAttribute('id', String(imageIndex + 1))
+  drawingProperties.setAttribute('name', `Inserted picture ${imageIndex + 1}`)
+  anchor.appendChild(drawingProperties)
+  const frameProperties = create(drawingNamespace, 'wp:cNvGraphicFramePr')
+  const frameLocks = create(drawingMainNamespace, 'a:graphicFrameLocks')
+  frameLocks.setAttribute('noChangeAspect', '1')
+  frameProperties.appendChild(frameLocks)
+  anchor.appendChild(frameProperties)
+
+  const graphic = create(drawingMainNamespace, 'a:graphic')
+  const graphicData = create(drawingMainNamespace, 'a:graphicData')
+  graphicData.setAttribute('uri', 'http://schemas.openxmlformats.org/drawingml/2006/picture')
+  const picture = create('http://schemas.openxmlformats.org/drawingml/2006/picture', 'pic:pic')
+  const nonVisualProperties = create('http://schemas.openxmlformats.org/drawingml/2006/picture', 'pic:nvPicPr')
+  const pictureProperties = create('http://schemas.openxmlformats.org/drawingml/2006/picture', 'pic:cNvPr')
+  pictureProperties.setAttribute('id', String(imageIndex + 1))
+  pictureProperties.setAttribute('name', `Inserted picture ${imageIndex + 1}`)
+  nonVisualProperties.appendChild(pictureProperties)
+  nonVisualProperties.appendChild(create('http://schemas.openxmlformats.org/drawingml/2006/picture', 'pic:cNvPicPr'))
+  picture.appendChild(nonVisualProperties)
+  const imageFill = create('http://schemas.openxmlformats.org/drawingml/2006/picture', 'pic:blipFill')
+  imageFill.appendChild(create(drawingMainNamespace, 'a:blip'))
+  const stretch = create(drawingMainNamespace, 'a:stretch')
+  stretch.appendChild(create(drawingMainNamespace, 'a:fillRect'))
+  imageFill.appendChild(stretch)
+  picture.appendChild(imageFill)
+  const shapeProperties = create('http://schemas.openxmlformats.org/drawingml/2006/picture', 'pic:spPr')
+  const transform = create(drawingMainNamespace, 'a:xfrm')
+  const transformOffset = create(drawingMainNamespace, 'a:off')
+  transformOffset.setAttribute('x', '0')
+  transformOffset.setAttribute('y', '0')
+  const transformExtent = create(drawingMainNamespace, 'a:ext')
+  transformExtent.setAttribute('cx', String(160 * 9525))
+  transformExtent.setAttribute('cy', String(120 * 9525))
+  transform.appendChild(transformOffset)
+  transform.appendChild(transformExtent)
+  shapeProperties.appendChild(transform)
+  const geometry = create(drawingMainNamespace, 'a:prstGeom')
+  geometry.setAttribute('prst', 'rect')
+  geometry.appendChild(create(drawingMainNamespace, 'a:avLst'))
+  shapeProperties.appendChild(geometry)
+  picture.appendChild(shapeProperties)
+  graphicData.appendChild(picture)
+  graphic.appendChild(graphicData)
+  anchor.appendChild(graphic)
+  return anchor
+}
+
+const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIndex, imageFile, imageIndex) => {
+  if (!imageFile || !['image/png', 'image/jpeg'].includes(imageFile.mimeType)
+    || typeof imageFile.contentBase64 !== 'string' || !imageFile.contentBase64
+    || !Number.isInteger(paragraphIndex) || !certificateEditorPartPathPattern.test(partPath)) {
+    throw new Error('Added pictures must be PNG or JPEG files placed inside a Word document paragraph.')
+  }
+  const paragraphs = getWordParagraphs(documentXml)
+  const paragraph = paragraphs[paragraphIndex]
+  if (!paragraph) throw new Error(`The DOCX part "${partPath}" is missing paragraph ${paragraphIndex + 1}.`)
+
+  let imageDrawing = null
+  let maxDrawingPropertyId = 0
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir || !/^word\/(?:document|header\d+|footer\d+|bb1-standard-header)\.xml$/.test(path)) continue
+    const sourceXml = new DOMParser().parseFromString(await entry.async('text'), 'application/xml')
+    if (sourceXml.getElementsByTagName('parsererror').length) continue
+    maxDrawingPropertyId = Math.max(maxDrawingPropertyId, ...Array.from(sourceXml.getElementsByTagNameNS(drawingNamespace, 'docPr'))
+      .map((item) => Number(item.getAttribute('id') || 0)))
+    if (!imageDrawing) {
+      imageDrawing = Array.from(sourceXml.getElementsByTagNameNS(wordNamespace, 'drawing'))
+        .find((drawing) => drawing.getElementsByTagNameNS(drawingMainNamespace, 'blip').length)
+    }
+  }
+  let anchor
+  const sourceAnchor = imageDrawing?.getElementsByTagNameNS(drawingNamespace, 'anchor')[0]
+  const sourceInline = imageDrawing?.getElementsByTagNameNS(drawingNamespace, 'inline')[0]
+  if (sourceAnchor) {
+    anchor = sourceAnchor.cloneNode(true)
+  } else if (sourceInline) {
+    anchor = documentXml.createElementNS(drawingNamespace, 'wp:anchor')
+    for (const [name, value] of Object.entries({
+      distT: '0',
+      distB: '0',
+      distL: '0',
+      distR: '0',
+      simplePos: '0',
+      relativeHeight: String(251658240 + imageIndex),
+      behindDoc: '0',
+      locked: '0',
+      layoutInCell: '1',
+      allowOverlap: '1',
+    })) anchor.setAttribute(name, value)
+    const simplePosition = documentXml.createElementNS(drawingNamespace, 'wp:simplePos')
+    simplePosition.setAttribute('x', '0')
+    simplePosition.setAttribute('y', '0')
+    anchor.appendChild(simplePosition)
+    for (const axis of ['H', 'V']) {
+      const position = documentXml.createElementNS(drawingNamespace, `wp:position${axis}`)
+      position.setAttribute('relativeFrom', 'page')
+      const offset = documentXml.createElementNS(drawingNamespace, 'wp:posOffset')
+      offset.textContent = '0'
+      position.appendChild(offset)
+      anchor.appendChild(position)
+    }
+    for (const childName of ['extent', 'effectExtent']) {
+      const child = Array.from(sourceInline.children)
+        .find((item) => item.namespaceURI === drawingNamespace && item.localName === childName)
+      if (child) anchor.appendChild(child.cloneNode(true))
+    }
+    anchor.appendChild(documentXml.createElementNS(drawingNamespace, 'wp:wrapNone'))
+    for (const childName of ['docPr', 'cNvGraphicFramePr']) {
+      const child = Array.from(sourceInline.children)
+        .find((item) => item.namespaceURI === drawingNamespace && item.localName === childName)
+      if (child) anchor.appendChild(child.cloneNode(true))
+    }
+    const graphic = Array.from(sourceInline.children)
+      .find((item) => item.namespaceURI === drawingMainNamespace && item.localName === 'graphic')
+    if (graphic) anchor.appendChild(graphic.cloneNode(true))
+  } else {
+    anchor = createCertificateEditorPictureAnchor(documentXml, imageIndex)
+  }
+
+  const mediaExtension = imageFile.mimeType === 'image/png' ? 'png' : 'jpg'
+  let mediaPath = `word/media/editor-image-${Date.now()}-${imageIndex}.${mediaExtension}`
+  while (zip.file(mediaPath)) mediaPath = `word/media/editor-image-${Date.now()}-${imageIndex}-${Math.random().toString(36).slice(2, 7)}.${mediaExtension}`
+  const directory = partPath.slice(0, partPath.lastIndexOf('/'))
+  const fileName = partPath.slice(partPath.lastIndexOf('/') + 1)
+  const relationshipsPath = `${directory}/_rels/${fileName}.rels`
+  const relationshipsFile = zip.file(relationshipsPath)
+  const relationshipsXml = relationshipsFile
+    ? new DOMParser().parseFromString(await relationshipsFile.async('text'), 'application/xml')
+    : new DOMParser().parseFromString(`<Relationships xmlns="${packageRelationshipsNamespace}"></Relationships>`, 'application/xml')
+  if (relationshipsXml.getElementsByTagName('parsererror').length) {
+    throw new Error(`The DOCX part "${partPath}" has invalid image relationship data.`)
+  }
+  const existingRelationships = Array.from(relationshipsXml.getElementsByTagNameNS(packageRelationshipsNamespace, 'Relationship'))
+  const numericIds = existingRelationships.map((relationship) => Number(relationship.getAttribute('Id')?.match(/^rId(\d+)$/)?.[1] || 0))
+  const relationshipId = `rId${Math.max(0, ...numericIds) + 1}`
+  const relationship = relationshipsXml.createElementNS(packageRelationshipsNamespace, 'Relationship')
+  relationship.setAttribute('Id', relationshipId)
+  relationship.setAttribute('Type', `${relationshipsNamespace}/image`)
+  relationship.setAttribute('Target', `media/${mediaPath.split('/').pop()}`)
+  relationshipsXml.documentElement.appendChild(relationship)
+  zip.file(relationshipsPath, new XMLSerializer().serializeToString(relationshipsXml))
+  zip.file(mediaPath, imageFile.contentBase64, { base64: true })
+
+  const contentTypesFile = zip.file('[Content_Types].xml')
+  if (!contentTypesFile) throw new Error('The DOCX package is missing its content type definitions.')
+  const contentTypesXml = new DOMParser().parseFromString(await contentTypesFile.async('text'), 'application/xml')
+  if (contentTypesXml.getElementsByTagName('parsererror').length) {
+    throw new Error('The DOCX package has invalid content type definitions.')
+  }
+  const hasDefaultType = Array.from(contentTypesXml.getElementsByTagNameNS(packageContentTypesNamespace, 'Default'))
+    .some((entry) => entry.getAttribute('Extension')?.toLowerCase() === mediaExtension)
+  if (!hasDefaultType) {
+    const defaultType = contentTypesXml.createElementNS(packageContentTypesNamespace, 'Default')
+    defaultType.setAttribute('Extension', mediaExtension)
+    defaultType.setAttribute('ContentType', imageFile.mimeType)
+    contentTypesXml.documentElement.appendChild(defaultType)
+    zip.file('[Content_Types].xml', new XMLSerializer().serializeToString(contentTypesXml))
+  }
+
+  const blip = anchor.getElementsByTagNameNS(drawingMainNamespace, 'blip')[0]
+  if (!blip) throw new Error('The picture placement in this Word template has no image reference.')
+  blip.setAttributeNS(relationshipsNamespace, 'r:embed', relationshipId)
+  const crop = anchor.getElementsByTagNameNS(drawingMainNamespace, 'srcRect')[0]
+  crop?.parentNode.removeChild(crop)
+  const drawingProperties = anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0]
+  if (drawingProperties) {
+    const newDrawingPropertyId = String(maxDrawingPropertyId + 1)
+    drawingProperties.setAttribute('id', newDrawingPropertyId)
+    drawingProperties.setAttribute('name', imageFile.altText || `Inserted picture ${imageIndex + 1}`)
+    drawingProperties.setAttribute('descr', imageFile.altText || '')
+    const pictureProperties = anchor.getElementsByTagNameNS('http://schemas.openxmlformats.org/drawingml/2006/picture', 'cNvPr')[0]
+    pictureProperties?.setAttribute('id', newDrawingPropertyId)
+    if (pictureProperties) pictureProperties.setAttribute('name', mediaPath.split('/').pop())
+  }
+  anchor.setAttribute('allowOverlap', '1')
+  anchor.setAttribute('behindDoc', imageFile.behindText ? '1' : '0')
+  const wrapNodes = Array.from(anchor.children)
+    .filter((child) => child.namespaceURI === drawingNamespace && child.localName.startsWith('wrap'))
+  const wrapNone = documentXml.createElementNS(drawingNamespace, 'wp:wrapNone')
+  if (wrapNodes.length) {
+    wrapNodes.forEach((node) => anchor.removeChild(node))
+    anchor.insertBefore(wrapNone, anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0] || null)
+  } else {
+    anchor.insertBefore(wrapNone, anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0] || null)
+  }
+  setCertificateEditorImageExtent(anchor, imageFile.widthPx, imageFile.heightPx)
+  setCertificateEditorImagePosition(anchor, 'H', imageFile.x)
+  setCertificateEditorImagePosition(anchor, 'V', imageFile.y)
+  const drawing = documentXml.createElementNS(wordNamespace, 'w:drawing')
+  drawing.appendChild(anchor)
+  const run = documentXml.createElementNS(wordNamespace, 'w:r')
+  run.appendChild(drawing)
+  paragraph.appendChild(run)
+}
+
+export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs = [], imageFiles = [], insertedImages = [] }) => {
   const zip = await JSZip.loadAsync(documentBlob)
   const groupedEdits = new Map()
   paragraphs.forEach((edit) => {
@@ -1763,6 +2024,19 @@ export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs =
     }
     if (!zip.file(imageFile.path)) throw new Error(`The DOCX file is missing image "${imageFile.path}".`)
     zip.file(imageFile.path, imageFile.contentBase64, { base64: true })
+  }
+  for (const [imageIndex, image] of insertedImages.entries()) {
+    if (!image || typeof image.partPath !== 'string' || !Number.isInteger(image.paragraphIndex)) {
+      throw new Error('The template editor received an invalid picture location.')
+    }
+    const partFile = zip.file(image.partPath)
+    if (!partFile) throw new Error(`The DOCX file is missing "${image.partPath}".`)
+    const xml = new DOMParser().parseFromString(await partFile.async('text'), 'application/xml')
+    if (xml.getElementsByTagName('parsererror').length) {
+      throw new Error(`The DOCX part "${image.partPath}" contains invalid Word XML.`)
+    }
+    await addCertificateEditorImage(zip, xml, image.partPath, image.paragraphIndex, image, imageIndex)
+    zip.file(image.partPath, new XMLSerializer().serializeToString(xml))
   }
   return zip.generateAsync({
     type: 'blob',

@@ -1305,17 +1305,27 @@ function CertificateTemplateRequestPicker({ document, requests, viewedState, onC
 }
 
 function CertificateTemplateContentEditor({ document, customTemplates, onClose, onApply }) {
+  const editorCanvasRef = useRef(null)
+  const paragraphsRef = useRef([])
   const [sourceBlob, setSourceBlob] = useState(null)
   const [paragraphs, setParagraphs] = useState([])
   const [images, setImages] = useState([])
   const [imageReplacements, setImageReplacements] = useState({})
+  const [insertedImages, setInsertedImages] = useState([])
   const [activeParagraphKey, setActiveParagraphKey] = useState('')
   const [activePart, setActivePart] = useState('word/document.xml')
   const [isLoading, setIsLoading] = useState(true)
+  const [isRendered, setIsRendered] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
   const [previewFile, setPreviewFile] = useState(null)
+  const [previewedDraft, setPreviewedDraft] = useState(false)
+  const [reviewFields, setReviewFields] = useState(null)
   const template = getCertificateTemplate(document, customTemplates)
+
+  useEffect(() => {
+    paragraphsRef.current = paragraphs
+  }, [paragraphs])
 
   useEffect(() => {
     let isCurrent = true
@@ -1349,6 +1359,73 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   }, [document, customTemplates, template])
 
   useEffect(() => {
+    if (!sourceBlob || !editorCanvasRef.current) return undefined
+    let isCurrent = true
+    const renderEditableTemplate = async () => {
+      setIsRendered(false)
+      try {
+        editorCanvasRef.current.replaceChildren()
+        const { renderAsync } = await import('docx-preview')
+        await renderAsync(sourceBlob, editorCanvasRef.current, null, {
+          className: 'certificate-docx',
+          inWrapper: true,
+          breakPages: true,
+          useBase64URL: true,
+        })
+        if (!isCurrent) return
+        await waitForCertificatePreviewAssets(editorCanvasRef.current)
+        if (!isCurrent) return
+        const candidates = paragraphsRef.current
+        const claimed = new Set()
+        const renderedParagraphs = Array.from(editorCanvasRef.current.querySelectorAll('section.certificate-docx p'))
+        const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim()
+        renderedParagraphs.forEach((element) => {
+          const renderedText = normalizeText(element.textContent)
+          let paragraph = candidates.find((candidate) => (
+            !claimed.has(candidate.key) && normalizeText(candidate.originalText) === renderedText
+          ))
+          if (!paragraph && renderedText) {
+            paragraph = candidates.find((candidate) => (
+              !claimed.has(candidate.key)
+              && normalizeText(candidate.originalText)
+              && (normalizeText(candidate.originalText).includes(renderedText)
+                || renderedText.includes(normalizeText(candidate.originalText)))
+            ))
+          }
+          if (!paragraph) return
+          claimed.add(paragraph.key)
+          element.dataset.certificateParagraphKey = paragraph.key
+          element.contentEditable = 'true'
+          element.setAttribute('role', 'textbox')
+          element.setAttribute('aria-label', `Edit ${paragraph.partLabel} paragraph`)
+          element.setAttribute('aria-multiline', 'true')
+          element.addEventListener('focus', () => {
+            setActiveParagraphKey(paragraph.key)
+            setActivePart(paragraph.partPath)
+          })
+          element.addEventListener('input', () => {
+            const text = element.innerText.replace(/\u00a0/g, ' ')
+            setParagraphs((current) => current.map((item) => (
+              item.key === paragraph.key ? { ...item, text } : item
+            )))
+            setPreviewedDraft(false)
+            setReviewFields(null)
+          })
+        })
+        editorCanvasRef.current.querySelectorAll('section.certificate-docx').forEach((page) => {
+          page.setAttribute('contenteditable', 'false')
+        })
+        if (isCurrent) setIsRendered(true)
+      } catch (renderError) {
+        console.error(`Unable to render the ${document} template editor canvas.`, renderError)
+        if (isCurrent) setError(renderError.message || 'The certificate page could not be displayed for editing.')
+      }
+    }
+    renderEditableTemplate()
+    return () => { isCurrent = false }
+  }, [document, sourceBlob])
+
+  useEffect(() => {
     const closeOnEscape = (event) => {
       if (event.key === 'Escape') {
         if (previewFile) setPreviewFile(null)
@@ -1364,6 +1441,30 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       paragraph.key === key ? { ...paragraph, ...update } : paragraph
     )))
     setActiveParagraphKey(key)
+    setPreviewedDraft(false)
+    setReviewFields(null)
+  }
+
+  const addTextMarker = (marker) => {
+    const activeElement = editorCanvasRef.current?.querySelector(`[data-certificate-paragraph-key="${activeParagraphKey}"]`)
+    if (!activeElement) {
+      setError('Select a paragraph on the page before inserting a blank or checkbox.')
+      return
+    }
+    if (activeParagraph?.partPath !== 'word/document.xml') {
+      setError('Resident fillable fields can only be inserted in the document body. Header and footer text can still be edited.')
+      return
+    }
+    activeElement.focus()
+    const selection = window.getSelection()
+    const hasSelection = selection?.rangeCount && activeElement.contains(selection.getRangeAt(0).commonAncestorContainer)
+    if (hasSelection) {
+      window.document.execCommand('insertText', false, marker)
+    } else {
+      activeElement.appendChild(activeElement.ownerDocument.createTextNode(marker))
+    }
+    activeElement.dispatchEvent(new Event('input', { bubbles: true }))
+    setError('')
   }
 
   const replaceImage = async (image, file) => {
@@ -1421,15 +1522,26 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       const imageFiles = images
         .filter((image) => imageReplacements[image.path])
         .map((image) => ({ path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }))
-      if (!changedParagraphs.length && !imageFiles.length) {
+      if (!changedParagraphs.length && !imageFiles.length && !insertedImages.length) {
         setError('Make a text, formatting, or picture change before applying the edited template.')
         return
       }
-      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles })
+      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, insertedImages })
       const file = new File([blob], template.originalFilename || `${document}.docx`, {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
-      const applied = await onApply(file)
+      if (!reviewFields) {
+        const fields = await onApply(file)
+        if (!Array.isArray(fields)) throw new Error('The edited template fields could not be reviewed.')
+        setReviewFields(fields)
+        setError('')
+        return
+      }
+      if (reviewFields.some((field) => field.needsReview || !field.label.trim())) {
+        setError('Review and give a clear label to every field marked “Needs review” before saving.')
+        return
+      }
+      const applied = await onApply(file, reviewFields)
       if (applied === false) return
       onClose()
     } catch (saveError) {
@@ -1463,10 +1575,12 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       const imageFiles = images
         .filter((image) => imageReplacements[image.path])
         .map((image) => ({ path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }))
-      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles })
+      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, insertedImages })
       setPreviewFile(new File([blob], template.originalFilename || `${document}.docx`, {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }))
+      setPreviewedDraft(true)
+      setReviewFields(null)
     } catch (previewError) {
       console.error(`Unable to preview edits to the ${document} template.`, previewError)
       setError(previewError.message || 'The edited template preview could not be prepared.')
@@ -1475,15 +1589,81 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     }
   }
 
-  const visibleParagraphs = paragraphs.filter((paragraph) => paragraph.partPath === activePart)
   const activeParagraph = paragraphs.find((paragraph) => paragraph.key === activeParagraphKey)
   const partOptions = [...new Map(paragraphs.map((paragraph) => [paragraph.partPath, paragraph.partLabel])).entries()]
 
+  const addPicture = async (file) => {
+    if (!file) return
+    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+      setError('Add a PNG or JPEG picture.')
+      return
+    }
+    if (file.size > 1500000) {
+      setError('Pictures must be 1.5 MB or smaller.')
+      return
+    }
+    if (!activeParagraph) {
+      setError('Select a paragraph on the page before adding a picture.')
+      return
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error || new Error('The picture could not be read.'))
+        reader.readAsDataURL(file)
+      })
+      setInsertedImages((current) => [...current, {
+        partPath: activeParagraph.partPath,
+        paragraphIndex: activeParagraph.paragraphIndex,
+        mimeType: file.type,
+        contentBase64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+        dataUrl,
+        altText: file.name.replace(/\.[^.]+$/, ''),
+        x: 80,
+        y: 80,
+        widthPx: 160,
+        heightPx: 120,
+        behindText: false,
+      }])
+      setPreviewedDraft(false)
+      setReviewFields(null)
+      setError('')
+    } catch (readError) {
+      console.error(`Unable to read a new picture for ${document}.`, readError)
+      setError(readError.message || 'The picture could not be read.')
+    }
+  }
+
+  const updateInsertedImage = (index, update) => {
+    setInsertedImages((current) => current.map((image, imageIndex) => (
+      imageIndex === index ? { ...image, ...update } : image
+    )))
+    setPreviewedDraft(false)
+    setReviewFields(null)
+  }
+
+  useEffect(() => {
+    paragraphs.forEach((paragraph) => {
+      const element = editorCanvasRef.current?.querySelector(`[data-certificate-paragraph-key="${paragraph.key}"]`)
+      if (!element) return
+      const style = paragraph.style || {}
+      element.style.fontFamily = style.fontName || ''
+      element.style.fontSize = style.fontSize ? `${style.fontSize}pt` : ''
+      element.style.color = style.color || ''
+      element.style.textAlign = style.alignment === 'both' ? 'justify' : style.alignment || ''
+      element.style.fontWeight = style.bold ? 'bold' : ''
+      element.style.fontStyle = style.italic ? 'italic' : ''
+      element.style.textDecoration = style.underline ? 'underline' : ''
+      element.classList.toggle('is-editor-selected', paragraph.key === activeParagraphKey)
+    })
+  }, [activeParagraphKey, paragraphs])
+
   return (
-    <div className="certificate-template-preview-backdrop certificate-template-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="certificate-template-preview-backdrop certificate-template-editor-backdrop">
       <section className="docx-preview-panel certificate-template-content-editor" role="dialog" aria-modal="true" aria-labelledby="certificate-content-editor-title">
         <header className="certificate-content-editor-heading">
-          <div><p className="section-number">BASIC WORD-STYLE EDITOR</p><h2 id="certificate-content-editor-title">{document}</h2><p>Edit the text, paragraph formatting, header/footer text, and existing pictures. Page setup and other Word layout details stay in the DOCX.</p></div>
+          <div><p className="section-number">TEMPLATE LAYOUT EDITOR</p><h2 id="certificate-content-editor-title">{document}</h2><p>Click text on the page to edit it. Insert fillable blanks, checkbox choices, or pictures; review the detected resident fields before saving.</p></div>
           <button type="button" onClick={onClose}>Close editor</button>
         </header>
         {error && <p className="community-update-error" role="alert">{error}</p>}
@@ -1491,57 +1671,85 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           ? <p className="docx-preview-loading" role="status">Opening the current DOCX template…</p>
           : paragraphs.length === 0
             ? <p className="docx-preview-loading">No editable Word paragraphs were found in this template.</p>
-            : <div className="certificate-content-editor-body">
-              <nav className="certificate-content-editor-parts" aria-label="Document sections">
-                {partOptions.map(([partPath, partLabel]) => <button
-                  type="button"
-                  className={activePart === partPath ? 'active' : ''}
-                  key={partPath}
-                  onClick={() => {
-                    setActivePart(partPath)
-                    setActiveParagraphKey(paragraphs.find((paragraph) => paragraph.partPath === partPath)?.key || '')
-                  }}
-                >{partLabel}<span>{paragraphs.filter((paragraph) => paragraph.partPath === partPath).length}</span></button>)}
-              </nav>
-              <div className="certificate-content-editor-main">
-                {activeParagraph && <section className="certificate-content-formatting" aria-label="Selected paragraph formatting">
-                  <label>Font<select value={activeParagraph.style.fontName} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontName: event.target.value } })}><option value="">Keep template font</option>{['Arial', 'Calibri', 'Times New Roman', 'Georgia', 'Verdana', 'Tahoma'].map((font) => <option key={font}>{font}</option>)}</select></label>
-                  <label>Size<select value={activeParagraph.style.fontSize} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontSize: event.target.value } })}><option value="">Keep size</option>{[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((size) => <option key={size} value={size}>{size} pt</option>)}</select></label>
-                  <label>Text color<input aria-label="Selected paragraph text color" type="color" value={activeParagraph.style.color || '#000000'} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, color: event.target.value } })} /></label>
-                  <label>Alignment<select value={activeParagraph.style.alignment} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, alignment: event.target.value } })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option><option value="both">Justified</option></select></label>
-                  <div className="certificate-content-formatting-toggles">
-                    <button type="button" aria-pressed={activeParagraph.style.bold} onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, bold: !activeParagraph.style.bold } })}><strong>B</strong></button>
-                    <button type="button" aria-pressed={activeParagraph.style.italic} onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, italic: !activeParagraph.style.italic } })}><em>I</em></button>
-                    <button type="button" aria-pressed={activeParagraph.style.underline} onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, underline: !activeParagraph.style.underline } })}><u>U</u></button>
+            : <div className="certificate-template-editor-workspace">
+              <aside className="certificate-template-editor-tools" aria-label="Page editing tools">
+                <section className="certificate-editor-tool-section">
+                  <h3>Document section</h3>
+                  <select value={activePart} onChange={(event) => {
+                    setActivePart(event.target.value)
+                    const target = paragraphs.find((paragraph) => paragraph.partPath === event.target.value)
+                    if (target) {
+                      setActiveParagraphKey(target.key)
+                      editorCanvasRef.current?.querySelector(`[data-certificate-paragraph-key="${target.key}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                    }
+                  }}>{partOptions.map(([partPath, partLabel]) => <option key={partPath} value={partPath}>{partLabel}</option>)}</select>
+                </section>
+                {activeParagraph && <section className="certificate-editor-tool-section">
+                  <h3>Selected paragraph</h3>
+                  <div className="certificate-content-formatting">
+                    <label>Font<select value={activeParagraph.style.fontName} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontName: event.target.value } })}><option value="">Keep template</option>{['Arial', 'Calibri', 'Times New Roman', 'Georgia', 'Verdana', 'Tahoma'].map((font) => <option key={font}>{font}</option>)}</select></label>
+                    <label>Size<select value={activeParagraph.style.fontSize} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontSize: event.target.value } })}><option value="">Keep size</option>{[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((size) => <option key={size} value={size}>{size} pt</option>)}</select></label>
+                    <label>Text color<input aria-label="Selected paragraph text color" type="color" value={activeParagraph.style.color || '#000000'} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, color: event.target.value } })} /></label>
+                    <label>Alignment<select value={activeParagraph.style.alignment} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, alignment: event.target.value } })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option><option value="both">Justified</option></select></label>
+                    <div className="certificate-content-formatting-toggles">
+                      <button type="button" aria-pressed={activeParagraph.style.bold} aria-label="Bold" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, bold: !activeParagraph.style.bold } })}><strong>B</strong></button>
+                      <button type="button" aria-pressed={activeParagraph.style.italic} aria-label="Italic" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, italic: !activeParagraph.style.italic } })}><em>I</em></button>
+                      <button type="button" aria-pressed={activeParagraph.style.underline} aria-label="Underline paragraph" onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, underline: !activeParagraph.style.underline } })}><u>U</u></button>
+                    </div>
+                  </div>
+                  <div className="certificate-editor-insert-actions">
+                    <button type="button" onClick={() => addTextMarker(' ____________________ ')}>Insert fillable blank</button>
+                    <button type="button" onClick={() => addTextMarker(' ☐ Option ')}>Insert checkbox choice</button>
                   </div>
                 </section>}
-                <div className="certificate-content-editor-paragraphs">
-                  {visibleParagraphs.map((paragraph, index) => <label className={`certificate-content-editor-paragraph${paragraph.key === activeParagraphKey ? ' active' : ''}`} key={paragraph.key}>
-                    <span><strong>Paragraph {index + 1}</strong>{paragraph.text ? <small>{paragraph.text.length} characters</small> : <small>Blank paragraph</small>}</span>
-                    <textarea
-                      rows={Math.min(5, Math.max(2, Math.ceil(paragraph.text.length / 84)))}
-                      value={paragraph.text}
-                      placeholder="Type paragraph text"
-                      onFocus={() => setActiveParagraphKey(paragraph.key)}
-                      onChange={(event) => updateParagraph(paragraph.key, { text: event.target.value })}
-                    />
-                  </label>)}
-                </div>
-                {images.length > 0 && <section className="certificate-content-editor-images" aria-label="Document pictures">
-                  <div><h3>Pictures</h3><p>Replace an existing picture using the same image format. Its current position and size stay in the document.</p></div>
-                  <div className="certificate-content-editor-image-grid">{images.map((image) => <label key={image.path}>
+                <section className="certificate-editor-tool-section">
+                  <h3>Pictures</h3>
+                  <label className="certificate-editor-picture-upload">Add picture<input type="file" accept="image/png,image/jpeg" onChange={(event) => { addPicture(event.target.files?.[0]); event.target.value = '' }} /></label>
+                  <small>Select a paragraph first. New pictures can be positioned over the page, including over existing logos.</small>
+                  {images.length > 0 && <div className="certificate-content-editor-image-grid">{images.map((image) => <label key={image.path}>
                     <img src={imageReplacements[image.path]?.dataUrl || image.dataUrl} alt={`Current ${image.path.split('/').pop()} in ${document}`} />
                     <span>{image.path.split('/').pop()}</span>
                     <input type="file" accept={image.mimeType} onChange={(event) => replaceImage(image, event.target.files?.[0])} />
-                    <small>{image.mimeType.split('/')[1].toUpperCase()} only · 1.5 MB maximum</small>
-                  </label>)}</div>
-                </section>}
-              </div>
+                    <small>Replace existing picture · {image.mimeType.split('/')[1].toUpperCase()}</small>
+                  </label>)}</div>}
+                  {insertedImages.map((image, index) => <div className="certificate-editor-inserted-image" key={`${image.altText}-${index}`}>
+                    <img src={image.dataUrl} alt="" />
+                    <strong>{image.altText}</strong>
+                    <label>Left (px)<input type="number" min="0" max="2000" value={image.x} onChange={(event) => updateInsertedImage(index, { x: Number(event.target.value) })} /></label>
+                    <label>Top (px)<input type="number" min="0" max="2000" value={image.y} onChange={(event) => updateInsertedImage(index, { y: Number(event.target.value) })} /></label>
+                    <label>Width (px)<input type="number" min="12" max="960" value={image.widthPx} onChange={(event) => updateInsertedImage(index, { widthPx: Number(event.target.value) })} /></label>
+                    <label>Height (px)<input type="number" min="12" max="960" value={image.heightPx} onChange={(event) => updateInsertedImage(index, { heightPx: Number(event.target.value) })} /></label>
+                    <label className="certificate-editor-behind-toggle"><input type="checkbox" checked={image.behindText} onChange={(event) => updateInsertedImage(index, { behindText: event.target.checked })} />Place behind text</label>
+                    <button type="button" className="table-delete" onClick={() => { setInsertedImages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setPreviewedDraft(false); setReviewFields(null) }}>Remove picture</button>
+                  </div>)}
+                </section>
+              </aside>
+              <main className="certificate-template-editor-paper-area">
+                {!isRendered && <p className="docx-preview-loading" role="status">Rendering the template page…</p>}
+                <div className="certificate-template-editor-canvas" ref={editorCanvasRef} aria-label="Editable certificate page" />
+              </main>
             </div>}
+        {reviewFields && <section className="certificate-editor-field-review" aria-label="Review detected resident fields">
+          <div><h3>Review resident fields</h3><p>Fields removed from the page are removed here. New or uncertain fields need a clear label. Existing proof-document requirements are unchanged.</p></div>
+          {reviewFields.length
+            ? <div className="certificate-editor-field-list">{reviewFields.map((field, index) => <label key={`${field.key}-${field.paragraph}-${field.textNodeIndex}-${index}`} className={field.needsReview ? 'needs-review' : ''}>
+              <span><strong>{field.type === 'checkbox' ? `Checkbox: ${field.choiceLabel || 'Choice'}` : `Field ${index + 1}`}</strong><small>{field.context || `Paragraph ${Number(field.paragraph) + 1}`}</small></span>
+              <input value={field.label} aria-label={`Field ${index + 1} resident-facing label`} onChange={(event) => {
+                const label = event.target.value
+                const normalizedLabel = label.trim().toLowerCase()
+                const needsReview = !normalizedLabel || ['please identify this field', 'select an option'].includes(normalizedLabel)
+                setReviewFields((current) => current.map((item, itemIndex) => itemIndex === index
+                  ? { ...item, label, needsReview, labelConfidence: needsReview ? 'low' : 'reviewed' }
+                  : item))
+              }} />
+              {field.needsReview && <em>Needs review</em>}
+            </label>)}</div>
+            : <p className="certificate-editor-no-fields">No fillable resident fields remain. The document can still be saved as a template.</p>}
+        </section>}
         <footer className="certificate-content-editor-actions">
-          <span>{paragraphs.length} paragraphs · {images.length} pictures · DOCX layout preserved</span>
-          <button type="button" className="resident-table-action" disabled={isLoading || isSaving || !sourceBlob} onClick={draftPreview}>Preview edits</button>
-          <button type="button" className="check-button" disabled={isLoading || isSaving || !sourceBlob} onClick={saveEdits}>{isSaving ? 'Preparing…' : 'Apply edits'}</button>
+          <span>{paragraphs.length} paragraphs · {images.length + insertedImages.length} pictures · {reviewFields ? `${reviewFields.length} resident fields detected` : 'Original paper geometry retained'}{!previewedDraft ? ' · Preview again after each change' : ''}</span>
+          <button type="button" className="resident-table-action" disabled={!isRendered || isSaving || !sourceBlob} onClick={draftPreview}>Preview edits</button>
+          <button type="button" className="check-button" disabled={!isRendered || isSaving || !sourceBlob || !previewedDraft} onClick={saveEdits}>{isSaving ? 'Preparing…' : reviewFields ? 'Save template' : 'Review fields'}</button>
         </footer>
         {previewFile && <CertificateTemplatePreview document={document} uploadedFile={previewFile} onClose={() => setPreviewFile(null)} />}
       </section>
@@ -10064,25 +10272,96 @@ function App() {
   const openCertificateTemplateEditor = (document) => {
     const template = getCertificateTemplate(document, customCertificateTemplates)
     if (!template) return
-    const customTemplate = customCertificateTemplates.find((item) => item.name === document)
-    const requirements = template.requirements || getDocumentRequirements(document, customCertificateTemplates)
     setEditingCertificateTemplate(document)
-    setEditingCustomTemplateId(customTemplate?.id || '')
-    setCustomTemplateName(document)
-    setCustomTemplateFile(null)
-    setCustomTemplatePreserveHeader(false)
-    setCustomTemplateDetectedFields([])
-    setCustomTemplateRequirements((requirements.length ? requirements : ['Valid government ID']).join('\n'))
     setCustomTemplateError('')
-    setCustomTemplateStatus('Use the in-browser editor to change existing text, paragraph formatting, or pictures. The remaining DOCX layout and existing request settings will be preserved.')
+    setCustomTemplateStatus('')
+    setIsCustomTemplateFormOpen(false)
     setIsCustomTemplatePreviewOpen(false)
-    setIsCertificateTemplateEditorOpen(false)
-    setIsCustomTemplateFormOpen(true)
+    setIsCertificateTemplateEditorOpen(true)
   }
 
-  const applyCertificateTemplateEditorChanges = async (file) => {
-    const applied = await inspectCustomCertificateFile(file, { preserveHeader: true })
-    return applied
+  const applyCertificateTemplateEditorChanges = async (file, reviewedFields) => {
+    const name = editingCertificateTemplate
+    const existingCustomTemplate = customCertificateTemplates.find((template) => template.name === name)
+    const currentTemplate = getCertificateTemplate(name, customCertificateTemplates)
+    if (!name || !currentTemplate) throw new Error('The certificate template is no longer available. Close the editor and reopen it.')
+    if (!reviewedFields) {
+      let detectedFields = []
+      try {
+        detectedFields = await scanCertificateTemplateFields(file)
+      } catch (scanError) {
+        if (!/No fillable blank fields, checkbox options, or text boxes were found/i.test(scanError.message || '')) throw scanError
+      }
+      const previousFields = currentTemplate.fields || []
+      return detectedFields.map((field) => {
+        const previousField = previousFields.find((candidate) => (
+          (candidate.type === field.type
+            || (!candidate.type && field.type !== 'checkbox')
+            || (field.type === 'checkbox' && candidate.options?.includes(field.choiceLabel)))
+          && ((Number.isInteger(candidate.paragraph) && candidate.paragraph === field.paragraph
+            && candidate.textNodeIndex === field.textNodeIndex)
+            || (!Number.isInteger(candidate.paragraph)
+              && ((candidate.key === field.key && candidate.label === field.label)
+                || String(candidate.label || '').trim().toLowerCase() === String(field.label || '').trim().toLowerCase())))
+          && (field.type !== 'checkbox' || candidate.choiceLabel === field.choiceLabel || candidate.options?.includes(field.choiceLabel))
+          && (!candidate.context || candidate.context === field.context)
+        ))
+        if (!previousField) {
+          return { ...field, needsReview: true, labelConfidence: 'low' }
+        }
+        return {
+          ...field,
+          label: previousField.label || field.label,
+          needsReview: Boolean(field.needsReview && previousField.labelConfidence !== 'reviewed'),
+          labelConfidence: previousField.labelConfidence === 'reviewed' ? 'reviewed' : field.labelConfidence,
+        }
+      })
+    }
+
+    if (reviewedFields.some((field) => field.needsReview || !String(field.label || '').trim())) {
+      throw new Error('Review every new or uncertain resident field before saving the template.')
+    }
+    if (!isDatabaseConnected) throw new Error('Connect to the application database before saving a template.')
+    const contentBase64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = String(reader.result || '')
+        const separator = result.indexOf(',')
+        if (separator < 0) reject(new Error('The edited DOCX could not be encoded for online storage.'))
+        else resolve(result.slice(separator + 1))
+      }
+      reader.onerror = () => reject(reader.error || new Error('The edited DOCX could not be read.'))
+      reader.readAsDataURL(file)
+    })
+    const usedStorage = customCertificateTemplates
+      .filter((template) => template.id !== existingCustomTemplate?.id)
+      .reduce((total, template) => total + template.contentBase64.length, 0)
+    if (usedStorage + contentBase64.length > 5000000) {
+      throw new Error('The custom certificate templates exceed the 5 MB shared-storage limit. Use a smaller DOCX file.')
+    }
+    const now = new Date().toISOString()
+    const updatedTemplate = {
+      ...existingCustomTemplate,
+      id: existingCustomTemplate?.id || createCustomCertificateTemplateId(),
+      name,
+      originalFilename: file.name,
+      contentBase64,
+      custom: true,
+      preserveHeader: true,
+      overridesBuiltIn: Boolean(existingCustomTemplate?.overridesBuiltIn || (!existingCustomTemplate && getCertificateTemplate(name, []))),
+      fields: reviewedFields,
+      requirements: existingCustomTemplate?.requirements || currentTemplate.requirements || getDocumentRequirements(name, customCertificateTemplates),
+      createdAt: existingCustomTemplate?.createdAt || now,
+      updatedAt: now,
+    }
+    const nextTemplates = existingCustomTemplate
+      ? customCertificateTemplates.map((template) => template.id === existingCustomTemplate.id ? updatedTemplate : template)
+      : [...customCertificateTemplates, updatedTemplate]
+    await saveDatabaseRecords({ [certificateTemplatesStorageKey]: nextTemplates }, officialBackendToken)
+    setCustomCertificateTemplates(nextTemplates)
+    setCustomTemplateError('')
+    setCustomTemplateStatus(`The layout for “${name}” was saved online. Existing proof-document requirements, requests, fees, and availability settings were kept.`)
+    return true
   }
 
   const startAddingCustomCertificateTemplate = () => {
