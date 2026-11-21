@@ -94,6 +94,7 @@ jobs:
           port: 21
           local-dir: ./deploy/
           server-dir: /htdocs/
+          state-name: .ftp-deploy-sync-state-nov18.json
           dangerous-clean-slate: false
           timeout: 120000
           log-level: standard
