@@ -4935,8 +4935,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .role-panel-step i { color: #869889; font-size: 8px; font-style: normal; font-weight: 600; letter-spacing: .45px; }
 .is-home-page .role-options { gap: 10px; }
 .is-home-page .role-button {
-  min-height: 76px;
-  padding: 12px 14px;
+  min-height: 104px;
+  padding: 20px 20px;
   border-color: #e0e9e1;
   border-radius: 12px;
   background: rgba(255, 255, 255, .86);
@@ -4951,18 +4951,18 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 }
 .is-home-page .role-button:focus-visible { outline: 3px solid rgba(60, 122, 69, .55); outline-offset: 2px; }
 .is-home-page .role-icon {
-  flex: 0 0 42px;
-  width: 42px;
-  height: 42px;
-  margin-right: 13px;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  margin-right: 16px;
   border: 1px solid #dce9dc;
   border-radius: 12px;
   background: #eff6ef;
   color: #34774a;
 }
 .is-home-page .role-text { gap: 4px; }
-.is-home-page .role-text strong { color: #203d29; font-size: 15px; }
-.is-home-page .role-text small { color: #68796b; font-size: 11px; }
+.is-home-page .role-text strong { color: #203d29; font-size: 17px; }
+.is-home-page .role-text small { color: #68796b; font-size: 12px; }
 .is-home-page .arrow { color: #39784a; font-size: 21px; }
 .is-home-page .selection-message {
   min-height: 14px;
