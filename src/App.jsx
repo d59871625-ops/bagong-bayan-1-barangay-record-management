@@ -1076,6 +1076,13 @@ const renderCertificateDocxPages = async (container, blob, documentName, provide
   return Array.from(container.querySelectorAll('section.certificate-docx'))
 }
 
+const preloadCertificateTemplatePreview = async (document, customTemplates = EMPTY_CERTIFICATE_TEMPLATES) => {
+  const template = getCertificateTemplate(document, customTemplates)
+  if (!template || (!template.file && !template.custom)) return
+  const blob = await getCertificateTemplateSourceBlob(document, customTemplates)
+  await renderCertificateDocxPages(window.document.createElement('div'), blob, document)
+}
+
 const matchEditedCertificateFields = (detectedFields, previousFields) => detectedFields.map((field) => {
   const previousField = previousFields.find((candidate) => (
     (candidate.type === field.type
@@ -1396,14 +1403,13 @@ function IssuedDocumentHistoryButton({ entry, request }) {
       )).join('')
       historyWindow.document.open()
       historyWindow.document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Process history · ${escape(entry.controlNumber)}</title><style>
-        *{box-sizing:border-box}body{margin:0;padding:32px;background:#edf2ed;color:#263329;font:14px/1.5 Arial,sans-serif}.sheet{max-width:820px;margin:auto;padding:36px;background:#fff;border:1px solid #d5e0d6;border-radius:12px}.eyebrow{color:#3c7a45;font-size:11px;font-weight:700;letter-spacing:.14em}h1{margin:4px 0 20px;font-size:26px}h2{margin:24px 0 8px;font-size:16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:9px;border-bottom:1px solid #e4ebe4}th{width:32%;color:#526357}.timeline,.activity,.requirements{display:grid;gap:8px;margin:0;padding:0;list-style:none}.timeline li,.activity li{display:flex;gap:12px;padding:9px;border:1px solid #e4ebe4;border-radius:8px}.timeline li>span{display:grid;place-items:center;flex:0 0 26px;height:26px;border-radius:50%;background:#edf7ed;color:#286334;font-weight:700}.timeline li div,.activity li{min-width:0}.timeline li time,.activity li span{display:block;color:#68746a;font-size:12px}.requirements{padding-left:22px;list-style:disc}.actions{display:flex;justify-content:flex-end;margin-bottom:20px}.actions button{padding:9px 14px;border:0;border-radius:7px;background:#2e7041;color:#fff;font-weight:700;cursor:pointer}@media print{body{padding:0;background:#fff}.sheet{max-width:none;padding:0;border:0;border-radius:0}.actions{display:none}h1{font-size:22px}h2{break-after:avoid}.timeline li,.activity li,table tr{break-inside:avoid}}
-      </style></head><body><main class="sheet"><div class="actions"><button id="print-history" type="button">Print history</button></div><p class="eyebrow">BARANGAY BAGONG BAYAN 1 · ISSUANCE REGISTER</p><h1>Issued document process history</h1><table><tbody>
+        *{box-sizing:border-box}body{margin:0;padding:32px;background:#edf2ed;color:#263329;font:14px/1.5 Arial,sans-serif}.sheet{max-width:820px;margin:auto;padding:36px;background:#fff;border:1px solid #d5e0d6;border-radius:12px}.eyebrow{color:#3c7a45;font-size:11px;font-weight:700;letter-spacing:.14em}h1{margin:4px 0 20px;font-size:26px}h2{margin:24px 0 8px;font-size:16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:9px;border-bottom:1px solid #e4ebe4}th{width:32%;color:#526357}.timeline,.activity,.requirements{display:grid;gap:8px;margin:0;padding:0;list-style:none}.timeline li,.activity li{display:flex;gap:12px;padding:9px;border:1px solid #e4ebe4;border-radius:8px}.timeline li>span{display:grid;place-items:center;flex:0 0 26px;height:26px;border-radius:50%;background:#edf7ed;color:#286334;font-weight:700}.timeline li div,.activity li{min-width:0}.timeline li time,.activity li span{display:block;color:#68746a;font-size:12px}.requirements{padding-left:22px;list-style:disc}.actions{display:flex;justify-content:flex-start;margin-bottom:20px}.actions button{display:grid;place-items:center;width:40px;height:40px;padding:8px;border:0;border-radius:50%;background:#2e7041;color:#fff;cursor:pointer}.actions button:hover{background:#245b34}.actions button:focus-visible{outline:3px solid #8ccf8d;outline-offset:3px}.actions svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}@media print{body{padding:0;background:#fff}.sheet{max-width:none;padding:0;border:0;border-radius:0}.actions{display:none}h1{font-size:22px}h2{break-after:avoid}.timeline li,.activity li,table tr{break-inside:avoid}}
+      </style></head><body><main class="sheet"><div class="actions"><button id="back-history" type="button" aria-label="Back to issued documents" title="Back to issued documents"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 12H5m7 7-7-7 7-7"/></svg></button></div><p class="eyebrow">BARANGAY BAGONG BAYAN 1 · ISSUANCE REGISTER</p><h1>Issued document process history</h1><table><tbody>
       <tr><th>Control number</th><td>${escape(entry.controlNumber)}</td></tr><tr><th>Request ID</th><td>${escape(entry.requestId)}</td></tr><tr><th>Resident / recipient</th><td>${escape(entry.releasedTo || entry.resident)}</td></tr><tr><th>Document</th><td>${escape(entry.document)}</td></tr><tr><th>Purpose</th><td>${escape(entry.purpose || 'Not provided')}</td></tr><tr><th>OR number</th><td>${escape(entry.orNumber || '—')}</td></tr><tr><th>Issuing officer</th><td>${escape(entry.issuingOfficer || '—')}</td></tr><tr><th>Issued</th><td>${escape(formatDate(entry.date))}</td></tr>
       </tbody></table><h2>Request status timeline</h2><ol class="timeline">${statusRows || '<li>No status history was recorded.</li>'}</ol><h2>Submitted information</h2><table><tbody>${detailRows || '<tr><td colspan="2">No submitted information was recorded.</td></tr>'}</tbody></table><h2>Requirements</h2><ul class="requirements">${requirementRows || '<li>No requirement history was recorded.</li>'}</ul><h2>Processing activity</h2><ul class="activity">${activityRows || '<li>No processing activity was recorded.</li>'}</ul></main></body></html>`)
       historyWindow.document.close()
-      historyWindow.document.getElementById('print-history')?.addEventListener('click', () => {
-        historyWindow.focus()
-        historyWindow.print()
+      historyWindow.document.getElementById('back-history')?.addEventListener('click', () => {
+        historyWindow.close()
       })
       setError('')
     } catch (openError) {
@@ -1413,11 +1419,11 @@ function IssuedDocumentHistoryButton({ entry, request }) {
     }
   }
 
-  return <span className="issued-document-print-control">
-    <button type="button" className="open-request issued-document-print" onClick={openHistory} aria-label={`View process history for ${entry.document}`}>
+  return <span className="issued-document-history-control">
+    <button type="button" className="open-request issued-document-history-action" onClick={openHistory} aria-label={`View process history for ${entry.document}`}>
       View history
     </button>
-    {error && <small className="issued-document-print-error" role="alert">{error}</small>}
+    {error && <small className="issued-document-history-error" role="alert">{error}</small>}
   </span>
 }
 
@@ -5224,6 +5230,40 @@ function App() {
   const [previewTemplateDocument, setPreviewTemplateDocument] = useState(null)
   const [processingTemplateDocument, setProcessingTemplateDocument] = useState(null)
   const [highlightedCertificateTemplate, setHighlightedCertificateTemplate] = useState(null)
+  useEffect(() => {
+    if (!showOfficialDashboard || adminView !== 'certificateTemplates') return undefined
+    let isCancelled = false
+    let idleHandle
+    let timeoutHandle
+    let index = 0
+    const documents = [...new Set([...barangayDocuments, ...customCertificateTemplates.map((template) => template.name)])]
+    const scheduleNext = () => {
+      if (isCancelled || index >= documents.length) return
+      if (typeof window.requestIdleCallback === 'function') {
+        idleHandle = window.requestIdleCallback(preloadNext, { timeout: 1000 })
+      } else {
+        timeoutHandle = window.setTimeout(preloadNext, 0)
+      }
+    }
+    const preloadNext = async () => {
+      if (isCancelled || index >= documents.length) return
+      const document = documents[index++]
+      try {
+        await preloadCertificateTemplatePreview(document, customCertificateTemplates)
+      } catch (error) {
+        console.error(`Unable to prepare the ${document} template preview.`, error)
+      }
+      scheduleNext()
+    }
+    scheduleNext()
+    return () => {
+      isCancelled = true
+      if (idleHandle !== undefined && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleHandle)
+      }
+      if (timeoutHandle !== undefined) window.clearTimeout(timeoutHandle)
+    }
+  }, [adminView, customCertificateTemplates, showOfficialDashboard])
   const [isCustomTemplateFormOpen, setIsCustomTemplateFormOpen] = useState(false)
   const [isCustomTemplatePreviewOpen, setIsCustomTemplatePreviewOpen] = useState(false)
   const [customTemplateName, setCustomTemplateName] = useState('')
@@ -13646,7 +13686,15 @@ function App() {
                   {template?.custom && <small className="certificate-template-requirements">Proof: {template.requirements.join(' · ')}</small>}
                   <div className="table-actions">
                     <button type="button" disabled={!template} onClick={() => { setHighlightedCertificateTemplate(document); setProcessingTemplateDocument(document) }}>Process request <span className="certificate-template-request-count">{processingRequests.length}</span></button>
-                    <button type="button" disabled={!template} onClick={() => setPreviewTemplateDocument(document)}>Preview template</button>
+                    <button
+                      type="button"
+                      disabled={!template}
+                      onPointerEnter={() => preloadCertificateTemplatePreview(document, customCertificateTemplates)
+                        .catch((error) => console.error(`Unable to prepare the ${document} template preview.`, error))}
+                      onFocus={() => preloadCertificateTemplatePreview(document, customCertificateTemplates)
+                        .catch((error) => console.error(`Unable to prepare the ${document} template preview.`, error))}
+                      onClick={() => setPreviewTemplateDocument(document)}
+                    >Preview template</button>
                     <button type="button" className="certificate-template-edit" disabled={!template} onClick={() => openCertificateTemplateEditor(document)}>Edit layout</button>
                     <label className="template-enabled-toggle"><input type="checkbox" checked={isEnabled} onChange={() => toggleCertificateType(document)} />Available to residents</label>
                     {template?.overridesBuiltIn

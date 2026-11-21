@@ -7042,11 +7042,11 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .issued-documents-workspace .issued-documents-table th:last-child,
 .issued-documents-workspace .issued-documents-table td:last-child { width: 140px; }
 .issued-document-action-cell { min-width: 140px; }
-.issued-document-print-control { display: grid; justify-items: start; gap: 4px; }
-.issued-document-print { min-height: 32px; padding: 6px 9px; }
-.issued-document-print-error { max-width: 180px; color: #8f372d; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.issued-document-history-control { display: grid; justify-items: start; gap: 4px; }
+.issued-document-history-action { min-height: 32px; padding: 6px 9px; }
+.issued-document-history-error { max-width: 180px; color: #8f372d; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .issued-document-print-unavailable { color: #68746a; font-size: 10px; }
-.official-dashboard.dark-mode .issued-document-print-error { color: #f0aaa0; }
+.official-dashboard.dark-mode .issued-document-history-error { color: #f0aaa0; }
 .official-dashboard.dark-mode .issued-document-print-unavailable { color: #b6c2b7; }
 .document-request-workspace {
   display: grid;

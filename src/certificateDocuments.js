@@ -144,7 +144,7 @@ const templates = {
       { paragraph: 22, values: { dateIssued: [{ slot: 0, part: 'day' }, { slot: 2, part: 'month' }] } },
     ],
     replacements: [
-      { paragraph: 22, from: '2026', value: (data) => dateYear(data.dateIssued) },
+      { paragraph: 22, from: '2026', value: (data) => dateYear(data.dateIssued), allowEmpty: true, removeFollowingSpace: true },
       { paragraph: 7, from: 'Ang kanyang ', value: () => 'Ang ' },
       { paragraph: 7, from: 'kanyang ', value: () => 'na kanyang ' },
     ],
@@ -183,7 +183,7 @@ const templates = {
     file: permitToConstructUrl,
     fields: [fields.fullName, fields.constructionOwner, fields.dateIssued],
     blanks: [{ paragraph: 8, values: { fullName: 0, constructionOwner: { slot: 4 } } }, { paragraph: 9, values: { dateIssued: [{ slot: 0, part: 'day' }, { slot: 1, part: 'month' }] } }],
-    replacements: [{ paragraph: 9, from: '2026', value: (data) => dateYear(data.dateIssued) }],
+    replacements: [{ paragraph: 9, from: '2026', value: (data) => dateYear(data.dateIssued), allowEmpty: true, removeFollowingSpace: true }],
   },
   'Solo Parent Certification': {
     file: soloParentCertificationUrl,
@@ -1488,34 +1488,6 @@ const suppressCertificateAutoHyphenation = (documentXml, documentName) => {
     }
     suppressHyphens.setAttributeNS(wordNamespace, 'w:val', '1')
   })
-}
-
-const splitPermitOwnerUnderline = (documentXml, documentName, certificateData) => {
-  if (documentName !== 'Permit to Construct' || String(certificateData?.constructionOwner ?? '').trim()) return
-  const paragraph = getWordParagraphs(documentXml)[8]
-  if (!paragraph) throw new Error('The Permit to Construct template is missing its property-owner field.')
-  const underlinedBlanks = Array.from(paragraph.getElementsByTagNameNS(wordNamespace, 't'))
-    .filter((textNode) => {
-      const text = textNode.textContent || ''
-      const runProperties = Array.from(textNode.parentNode?.children || [])
-        .find((child) => child.namespaceURI === wordNamespace && child.localName === 'rPr')
-      const isUnderlined = Array.from(runProperties?.children || [])
-        .some((property) => property.namespaceURI === wordNamespace
-          && property.localName === 'u'
-          && property.getAttributeNS(wordNamespace, 'val') !== 'none')
-      return isUnderlined && /^\s+$/.test(text) && text.length > 24
-    })
-  const ownerUnderline = underlinedBlanks[underlinedBlanks.length - 1]
-  if (!ownerUnderline) throw new Error('The Permit to Construct template is missing its long property-owner underline.')
-
-  const text = ownerUnderline.textContent || ''
-  const splitAt = 12
-  setRunText(ownerUnderline, text.slice(0, splitAt))
-  const lineBreak = documentXml.createElementNS(wordNamespace, 'w:br')
-  const remainingUnderline = documentXml.createElementNS(wordNamespace, 'w:t')
-  setRunText(remainingUnderline, text.slice(splitAt))
-  ownerUnderline.parentNode.insertBefore(lineBreak, ownerUnderline.nextSibling)
-  ownerUnderline.parentNode.insertBefore(remainingUnderline, lineBreak.nextSibling)
 }
 
 const setAssistanceChecklist = (paragraphs, selectedValue, documentName, numberingXml) => {
@@ -3379,8 +3351,6 @@ export const createFilledCertificateDocx = async (documentName, certificateData,
     if (replacement === null || replacement === undefined || (replacement === '' && !allowEmpty)) return
     replaceParagraphText(paragraph, from, replacement, documentName, normalizePreviousSpace, removeFollowingSpace)
   })
-
-  splitPermitOwnerUnderline(documentXml, documentName, certificateData)
 
   if (documentName === 'Certificate of Indigency') {
     removeTrailingUnderlinedWhitespace(paragraphs[22])
