@@ -351,7 +351,7 @@ try {
         respond(409, ["success" => false, "message" => "The resident account does not have a valid login code to replace."]);
     }
     $destination = trim((string) ($resident["email"] ?? $resident["emailAddress"] ?? $resident["email_address"] ?? ""));
-    if ($destination === "" && !$isDatabaseResident) {
+    if ($destination === "") {
         $destination = findApprovedRegistrationEmail($pdo, $previousCode);
     }
     if ($destination === "") {

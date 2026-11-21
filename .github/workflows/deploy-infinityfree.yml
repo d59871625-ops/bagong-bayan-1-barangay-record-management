@@ -57,6 +57,7 @@ jobs:
           php -l backend/public-community.php
           php -l backend/certificate-to-pdf.php
           php -l backend/resident-request-sync.php
+          php -l backend/resident-code-recovery.php
 
       - name: Prepare production files
         run: |
