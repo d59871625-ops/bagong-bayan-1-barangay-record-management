@@ -21,8 +21,16 @@ import {
 } from './certificateDocuments.js'
 import './App.css'
 
-const BACKEND_API_URL = import.meta.env.VITE_BACKEND_API_URL?.trim() || 'http://127.0.0.1:8000'
-const API_URL = import.meta.env.VITE_API_URL?.trim() || `${BACKEND_API_URL}/api.php`
+const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(value)
+const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
+const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
+const productionBackendApiUrl = `${window.location.origin}/backend`
+const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredBackendApiUrl))
+  ? configuredBackendApiUrl
+  : import.meta.env.PROD ? productionBackendApiUrl : 'http://127.0.0.1:8000'
+const API_URL = configuredApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredApiUrl))
+  ? configuredApiUrl
+  : `${BACKEND_API_URL}/api.php`
 const EMPTY_CERTIFICATE_TEMPLATES = Object.freeze([])
 const CERTIFICATE_PDF_URL = import.meta.env.VITE_CERTIFICATE_PDF_URL?.trim()
   || API_URL.replace(/\/api\.php$/, '/certificate-to-pdf.php')
