@@ -11231,7 +11231,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .certificate-editor-inserted-image > strong { grid-column: span 2; overflow: hidden; color: #355d3b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .certificate-editor-inserted-image > label { display: grid; gap: 3px; color: #526357; font-size: 8px; }
 .certificate-editor-inserted-image input[type="number"] { width: 100%; min-width: 0; min-height: 28px; padding: 4px 5px; border: 1px solid #d5e5d7; border-radius: 5px; color: #263329; font: 10px var(--sans); }
-.certificate-editor-inserted-image .certificate-editor-behind-toggle { display: flex; grid-column: span 2; align-items: center; gap: 5px; }
+.certificate-editor-inserted-image .certificate-editor-picture-layout { grid-column: 1 / -1; }
+.certificate-editor-inserted-image .certificate-editor-picture-layout select { width: 100%; min-width: 0; min-height: 28px; padding: 4px 5px; border: 1px solid #d5e5d7; border-radius: 5px; background: #fff; color: #263329; font: 9px var(--sans); }
 .certificate-editor-inserted-image > button { grid-column: 1 / -1; justify-self: start; min-height: 28px; padding: 5px 8px; font-size: 9px; }
 .certificate-template-editor-paper-area {
   min-width: 0;
@@ -11243,6 +11244,11 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   background: #e9eee9;
 }
 .certificate-template-editor-canvas { width: max-content; min-width: 100%; margin: 0 auto; }
+.certificate-editor-image-overlay { position: absolute; box-sizing: border-box; border: 1px dashed transparent; cursor: move; touch-action: none; user-select: none; }
+.certificate-editor-image-overlay.is-selected { border-color: #3c7a45; outline: 1px solid rgba(60, 122, 69, .35); }
+.certificate-editor-image-overlay > img { display: block; width: 100%; height: 100%; max-width: none; object-fit: fill; pointer-events: none; }
+.certificate-editor-image-resize { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #3c7a45; box-shadow: 0 0 0 1px #286334; cursor: nwse-resize; }
+.official-dashboard.dark-mode .certificate-editor-image-overlay.is-selected { border-color: #b6df9f; outline-color: rgba(182, 223, 159, .4); }
 .certificate-template-editor-canvas section.certificate-docx p[contenteditable="true"] { cursor: text; }
 .certificate-template-editor-canvas section.certificate-docx p[contenteditable="true"]:hover { outline: 1px dashed rgba(60, 122, 69, .45); outline-offset: 2px; }
 .certificate-template-editor-canvas section.certificate-docx p.is-editor-selected { outline: 2px solid rgba(60, 122, 69, .68); outline-offset: 2px; }
@@ -11289,6 +11295,7 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .official-dashboard.dark-mode .certificate-editor-insert-actions button,
 .official-dashboard.dark-mode .certificate-editor-picture-upload,
 .official-dashboard.dark-mode .certificate-editor-inserted-image,
+.official-dashboard.dark-mode .certificate-editor-inserted-image .certificate-editor-picture-layout select,
 .official-dashboard.dark-mode .certificate-editor-field-list > label,
 .official-dashboard.dark-mode .certificate-editor-field-list input { border-color: #526e56; background: #2b3b2e; color: #edf4ed; }
 .official-dashboard.dark-mode .certificate-editor-tool-section > small,

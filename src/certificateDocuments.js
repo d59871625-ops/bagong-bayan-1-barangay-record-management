@@ -1970,15 +1970,18 @@ const addCertificateEditorImage = async (zip, documentXml, partPath, paragraphIn
   }
   anchor.setAttribute('allowOverlap', '1')
   anchor.setAttribute('behindDoc', imageFile.behindText ? '1' : '0')
-  const wrapNodes = Array.from(anchor.children)
-    .filter((child) => child.namespaceURI === drawingNamespace && child.localName.startsWith('wrap'))
-  const wrapNone = documentXml.createElementNS(drawingNamespace, 'wp:wrapNone')
-  if (wrapNodes.length) {
-    wrapNodes.forEach((node) => anchor.removeChild(node))
-    anchor.insertBefore(wrapNone, anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0] || null)
-  } else {
-    anchor.insertBefore(wrapNone, anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0] || null)
+  const wrapNames = {
+    none: 'wrapNone',
+    square: 'wrapSquare',
+    topBottom: 'wrapTopAndBottom',
   }
+  const wrapName = wrapNames[imageFile.wrapMode] || 'wrapNone'
+  Array.from(anchor.children)
+    .filter((child) => child.namespaceURI === drawingNamespace && child.localName.startsWith('wrap'))
+    .forEach((node) => anchor.removeChild(node))
+  const wrap = documentXml.createElementNS(drawingNamespace, `wp:${wrapName}`)
+  if (wrapName === 'wrapSquare') wrap.setAttribute('wrapText', 'bothSides')
+  anchor.insertBefore(wrap, anchor.getElementsByTagNameNS(drawingNamespace, 'docPr')[0] || null)
   setCertificateEditorImageExtent(anchor, imageFile.widthPx, imageFile.heightPx)
   setCertificateEditorImagePosition(anchor, 'H', imageFile.x)
   setCertificateEditorImagePosition(anchor, 'V', imageFile.y)

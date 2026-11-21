@@ -980,6 +980,21 @@ const positionLargeCertificateBodyImages = (page) => {
   })
 }
 
+const decorateCertificateDocxPages = async (container, blob, document) => {
+  const headerPositions = await getCertificateHeaderDrawingPositions(blob)
+  await waitForCertificatePreviewAssets(container)
+  wrapLongCertificateUnderlines(container)
+  const pages = Array.from(container.querySelectorAll('section.certificate-docx'))
+  pages.forEach((page) => {
+    positionCertificateHeaderLogos(page, headerPositions)
+    positionLargeCertificateBodyImages(page)
+    if (!shouldPreserveCertificateSourceLayout(document)) {
+      normalizeCertificatePreviewSignatory(page)
+    }
+  })
+  return pages
+}
+
 function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificate, onPrintPdf, savedCertificateDownloadError = '', copyCount = 1, reviewOnly = false, large = false }) {
   const panelRef = useRef(null)
   const previewContainer = useRef(null)
@@ -1017,7 +1032,6 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
       }
       try {
         const { renderAsync } = await import('docx-preview')
-        const headerPositions = await getCertificateHeaderDrawingPositions(blob)
         await renderAsync(blob, previewContainer.current, null, {
           className: 'certificate-docx',
           inWrapper: true,
@@ -1025,15 +1039,9 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
           useBase64URL: true,
         })
         if (!isCurrent) return
-        await waitForCertificatePreviewAssets(previewContainer.current)
+        await decorateCertificateDocxPages(previewContainer.current, blob, document)
         if (!isCurrent) return
-        wrapLongCertificateUnderlines(previewContainer.current)
         previewContainer.current?.querySelectorAll('section.certificate-docx').forEach((page) => {
-          positionCertificateHeaderLogos(page, headerPositions)
-          positionLargeCertificateBodyImages(page)
-          if (!shouldPreserveCertificateSourceLayout(document)) {
-            normalizeCertificatePreviewSignatory(page)
-          }
           page.setAttribute('aria-label', `${document} certificate preview`)
         })
         if (large) fitDocumentToPage()
@@ -1249,27 +1257,27 @@ function SavedCertificateDownloadButton({ document, certificateData, requestId, 
   </span>
 }
 
-function IssuedDocumentPrintButton({ document, onPrint, disabled = false }) {
-  const [isPrinting, setIsPrinting] = useState(false)
+function IssuedDocumentPdfPreviewButton({ document, onOpen, disabled = false }) {
+  const [isOpening, setIsOpening] = useState(false)
   const [error, setError] = useState('')
 
-  const printDocument = async () => {
-    if (isPrinting || disabled) return
-    setIsPrinting(true)
+  const openDocument = async () => {
+    if (isOpening || disabled) return
+    setIsOpening(true)
     setError('')
     try {
-      await onPrint()
-    } catch (printError) {
-      console.error(`Unable to print the issued ${document} document.`, printError)
-      setError(printError instanceof Error ? printError.message : 'The PDF could not be prepared for printing.')
+      await onOpen()
+    } catch (openError) {
+      console.error(`Unable to open the issued ${document} PDF.`, openError)
+      setError(openError instanceof Error ? openError.message : 'The PDF preview could not be prepared.')
     } finally {
-      setIsPrinting(false)
+      setIsOpening(false)
     }
   }
 
   return <span className="issued-document-print-control">
-    <button type="button" className="open-request issued-document-print" onClick={printDocument} disabled={disabled || isPrinting} aria-label={`Print ${document} as PDF`}>
-      {isPrinting ? 'Preparing…' : 'Print PDF'}
+    <button type="button" className="open-request issued-document-print" onClick={openDocument} disabled={disabled || isOpening} aria-label={`Open ${document} PDF preview`}>
+      {isOpening ? 'Preparing…' : 'Preview PDF'}
     </button>
     {error && <small className="issued-document-print-error" role="alert">{error}</small>}
   </span>
@@ -1312,6 +1320,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   const [images, setImages] = useState([])
   const [imageReplacements, setImageReplacements] = useState({})
   const [insertedImages, setInsertedImages] = useState([])
+  const [activeInsertedImageId, setActiveInsertedImageId] = useState('')
   const [activeParagraphKey, setActiveParagraphKey] = useState('')
   const [activePart, setActivePart] = useState('word/document.xml')
   const [isLoading, setIsLoading] = useState(true)
@@ -1373,7 +1382,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           useBase64URL: true,
         })
         if (!isCurrent) return
-        await waitForCertificatePreviewAssets(editorCanvasRef.current)
+        await decorateCertificateDocxPages(editorCanvasRef.current, sourceBlob, document)
         if (!isCurrent) return
         const candidates = paragraphsRef.current
         const claimed = new Set()
@@ -1613,7 +1622,10 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         reader.onerror = () => reject(reader.error || new Error('The picture could not be read.'))
         reader.readAsDataURL(file)
       })
+      const id = `editor-image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
       setInsertedImages((current) => [...current, {
+        id,
+        paragraphKey: activeParagraph.key,
         partPath: activeParagraph.partPath,
         paragraphIndex: activeParagraph.paragraphIndex,
         mimeType: file.type,
@@ -1625,7 +1637,9 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         widthPx: 160,
         heightPx: 120,
         behindText: false,
+        wrapMode: 'none',
       }])
+      setActiveInsertedImageId(id)
       setPreviewedDraft(false)
       setReviewFields(null)
       setError('')
@@ -1658,6 +1672,89 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       element.classList.toggle('is-editor-selected', paragraph.key === activeParagraphKey)
     })
   }, [activeParagraphKey, paragraphs])
+
+  useEffect(() => {
+    const container = editorCanvasRef.current
+    if (!isRendered || !container) return
+    const activeIds = new Set(insertedImages.map((image) => image.id))
+    Array.from(container.querySelectorAll('.certificate-editor-image-overlay')).forEach((overlay) => {
+      if (!activeIds.has(overlay.dataset.imageId)) overlay.remove()
+    })
+    insertedImages.forEach((image, index) => {
+      const paragraphElement = container.querySelector(`[data-certificate-paragraph-key="${image.paragraphKey}"]`)
+      const page = paragraphElement?.closest('section.certificate-docx')
+      if (!page) return
+      page.style.position = 'relative'
+      let overlay = Array.from(container.querySelectorAll('.certificate-editor-image-overlay'))
+        .find((candidate) => candidate.dataset.imageId === image.id)
+      if (!overlay) {
+        overlay = window.document.createElement('div')
+        overlay.className = 'certificate-editor-image-overlay'
+        overlay.dataset.imageId = image.id
+        const picture = window.document.createElement('img')
+        picture.alt = image.altText || ''
+        const resizeHandle = window.document.createElement('button')
+        resizeHandle.type = 'button'
+        resizeHandle.className = 'certificate-editor-image-resize'
+        resizeHandle.setAttribute('aria-label', `Resize ${image.altText || 'picture'}`)
+        overlay.append(picture, resizeHandle)
+        page.appendChild(overlay)
+      } else if (overlay.parentElement !== page) {
+        page.appendChild(overlay)
+      }
+      const picture = overlay.querySelector('img')
+      picture.src = image.dataUrl
+      picture.alt = image.altText || ''
+      overlay.style.left = `${image.x}px`
+      overlay.style.top = `${image.y}px`
+      overlay.style.width = `${image.widthPx}px`
+      overlay.style.height = `${image.heightPx}px`
+      overlay.style.zIndex = image.behindText ? '0' : '20'
+      overlay.classList.toggle('is-selected', activeInsertedImageId === image.id)
+      overlay.onpointerdown = (event) => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        setActiveInsertedImageId(image.id)
+        setActiveParagraphKey(image.paragraphKey)
+        const resize = event.target === overlay.querySelector('.certificate-editor-image-resize')
+        const pageBounds = page.getBoundingClientRect()
+        const scale = pageBounds.width && page.offsetWidth ? page.offsetWidth / pageBounds.width : 1
+        const startX = event.clientX
+        const startY = event.clientY
+        const initial = { x: image.x, y: image.y, widthPx: image.widthPx, heightPx: image.heightPx }
+        let next = { ...initial }
+        const moveImage = (moveEvent) => {
+          const deltaX = (moveEvent.clientX - startX) * scale
+          const deltaY = (moveEvent.clientY - startY) * scale
+          next = resize
+            ? {
+              ...initial,
+              widthPx: Math.max(12, Math.min(960, Math.round(initial.widthPx + deltaX))),
+              heightPx: Math.max(12, Math.min(960, Math.round(initial.heightPx + deltaY))),
+            }
+            : {
+              ...initial,
+              x: Math.max(0, Math.min(2000, Math.round(initial.x + deltaX))),
+              y: Math.max(0, Math.min(2000, Math.round(initial.y + deltaY))),
+            }
+          overlay.style.left = `${next.x}px`
+          overlay.style.top = `${next.y}px`
+          overlay.style.width = `${next.widthPx}px`
+          overlay.style.height = `${next.heightPx}px`
+        }
+        const finishMove = () => {
+          window.removeEventListener('pointermove', moveImage)
+          window.removeEventListener('pointerup', finishMove)
+          window.removeEventListener('pointercancel', finishMove)
+          updateInsertedImage(index, next)
+        }
+        window.addEventListener('pointermove', moveImage)
+        window.addEventListener('pointerup', finishMove, { once: true })
+        window.addEventListener('pointercancel', finishMove, { once: true })
+      }
+    })
+  }, [activeInsertedImageId, insertedImages, isRendered])
 
   return (
     <div className="certificate-template-preview-backdrop certificate-template-editor-backdrop">
@@ -1719,7 +1816,20 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                     <label>Top (px)<input type="number" min="0" max="2000" value={image.y} onChange={(event) => updateInsertedImage(index, { y: Number(event.target.value) })} /></label>
                     <label>Width (px)<input type="number" min="12" max="960" value={image.widthPx} onChange={(event) => updateInsertedImage(index, { widthPx: Number(event.target.value) })} /></label>
                     <label>Height (px)<input type="number" min="12" max="960" value={image.heightPx} onChange={(event) => updateInsertedImage(index, { heightPx: Number(event.target.value) })} /></label>
-                    <label className="certificate-editor-behind-toggle"><input type="checkbox" checked={image.behindText} onChange={(event) => updateInsertedImage(index, { behindText: event.target.checked })} />Place behind text</label>
+                    <label className="certificate-editor-picture-layout">Layout
+                      <select value={image.behindText ? 'behind' : image.wrapMode === 'square' ? 'square' : image.wrapMode === 'topBottom' ? 'topBottom' : 'front'} onChange={(event) => {
+                        const layout = event.target.value
+                        updateInsertedImage(index, {
+                          behindText: layout === 'behind',
+                          wrapMode: layout === 'square' ? 'square' : layout === 'topBottom' ? 'topBottom' : 'none',
+                        })
+                      }}>
+                        <option value="front">In front (overlap text)</option>
+                        <option value="behind">Behind text (watermark)</option>
+                        <option value="square">Square text wrap</option>
+                        <option value="topBottom">Top and bottom wrap</option>
+                      </select>
+                    </label>
                     <button type="button" className="table-delete" onClick={() => { setInsertedImages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setPreviewedDraft(false); setReviewFields(null) }}>Remove picture</button>
                   </div>)}
                 </section>
@@ -1808,7 +1918,6 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
           throw new Error(`No template file is mapped for ${document}.`)
         }
         const blob = uploadedFile || await createFilledCertificateDocx(document, {}, customTemplates)
-        const headerPositions = await getCertificateHeaderDrawingPositions(blob)
         const { renderAsync } = await import('docx-preview')
         await renderAsync(blob, previewRef.current, null, {
           className: 'certificate-docx',
@@ -1817,20 +1926,14 @@ function CertificateTemplatePreview({ document, onClose, customTemplates = EMPTY
           useBase64URL: true,
         })
         if (!isCurrent) return
-        await waitForCertificatePreviewAssets(previewRef.current)
+        await decorateCertificateDocxPages(previewRef.current, blob, document)
         if (!isCurrent) return
-        wrapLongCertificateUnderlines(previewRef.current)
         previewRef.current?.querySelectorAll('section.certificate-docx').forEach((page) => {
           page.setAttribute('contenteditable', 'false')
           const fixedHeader = page.querySelector('header')
           if (fixedHeader) {
             fixedHeader.setAttribute('contenteditable', 'false')
             fixedHeader.setAttribute('aria-readonly', 'true')
-          }
-          positionCertificateHeaderLogos(page, headerPositions)
-          positionLargeCertificateBodyImages(page)
-          if (!shouldPreserveCertificateSourceLayout(document)) {
-            normalizeCertificatePreviewSignatory(page)
           }
         })
         if (isCurrent) {
@@ -10936,6 +11039,20 @@ function App() {
     }
   }
 
+  const previewIssuedCertificatePdf = async (request, document) => {
+    const previewWindow = window.open('about:blank', '_blank')
+    if (!previewWindow) throw new Error('Allow pop-ups to open the issued certificate PDF preview.')
+    try {
+      const pdf = await createCouponCertificatePdf(request, document)
+      const objectUrl = URL.createObjectURL(pdf)
+      previewWindow.location.replace(objectUrl)
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 300000)
+    } catch (error) {
+      previewWindow.close()
+      throw error
+    }
+  }
+
   const startDeclineRequest = () => {
     setShowReturnEditsForm(false)
     setShowDeclineForm(true)
@@ -13098,7 +13215,7 @@ function App() {
                 <td>{entry.orNumber || '—'}</td>
                 <td>{entry.issuingOfficer || '—'}</td>
                 <td className="issued-document-action-cell">{hasCertificate
-                  ? <IssuedDocumentPrintButton document={entry.document} onPrint={() => printApprovedCertificatePdf(issuedRequest, entry.document)} />
+                  ? <IssuedDocumentPdfPreviewButton document={entry.document} onOpen={() => previewIssuedCertificatePdf(issuedRequest, entry.document)} />
                   : <span className="issued-document-print-unavailable">Certificate unavailable</span>}</td>
               </tr>
             })}{issuedDocuments.length === 0 && <tr><td colSpan="8">No documents have been released yet.</td></tr>}</tbody></table></div></TableSearch>
