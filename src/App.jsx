@@ -7,7 +7,6 @@ import {
   ageFromBirthDate,
   createFilledCertificateDocx,
   downloadFilledCertificateDocx,
-  getCertificateHeaderDrawingPositions,
   getCertificateTemplate,
   getCertificateTemplateFields,
   getCertificateTemplateHeaderArtwork,
@@ -18,7 +17,6 @@ import {
   normalizeCertificateTemplateHeader,
   readCertificateTemplateForEditing,
   scanCertificateTemplateFields,
-  shouldPreserveCertificateSourceLayout,
   updateCertificateTemplateDocx,
 } from './certificateDocuments.js'
 import './App.css'
@@ -833,164 +831,69 @@ const wrapLongCertificateUnderlines = (container) => {
   })
 }
 
-const positionCertificateWatermark = (page, image) => {
-  const anchor = image.parentElement
-  if (!anchor) throw new Error('The certificate watermark is missing its positioning element.')
-  page.style.position = 'relative'
-  anchor.style.position = 'absolute'
-  anchor.style.display = 'block'
-  anchor.style.left = '50%'
-  anchor.style.top = '50%'
-  anchor.style.width = '62%'
-  anchor.style.height = 'auto'
-  anchor.style.margin = '0'
-  anchor.style.transform = 'translate(-50%, -50%)'
-  anchor.style.opacity = '0.18'
-  anchor.style.zIndex = '0'
-  anchor.setAttribute('aria-hidden', 'true')
-  anchor.classList.add('certificate-watermark-anchor')
-  image.style.display = 'block'
-  image.style.width = '100%'
-  image.style.height = 'auto'
-  image.style.maxWidth = 'none'
-  image.classList.add('certificate-watermark')
-  page.querySelectorAll('header, article, footer').forEach((content) => {
-    content.style.position = 'relative'
-    content.style.zIndex = '1'
-  })
-  page.appendChild(anchor)
-}
-
-const normalizeCertificatePreviewSignatory = (page) => {
-  const paragraphs = Array.from(page.querySelectorAll('p'))
-  const roleIndex = paragraphs.findIndex((paragraph) => (
-    /^(?:punong\s+barangay|barangay\s+captain)$/i.test(paragraph.textContent.trim())
-      || /\b(?:punong\s+barangay|barangay\s+captain)\b/i.test(paragraph.textContent)
-        && /\b(?:abc\s+vice|vice\s+abc)[\s-]+president\b/i.test(paragraph.textContent)
-  ))
-  if (roleIndex < 0) return
-  const roleParagraph = paragraphs[roleIndex]
-  const nameParagraph = paragraphs.slice(0, roleIndex).reverse()
-    .find((paragraph) => paragraph.textContent.trim())
-  if (!nameParagraph) return
-
-  const roleTable = roleParagraph.closest('table')
-  if (roleTable) {
-    roleTable.style.width = '100%'
-    roleTable.style.tableLayout = 'fixed'
-    roleTable.style.breakInside = 'avoid'
-    roleTable.querySelectorAll('td').forEach((cell) => {
-      cell.style.width = '50%'
-      cell.style.textAlign = 'center'
-    })
-    roleTable.querySelectorAll('p').forEach((paragraph) => {
-      paragraph.style.textAlign = 'center'
-      paragraph.style.whiteSpace = 'nowrap'
-    })
-    nameParagraph.style.textAlign = 'center'
-    nameParagraph.style.whiteSpace = 'nowrap'
-    nameParagraph.style.breakAfter = 'avoid'
-    return
+const positionCertificateFloatingImages = (page, imagePlacements) => {
+  const scopes = {
+    'word/document.xml': page.querySelector('article'),
+    header: page.querySelector('header'),
+    footer: page.querySelector('footer'),
   }
-
-  nameParagraph.parentNode.insertBefore(roleParagraph, nameParagraph.nextSibling)
-  ;[nameParagraph, roleParagraph].forEach((paragraph) => {
-    paragraph.style.textAlign = 'center'
-    paragraph.style.whiteSpace = 'nowrap'
-    paragraph.style.breakInside = 'avoid'
-  })
-}
-
-const positionCertificateHeaderLogos = (page, positions) => {
-  const header = page.querySelector('header')
-  const images = Array.from(header?.querySelectorAll('img') || [])
-  if (!header || !images.length || !positions.length) return
-  header.style.position = 'relative'
-  header.style.width = '100%'
-  Array.from(header.querySelectorAll('p'))
-    .filter((paragraph) => (paragraph.textContent || '').trim())
-    .forEach((paragraph) => {
-      paragraph.style.textAlign = 'center'
-      paragraph.style.paddingLeft = '100px'
-      paragraph.style.paddingRight = '100px'
-      paragraph.style.boxSizing = 'border-box'
-      paragraph.style.whiteSpace = 'nowrap'
+  const groups = new Map()
+  imagePlacements
+    .filter((image) => image.isFloating)
+    .forEach((image) => {
+      const scopeName = image.partPath === 'word/document.xml'
+        ? 'word/document.xml'
+        : image.partPath.includes('/header') ? 'header' : 'footer'
+      const key = `${scopeName}:${image.dataUrl}`
+      groups.set(key, [...(groups.get(key) || []), image])
     })
-  const pagePaddingLeft = Number.parseFloat(window.getComputedStyle(page).paddingLeft) || 0
-  const pagePaddingTop = Number.parseFloat(window.getComputedStyle(page).paddingTop) || 0
-  const logoPositions = positions.filter((position) => !position.isWatermark)
-  const taggedRightLogo = logoPositions.find((position) => position.isGreenLogo)
-  const rightLogoPosition = taggedRightLogo || (logoPositions.length === 2
-    ? logoPositions.reduce((right, position) => position.horizontal.offset > right.horizontal.offset ? position : right)
-    : null)
-  const leftLogoPosition = logoPositions.find((position) => position !== rightLogoPosition)
-  const redLeft = leftLogoPosition
-    ? leftLogoPosition.horizontal.offset - (leftLogoPosition.horizontal.relativeFrom === 'page' ? pagePaddingLeft : 0)
-    : 0
-
-  images.forEach((image, index) => {
-    const imageDescription = `${image.alt || ''} ${image.title || ''} ${image.parentElement?.getAttribute('title') || ''}`
-      .trim()
-      .toLocaleLowerCase()
-    const position = positions.find((candidate) => (
-      candidate.description && imageDescription.includes(candidate.description.toLocaleLowerCase())
-    )) || positions[index]
-    if (!position) return
-    const anchor = image.parentElement
-    if (!anchor) return
-    if (position.isWatermark) {
-      positionCertificateWatermark(page, image)
-      return
-    }
-    const isRightLogo = position === rightLogoPosition
-    anchor.style.position = 'absolute'
-    anchor.style.float = 'none'
-    anchor.style.left = isRightLogo
-      ? `${header.clientWidth - redLeft - image.offsetWidth}px`
-      : `${position.horizontal.offset - (position.horizontal.relativeFrom === 'page' ? pagePaddingLeft : 0)}px`
-    anchor.style.top = `${(isRightLogo ? leftLogoPosition?.vertical.offset ?? position.vertical.offset : position.vertical.offset)
-      - (position.vertical.relativeFrom === 'page' ? pagePaddingTop : 0)}px`
-    image.draggable = false
-  })
-}
-
-const positionLargeCertificateBodyImages = (page) => {
-  const pageWidth = page.clientWidth
-  const pageHeight = page.clientHeight
-  if (!pageWidth || !pageHeight) return
-
-  page.querySelectorAll('p').forEach((paragraph) => {
-    if (!/_{30,}/.test(paragraph.textContent || '')) return
-    paragraph.style.whiteSpace = 'normal'
-    paragraph.style.overflowWrap = 'anywhere'
-    paragraph.style.wordBreak = 'break-word'
-  })
-
-  Array.from(page.querySelectorAll('img')).forEach((image) => {
-    const anchor = image.parentElement
-    if (!anchor || anchor.classList.contains('certificate-watermark-anchor') || anchor.closest('header')) return
-    const bounds = image.getBoundingClientRect()
-    const isLarge = bounds.width >= pageWidth * 0.42 || bounds.height >= pageHeight * 0.28
-    if (!isLarge) return
-    const label = `${image.alt || ''} ${image.title || ''} ${anchor.getAttribute('title') || ''}`
-    const aspectRatio = bounds.height ? bounds.width / bounds.height : 0
-    const looksLikeLogo = /logo|seal|emblem|watermark/i.test(label)
-      || (aspectRatio >= 0.55 && aspectRatio <= 1.8)
-    if (looksLikeLogo) positionCertificateWatermark(page, image)
+  groups.forEach((placements, key) => {
+    const scope = scopes[key.slice(0, key.indexOf(':'))]
+    if (!scope) return
+    const dataUrl = placements[0].dataUrl
+    const matches = Array.from(scope.querySelectorAll('img'))
+      .filter((image) => image.currentSrc === dataUrl || image.src === dataUrl)
+    placements.forEach((placement, index) => {
+      const image = matches[index]
+      const anchor = image?.parentElement
+      if (!image || !anchor) return
+      page.style.position = 'relative'
+      page.style.isolation = 'isolate'
+      page.appendChild(anchor)
+      anchor.style.position = 'absolute'
+      anchor.style.display = 'block'
+      anchor.style.float = 'none'
+      anchor.style.left = `${placement.x}px`
+      anchor.style.top = `${placement.y}px`
+      anchor.style.width = `${placement.widthPx}px`
+      anchor.style.height = `${placement.heightPx}px`
+      anchor.style.margin = '0'
+      anchor.style.transform = 'none'
+      anchor.style.zIndex = placement.behindText ? '0' : '20'
+      image.style.display = 'block'
+      image.style.width = '100%'
+      image.style.height = '100%'
+      image.style.maxWidth = 'none'
+      image.style.objectFit = 'fill'
+      if (/watermark/i.test(placement.altText)) anchor.style.opacity = '0.18'
+      if (placement.behindText) {
+        page.querySelectorAll('header, article, footer').forEach((content) => {
+          content.style.position = 'relative'
+          content.style.zIndex = '1'
+        })
+      }
+    })
   })
 }
 
 const decorateCertificateDocxPages = async (container, blob, document) => {
-  const headerPositions = await getCertificateHeaderDrawingPositions(blob)
   await waitForCertificatePreviewAssets(container)
   wrapLongCertificateUnderlines(container)
+  const { images } = await readCertificateTemplateForEditing(blob)
   const pages = Array.from(container.querySelectorAll('section.certificate-docx'))
   pages.forEach((page) => {
-    positionCertificateHeaderLogos(page, headerPositions)
-    positionLargeCertificateBodyImages(page)
-    if (!shouldPreserveCertificateSourceLayout(document)) {
-      normalizeCertificatePreviewSignatory(page)
-    }
+    positionCertificateFloatingImages(page, images)
+    page.setAttribute('aria-label', `${document} certificate preview`)
   })
   return pages
 }
@@ -1127,7 +1030,7 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
       <p className="docx-original-template-note">{reviewOnly ? 'This preview uses the saved certificate information and original document template.' : `Preview uses the original certificate template and confirmed information. The request includes ${copyCount} ${copyCount === 1 ? 'copy' : 'copies'}.`}</p>
       <div className="docx-preview-scroll" ref={scrollContainer} style={{ visibility: isRendered ? 'visible' : 'hidden' }}><div className="docx-preview-pages" style={large ? { zoom: zoom / 100 } : undefined} ref={previewContainer} /></div>
       {large && !reviewOnly && <footer className="docx-preview-print-footer">
-        <div><strong>Print on Coupon bond (8.5 × 13 in)</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Converted to PDF without reflowing or scaling the certificate content.</span></div>
+        <div><strong>Print at the template’s original size</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Original page dimensions and margins are preserved. Choose Actual size in the print dialog.</span></div>
         <button type="button" onClick={printPreview} disabled={!isRendered || isPrintingPdf}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3.5h10V8M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4.5 9h15a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H18M7 14h10v6.5H7zM17.5 11.5h.01" /></svg>
           <span>{isPrintingPdf ? 'Preparing PDF…' : 'Print certificate PDF'}</span>
@@ -1257,27 +1160,70 @@ function SavedCertificateDownloadButton({ document, certificateData, requestId, 
   </span>
 }
 
-function IssuedDocumentPdfPreviewButton({ document, onOpen, disabled = false }) {
-  const [isOpening, setIsOpening] = useState(false)
+function IssuedDocumentHistoryButton({ entry, request }) {
   const [error, setError] = useState('')
 
-  const openDocument = async () => {
-    if (isOpening || disabled) return
-    setIsOpening(true)
-    setError('')
+  const openHistory = () => {
+    let historyWindow
     try {
-      await onOpen()
+      historyWindow = window.open('about:blank', '_blank')
+      if (!historyWindow) throw new Error('Allow pop-ups to view the issued document history.')
+      const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      })[character])
+      const formatDate = (value) => {
+        const date = value ? new Date(value) : null
+        return date && !Number.isNaN(date.getTime())
+          ? date.toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })
+          : 'Date not recorded'
+      }
+      const stringify = (value) => Array.isArray(value)
+        ? value.join(', ')
+        : value && typeof value === 'object'
+          ? JSON.stringify(value)
+          : String(value ?? 'Not provided')
+      const statusHistory = request
+        ? withRequestStatusHistory(request).statusHistory
+        : [{ status: 'Received', changedAt: entry.date }]
+      const details = request?.detailsByDocument?.[entry.document] || request?.details || {}
+      const requirements = request?.requirements || []
+      const activities = request?.activity || []
+      const statusRows = statusHistory.map((item, index) => (
+        `<li><span>${index + 1}</span><div><strong>${escape(item.status)}</strong><time>${escape(formatDate(item.changedAt))}</time></div></li>`
+      )).join('')
+      const detailRows = Object.entries(details).map(([label, value]) => (
+        `<tr><th>${escape(label.replace(/([A-Z])/g, ' $1'))}</th><td>${escape(stringify(value))}</td></tr>`
+      )).join('')
+      const requirementRows = requirements.map((item) => `<li>${escape(item)}</li>`).join('')
+      const activityRows = activities.map((item) => (
+        `<li><strong>${escape(item.action || 'Processing update')}</strong><span>${escape(item.by || 'Staff')} · ${escape(item.time || 'Date not recorded')}</span></li>`
+      )).join('')
+      historyWindow.document.open()
+      historyWindow.document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Process history · ${escape(entry.controlNumber)}</title><style>
+        *{box-sizing:border-box}body{margin:0;padding:32px;background:#edf2ed;color:#263329;font:14px/1.5 Arial,sans-serif}.sheet{max-width:820px;margin:auto;padding:36px;background:#fff;border:1px solid #d5e0d6;border-radius:12px}.eyebrow{color:#3c7a45;font-size:11px;font-weight:700;letter-spacing:.14em}h1{margin:4px 0 20px;font-size:26px}h2{margin:24px 0 8px;font-size:16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:9px;border-bottom:1px solid #e4ebe4}th{width:32%;color:#526357}.timeline,.activity,.requirements{display:grid;gap:8px;margin:0;padding:0;list-style:none}.timeline li,.activity li{display:flex;gap:12px;padding:9px;border:1px solid #e4ebe4;border-radius:8px}.timeline li>span{display:grid;place-items:center;flex:0 0 26px;height:26px;border-radius:50%;background:#edf7ed;color:#286334;font-weight:700}.timeline li div,.activity li{min-width:0}.timeline li time,.activity li span{display:block;color:#68746a;font-size:12px}.requirements{padding-left:22px;list-style:disc}.actions{display:flex;justify-content:flex-end;margin-bottom:20px}.actions button{padding:9px 14px;border:0;border-radius:7px;background:#2e7041;color:#fff;font-weight:700;cursor:pointer}@media print{body{padding:0;background:#fff}.sheet{max-width:none;padding:0;border:0;border-radius:0}.actions{display:none}h1{font-size:22px}h2{break-after:avoid}.timeline li,.activity li,table tr{break-inside:avoid}}
+      </style></head><body><main class="sheet"><div class="actions"><button id="print-history" type="button">Print history</button></div><p class="eyebrow">BARANGAY BAGONG BAYAN 1 · ISSUANCE REGISTER</p><h1>Issued document process history</h1><table><tbody>
+      <tr><th>Control number</th><td>${escape(entry.controlNumber)}</td></tr><tr><th>Request ID</th><td>${escape(entry.requestId)}</td></tr><tr><th>Resident / recipient</th><td>${escape(entry.releasedTo || entry.resident)}</td></tr><tr><th>Document</th><td>${escape(entry.document)}</td></tr><tr><th>Purpose</th><td>${escape(entry.purpose || 'Not provided')}</td></tr><tr><th>OR number</th><td>${escape(entry.orNumber || '—')}</td></tr><tr><th>Issuing officer</th><td>${escape(entry.issuingOfficer || '—')}</td></tr><tr><th>Issued</th><td>${escape(formatDate(entry.date))}</td></tr>
+      </tbody></table><h2>Request status timeline</h2><ol class="timeline">${statusRows || '<li>No status history was recorded.</li>'}</ol><h2>Submitted information</h2><table><tbody>${detailRows || '<tr><td colspan="2">No submitted information was recorded.</td></tr>'}</tbody></table><h2>Requirements</h2><ul class="requirements">${requirementRows || '<li>No requirement history was recorded.</li>'}</ul><h2>Processing activity</h2><ul class="activity">${activityRows || '<li>No processing activity was recorded.</li>'}</ul></main></body></html>`)
+      historyWindow.document.close()
+      historyWindow.document.getElementById('print-history')?.addEventListener('click', () => {
+        historyWindow.focus()
+        historyWindow.print()
+      })
+      setError('')
     } catch (openError) {
-      console.error(`Unable to open the issued ${document} PDF.`, openError)
-      setError(openError instanceof Error ? openError.message : 'The PDF preview could not be prepared.')
-    } finally {
-      setIsOpening(false)
+      console.error('Unable to open the issued document process history.', openError)
+      historyWindow?.close()
+      setError(openError instanceof Error ? openError.message : 'The issued document history could not be opened.')
     }
   }
 
   return <span className="issued-document-print-control">
-    <button type="button" className="open-request issued-document-print" onClick={openDocument} disabled={disabled || isOpening} aria-label={`Open ${document} PDF preview`}>
-      {isOpening ? 'Preparing…' : 'Preview PDF'}
+    <button type="button" className="open-request issued-document-print" onClick={openHistory} aria-label={`View process history for ${entry.document}`}>
+      View history
     </button>
     {error && <small className="issued-document-print-error" role="alert">{error}</small>}
   </span>
@@ -1315,12 +1261,15 @@ function CertificateTemplateRequestPicker({ document, requests, viewedState, onC
 function CertificateTemplateContentEditor({ document, customTemplates, onClose, onApply }) {
   const editorCanvasRef = useRef(null)
   const paragraphsRef = useRef([])
+  const imagesRef = useRef([])
+  const imageElementsRef = useRef(new Map())
   const [sourceBlob, setSourceBlob] = useState(null)
   const [paragraphs, setParagraphs] = useState([])
   const [images, setImages] = useState([])
   const [imageReplacements, setImageReplacements] = useState({})
   const [insertedImages, setInsertedImages] = useState([])
   const [activeInsertedImageId, setActiveInsertedImageId] = useState('')
+  const [activeExistingImageId, setActiveExistingImageId] = useState('')
   const [activeParagraphKey, setActiveParagraphKey] = useState('')
   const [activePart, setActivePart] = useState('word/document.xml')
   const [isLoading, setIsLoading] = useState(true)
@@ -1337,18 +1286,19 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   }, [paragraphs])
 
   useEffect(() => {
+    imagesRef.current = images
+  }, [images])
+
+  useEffect(() => {
+    imageElementsRef.current = new Map()
+  }, [sourceBlob])
+
+  useEffect(() => {
     let isCurrent = true
     const loadTemplate = async () => {
       try {
         if (!template) throw new Error(`The ${document} template is not available.`)
-        const source = template.custom
-          ? new Blob([Uint8Array.from(atob(template.contentBase64), (character) => character.charCodeAt(0))], {
-            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          })
-          : await fetch(template.file, { cache: 'no-store' }).then((response) => {
-            if (!response.ok) throw new Error(`The DOCX template could not be loaded (HTTP ${response.status}).`)
-            return response.blob()
-          })
+        const source = await createFilledCertificateDocx(document, {}, customTemplates)
         const content = await readCertificateTemplateForEditing(source)
         if (!isCurrent) return
         setSourceBlob(source)
@@ -1384,6 +1334,42 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         if (!isCurrent) return
         await decorateCertificateDocxPages(editorCanvasRef.current, sourceBlob, document)
         if (!isCurrent) return
+        const renderedImages = Array.from(editorCanvasRef.current.querySelectorAll('img'))
+        const sameSourceGroups = new Map()
+        imagesRef.current.forEach((image) => {
+          const group = sameSourceGroups.get(image.dataUrl) || []
+          group.push({ image })
+          sameSourceGroups.set(image.dataUrl, group)
+        })
+        const imageElements = new Map()
+        const measuredImages = new Map()
+        sameSourceGroups.forEach((placements, dataUrl) => {
+          const matches = renderedImages.filter((element) => element.currentSrc === dataUrl || element.src === dataUrl)
+          placements.forEach(({ image }, placementOffset) => {
+            const instances = matches.filter((_, matchIndex) => matchIndex % placements.length === placementOffset)
+            const usableInstances = instances.length ? instances : matches.slice(placementOffset, placementOffset + 1)
+            imageElements.set(image.placementId, usableInstances)
+            const firstImage = usableInstances[0]
+            const page = firstImage?.closest('section.certificate-docx')
+            if (!firstImage || !page) return
+            const imageBounds = firstImage.getBoundingClientRect()
+            const pageBounds = page.getBoundingClientRect()
+            const scale = pageBounds.width && page.offsetWidth ? page.offsetWidth / pageBounds.width : 1
+            measuredImages.set(image.placementId, {
+              x: Math.round((imageBounds.left - pageBounds.left) * scale),
+              y: Math.round((imageBounds.top - pageBounds.top) * scale),
+              widthPx: Math.max(12, Math.round(imageBounds.width * scale)),
+              heightPx: Math.max(12, Math.round(imageBounds.height * scale)),
+            })
+          })
+        })
+        imageElementsRef.current = imageElements
+        if (measuredImages.size) {
+          setImages((current) => current.map((image) => {
+            const layout = measuredImages.get(image.placementId)
+            return layout ? { ...image, ...layout, originalLayout: { ...layout }, layoutEdited: false } : image
+          }))
+        }
         const candidates = paragraphsRef.current
         const claimed = new Set()
         const renderedParagraphs = Array.from(editorCanvasRef.current.querySelectorAll('section.certificate-docx p'))
@@ -1528,14 +1514,24 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           ...(paragraph.style.italic !== paragraph.originalStyle?.italic ? { italic: paragraph.style.italic } : {}),
           ...(paragraph.style.underline !== paragraph.originalStyle?.underline ? { underline: paragraph.style.underline } : {}),
         }))
-      const imageFiles = images
+      const imageFiles = [...new Map(images
         .filter((image) => imageReplacements[image.path])
-        .map((image) => ({ path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }))
-      if (!changedParagraphs.length && !imageFiles.length && !insertedImages.length) {
+        .map((image) => [image.path, { path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }])).values()]
+      const imageLayouts = images.filter((image) => image.layoutEdited).map((image) => ({
+        partPath: image.partPath,
+        drawingIndex: image.drawingIndex,
+        x: image.x,
+        y: image.y,
+        widthPx: image.widthPx,
+        heightPx: image.heightPx,
+        wrapMode: image.wrapMode,
+        behindText: image.behindText,
+      }))
+      if (!changedParagraphs.length && !imageFiles.length && !imageLayouts.length && !insertedImages.length) {
         setError('Make a text, formatting, or picture change before applying the edited template.')
         return
       }
-      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, insertedImages })
+      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, imageLayouts, insertedImages })
       const file = new File([blob], template.originalFilename || `${document}.docx`, {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
@@ -1581,10 +1577,20 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           ...(paragraph.style.italic !== paragraph.originalStyle?.italic ? { italic: paragraph.style.italic } : {}),
           ...(paragraph.style.underline !== paragraph.originalStyle?.underline ? { underline: paragraph.style.underline } : {}),
         }))
-      const imageFiles = images
+      const imageFiles = [...new Map(images
         .filter((image) => imageReplacements[image.path])
-        .map((image) => ({ path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }))
-      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, insertedImages })
+        .map((image) => [image.path, { path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }])).values()]
+      const imageLayouts = images.filter((image) => image.layoutEdited).map((image) => ({
+        partPath: image.partPath,
+        drawingIndex: image.drawingIndex,
+        x: image.x,
+        y: image.y,
+        widthPx: image.widthPx,
+        heightPx: image.heightPx,
+        wrapMode: image.wrapMode,
+        behindText: image.behindText,
+      }))
+      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles, imageLayouts, insertedImages })
       setPreviewFile(new File([blob], template.originalFilename || `${document}.docx`, {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }))
@@ -1657,6 +1663,14 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
     setReviewFields(null)
   }
 
+  const updateExistingImage = (index, update) => {
+    setImages((current) => current.map((image, imageIndex) => (
+      imageIndex === index ? { ...image, ...update, layoutEdited: true } : image
+    )))
+    setPreviewedDraft(false)
+    setReviewFields(null)
+  }
+
   useEffect(() => {
     paragraphs.forEach((paragraph) => {
       const element = editorCanvasRef.current?.querySelector(`[data-certificate-paragraph-key="${paragraph.key}"]`)
@@ -1676,35 +1690,124 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   useEffect(() => {
     const container = editorCanvasRef.current
     if (!isRendered || !container) return
-    const activeIds = new Set(insertedImages.map((image) => image.id))
+    const activeIds = new Set(insertedImages.map((image) => `inserted/${image.id}`))
+    images.forEach((image) => {
+      (imageElementsRef.current.get(image.placementId) || []).forEach((_, instanceIndex) => {
+        activeIds.add(`existing/${image.placementId}/${instanceIndex}`)
+      })
+    })
     Array.from(container.querySelectorAll('.certificate-editor-image-overlay')).forEach((overlay) => {
       if (!activeIds.has(overlay.dataset.imageId)) overlay.remove()
+    })
+    const getOverlay = (id, page, altText, dataUrl) => {
+      let overlay = Array.from(container.querySelectorAll('.certificate-editor-image-overlay'))
+        .find((candidate) => candidate.dataset.imageId === id)
+      if (!overlay) {
+        overlay = window.document.createElement('div')
+        overlay.className = 'certificate-editor-image-overlay'
+        overlay.dataset.imageId = id
+        overlay.setAttribute('role', 'button')
+        overlay.tabIndex = 0
+        const picture = window.document.createElement('img')
+        const resizeHandle = window.document.createElement('button')
+        resizeHandle.type = 'button'
+        resizeHandle.className = 'certificate-editor-image-resize'
+        overlay.append(picture, resizeHandle)
+      }
+      if (overlay.parentElement !== page) page.appendChild(overlay)
+      const picture = overlay.querySelector('img')
+      picture.src = dataUrl
+      picture.alt = altText || ''
+      overlay.setAttribute('aria-label', `Select or move ${altText || 'picture'}`)
+      overlay.querySelector('.certificate-editor-image-resize')
+        .setAttribute('aria-label', `Resize ${altText || 'picture'}`)
+      return overlay
+    }
+    images.forEach((image, index) => {
+      const instances = imageElementsRef.current.get(image.placementId) || []
+      instances.forEach((sourceImage, instanceIndex) => {
+        const page = sourceImage.closest('section.certificate-docx')
+        if (!page) return
+        page.style.position = 'relative'
+        sourceImage.style.visibility = 'hidden'
+        if (!image.isFloating && sourceImage.parentElement) sourceImage.parentElement.style.display = 'none'
+        const id = `existing/${image.placementId}/${instanceIndex}`
+        const overlay = getOverlay(
+          id,
+          page,
+          image.altText || image.path.split('/').pop(),
+          imageReplacements[image.path]?.dataUrl || image.dataUrl,
+        )
+        overlay.style.left = `${image.x}px`
+        overlay.style.top = `${image.y}px`
+        overlay.style.width = `${image.widthPx}px`
+        overlay.style.height = `${image.heightPx}px`
+        overlay.style.zIndex = image.behindText ? '0' : '20'
+        overlay.classList.toggle('is-selected', activeExistingImageId === image.placementId)
+        const selectImage = () => {
+          setActiveExistingImageId(image.placementId)
+          setActiveInsertedImageId('')
+          const paragraph = paragraphs.find((item) => item.partPath === image.partPath && item.paragraphIndex === image.paragraphIndex)
+          if (paragraph) {
+            setActiveParagraphKey(paragraph.key)
+            setActivePart(paragraph.partPath)
+          }
+        }
+        overlay.onkeydown = (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            selectImage()
+          }
+        }
+        overlay.onpointerdown = (event) => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          event.stopPropagation()
+          selectImage()
+          const resize = event.target === overlay.querySelector('.certificate-editor-image-resize')
+          const pageBounds = page.getBoundingClientRect()
+          const scale = pageBounds.width && page.offsetWidth ? page.offsetWidth / pageBounds.width : 1
+          const startX = event.clientX
+          const startY = event.clientY
+          const initial = { x: image.x, y: image.y, widthPx: image.widthPx, heightPx: image.heightPx }
+          let next = { ...initial }
+          const moveImage = (moveEvent) => {
+            const deltaX = (moveEvent.clientX - startX) * scale
+            const deltaY = (moveEvent.clientY - startY) * scale
+            next = resize
+              ? {
+                ...initial,
+                widthPx: Math.max(12, Math.min(2000, Math.round(initial.widthPx + deltaX))),
+                heightPx: Math.max(12, Math.min(2000, Math.round(initial.heightPx + deltaY))),
+              }
+              : {
+                ...initial,
+                x: Math.max(-4000, Math.min(4000, Math.round(initial.x + deltaX))),
+                y: Math.max(-4000, Math.min(4000, Math.round(initial.y + deltaY))),
+              }
+            overlay.style.left = `${next.x}px`
+            overlay.style.top = `${next.y}px`
+            overlay.style.width = `${next.widthPx}px`
+            overlay.style.height = `${next.heightPx}px`
+          }
+          const finishMove = () => {
+            window.removeEventListener('pointermove', moveImage)
+            window.removeEventListener('pointerup', finishMove)
+            window.removeEventListener('pointercancel', finishMove)
+            updateExistingImage(index, next)
+          }
+          window.addEventListener('pointermove', moveImage)
+          window.addEventListener('pointerup', finishMove, { once: true })
+          window.addEventListener('pointercancel', finishMove, { once: true })
+        }
+      })
     })
     insertedImages.forEach((image, index) => {
       const paragraphElement = container.querySelector(`[data-certificate-paragraph-key="${image.paragraphKey}"]`)
       const page = paragraphElement?.closest('section.certificate-docx')
       if (!page) return
       page.style.position = 'relative'
-      let overlay = Array.from(container.querySelectorAll('.certificate-editor-image-overlay'))
-        .find((candidate) => candidate.dataset.imageId === image.id)
-      if (!overlay) {
-        overlay = window.document.createElement('div')
-        overlay.className = 'certificate-editor-image-overlay'
-        overlay.dataset.imageId = image.id
-        const picture = window.document.createElement('img')
-        picture.alt = image.altText || ''
-        const resizeHandle = window.document.createElement('button')
-        resizeHandle.type = 'button'
-        resizeHandle.className = 'certificate-editor-image-resize'
-        resizeHandle.setAttribute('aria-label', `Resize ${image.altText || 'picture'}`)
-        overlay.append(picture, resizeHandle)
-        page.appendChild(overlay)
-      } else if (overlay.parentElement !== page) {
-        page.appendChild(overlay)
-      }
-      const picture = overlay.querySelector('img')
-      picture.src = image.dataUrl
-      picture.alt = image.altText || ''
+      const overlay = getOverlay(`inserted/${image.id}`, page, image.altText, image.dataUrl)
       overlay.style.left = `${image.x}px`
       overlay.style.top = `${image.y}px`
       overlay.style.width = `${image.widthPx}px`
@@ -1716,6 +1819,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         event.preventDefault()
         event.stopPropagation()
         setActiveInsertedImageId(image.id)
+        setActiveExistingImageId('')
         setActiveParagraphKey(image.paragraphKey)
         const resize = event.target === overlay.querySelector('.certificate-editor-image-resize')
         const pageBounds = page.getBoundingClientRect()
@@ -1730,13 +1834,13 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           next = resize
             ? {
               ...initial,
-              widthPx: Math.max(12, Math.min(960, Math.round(initial.widthPx + deltaX))),
-              heightPx: Math.max(12, Math.min(960, Math.round(initial.heightPx + deltaY))),
+              widthPx: Math.max(12, Math.min(2000, Math.round(initial.widthPx + deltaX))),
+              heightPx: Math.max(12, Math.min(2000, Math.round(initial.heightPx + deltaY))),
             }
             : {
               ...initial,
-              x: Math.max(0, Math.min(2000, Math.round(initial.x + deltaX))),
-              y: Math.max(0, Math.min(2000, Math.round(initial.y + deltaY))),
+              x: Math.max(-4000, Math.min(4000, Math.round(initial.x + deltaX))),
+              y: Math.max(-4000, Math.min(4000, Math.round(initial.y + deltaY))),
             }
           overlay.style.left = `${next.x}px`
           overlay.style.top = `${next.y}px`
@@ -1754,7 +1858,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
         window.addEventListener('pointercancel', finishMove, { once: true })
       }
     })
-  }, [activeInsertedImageId, insertedImages, isRendered])
+  }, [activeExistingImageId, activeInsertedImageId, imageReplacements, images, insertedImages, isRendered, paragraphs])
 
   return (
     <div className="certificate-template-preview-backdrop certificate-template-editor-backdrop">
@@ -1802,18 +1906,43 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                 <section className="certificate-editor-tool-section">
                   <h3>Pictures</h3>
                   <label className="certificate-editor-picture-upload">Add picture<input type="file" accept="image/png,image/jpeg" onChange={(event) => { addPicture(event.target.files?.[0]); event.target.value = '' }} /></label>
-                  <small>Select a paragraph first. New pictures can be positioned over the page, including over existing logos.</small>
-                  {images.length > 0 && <div className="certificate-content-editor-image-grid">{images.map((image) => <label key={image.path}>
+                  <small>Click any picture on the page to select it. Drag to move, use its corner handle to resize, or adjust its exact position below.</small>
+                  {images.map((image, index) => <div className={`certificate-editor-inserted-image${activeExistingImageId === image.placementId ? ' is-selected' : ''}`} key={image.placementId}>
                     <img src={imageReplacements[image.path]?.dataUrl || image.dataUrl} alt={`Current ${image.path.split('/').pop()} in ${document}`} />
-                    <span>{image.path.split('/').pop()}</span>
-                    <input type="file" accept={image.mimeType} onChange={(event) => replaceImage(image, event.target.files?.[0])} />
-                    <small>Replace existing picture · {image.mimeType.split('/')[1].toUpperCase()}</small>
-                  </label>)}</div>}
+                    <strong>{image.path.split('/').pop()}</strong>
+                    <button type="button" className="resident-table-action" onClick={() => {
+                      setActiveExistingImageId(image.placementId)
+                      setActiveInsertedImageId('')
+                      const overlay = Array.from(editorCanvasRef.current?.querySelectorAll('.certificate-editor-image-overlay') || [])
+                        .find((candidate) => candidate.dataset.imageId.startsWith(`existing/${image.placementId}/`))
+                      overlay?.focus()
+                      overlay?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+                    }}>Select picture on page</button>
+                    <label>Left (px)<input type="number" min="-4000" max="4000" value={Math.round(image.x)} onChange={(event) => updateExistingImage(index, { x: Number(event.target.value) })} /></label>
+                    <label>Top (px)<input type="number" min="-4000" max="4000" value={Math.round(image.y)} onChange={(event) => updateExistingImage(index, { y: Number(event.target.value) })} /></label>
+                    <label>Width (px)<input type="number" min="12" max="2000" value={Math.round(image.widthPx)} onChange={(event) => updateExistingImage(index, { widthPx: Number(event.target.value) })} /></label>
+                    <label>Height (px)<input type="number" min="12" max="2000" value={Math.round(image.heightPx)} onChange={(event) => updateExistingImage(index, { heightPx: Number(event.target.value) })} /></label>
+                    <label className="certificate-editor-picture-layout">Layout
+                      <select value={image.behindText ? 'behind' : image.wrapMode === 'square' ? 'square' : image.wrapMode === 'topBottom' ? 'topBottom' : 'front'} onChange={(event) => {
+                        const layout = event.target.value
+                        updateExistingImage(index, {
+                          behindText: layout === 'behind',
+                          wrapMode: layout === 'square' ? 'square' : layout === 'topBottom' ? 'topBottom' : 'none',
+                        })
+                      }}>
+                        <option value="front">In front (overlap text)</option>
+                        <option value="behind">Behind text (watermark)</option>
+                        <option value="square">Square text wrap</option>
+                        <option value="topBottom">Top and bottom wrap</option>
+                      </select>
+                    </label>
+                    <label className="certificate-editor-picture-upload">Replace picture<input type="file" accept={image.mimeType} onChange={(event) => { replaceImage(image, event.target.files?.[0]); event.target.value = '' }} /></label>
+                  </div>)}
                   {insertedImages.map((image, index) => <div className="certificate-editor-inserted-image" key={`${image.altText}-${index}`}>
                     <img src={image.dataUrl} alt="" />
                     <strong>{image.altText}</strong>
-                    <label>Left (px)<input type="number" min="0" max="2000" value={image.x} onChange={(event) => updateInsertedImage(index, { x: Number(event.target.value) })} /></label>
-                    <label>Top (px)<input type="number" min="0" max="2000" value={image.y} onChange={(event) => updateInsertedImage(index, { y: Number(event.target.value) })} /></label>
+                    <label>Left (px)<input type="number" min="-4000" max="4000" value={image.x} onChange={(event) => updateInsertedImage(index, { x: Number(event.target.value) })} /></label>
+                    <label>Top (px)<input type="number" min="-4000" max="4000" value={image.y} onChange={(event) => updateInsertedImage(index, { y: Number(event.target.value) })} /></label>
                     <label>Width (px)<input type="number" min="12" max="960" value={image.widthPx} onChange={(event) => updateInsertedImage(index, { widthPx: Number(event.target.value) })} /></label>
                     <label>Height (px)<input type="number" min="12" max="960" value={image.heightPx} onChange={(event) => updateInsertedImage(index, { heightPx: Number(event.target.value) })} /></label>
                     <label className="certificate-editor-picture-layout">Layout
@@ -10927,7 +11056,7 @@ function App() {
     }
   }
 
-  const createCouponCertificatePdf = async (request, document) => {
+  const createCertificatePdf = async (request, document) => {
     const docx = await createFilledCertificateDocx(document, getSubmittedCertificateData(request, document), customCertificateTemplates)
     const formData = new FormData()
     const safeRequestId = String(request.id).replace(/[^a-z0-9-]+/gi, '-')
@@ -10969,23 +11098,12 @@ function App() {
       }
     }
 
-    outputPdf.getPages().forEach((page) => {
-      const { width, height } = page.getSize()
-      const landscape = width > height
-      const couponWidth = landscape ? 936 : 612
-      const couponHeight = landscape ? 612 : 936
-      if (width > couponWidth || height > couponHeight) {
-        throw new Error('The certificate template is larger than Coupon bond paper and cannot be printed without scaling.')
-      }
-      page.translateContent(0, couponHeight - height)
-      page.setSize(couponWidth, couponHeight)
-    })
     return new Blob([await outputPdf.save()], { type: 'application/pdf' })
   }
 
   const downloadApprovedCertificatePdf = async (request, document) => {
     try {
-      const downloadPdf = await createCouponCertificatePdf(request, document)
+      const downloadPdf = await createCertificatePdf(request, document)
       const copyCount = Number(request.copyCount ?? 1)
       const safeRequestId = String(request.id).replace(/[^a-z0-9-]+/gi, '-')
       const safeDocumentName = document.replace(/[^a-z0-9-]+/gi, '-')
@@ -11013,42 +11131,27 @@ function App() {
     if (!printWindow) throw new Error('Allow pop-ups to open the certificate PDF for printing.')
     let objectUrl = ''
     try {
-      const pdf = await createCouponCertificatePdf(request, document)
+      const pdf = await createCertificatePdf(request, document)
       objectUrl = URL.createObjectURL(pdf)
-      printWindow.document.title = `${document} · ${request.id}`
-      printWindow.document.body.style.cssText = 'margin:0;overflow:hidden;background:#e8ece8'
-      const frame = printWindow.document.createElement('iframe')
-      frame.title = `${document} PDF for printing`
-      frame.style.cssText = 'display:block;width:100vw;height:100vh;border:0;background:#fff'
-      frame.addEventListener('load', () => {
-        window.setTimeout(() => {
-          if (printWindow.closed) return
-          printWindow.focus()
-          frame.contentWindow?.focus()
-          frame.contentWindow?.print()
-        }, 300)
-      }, { once: true })
-      printWindow.document.body.appendChild(frame)
-      frame.src = objectUrl
+      let printTriggered = false
+      const startPrint = () => {
+        if (printTriggered || printWindow.closed) return
+        printTriggered = true
+        printWindow.focus()
+        try {
+          printWindow.print()
+        } catch (printError) {
+          console.error(`Unable to open the ${document} print dialog.`, printError)
+        }
+      }
+      printWindow.addEventListener('load', () => window.setTimeout(startPrint, 300), { once: true })
+      printWindow.location.replace(objectUrl)
+      window.setTimeout(startPrint, 1500)
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 300000)
       setCertificateDownloadError('')
     } catch (error) {
       printWindow.close()
       setCertificateDownloadError(`The ${document} PDF could not be prepared for printing. ${error.message}`)
-      throw error
-    }
-  }
-
-  const previewIssuedCertificatePdf = async (request, document) => {
-    const previewWindow = window.open('about:blank', '_blank')
-    if (!previewWindow) throw new Error('Allow pop-ups to open the issued certificate PDF preview.')
-    try {
-      const pdf = await createCouponCertificatePdf(request, document)
-      const objectUrl = URL.createObjectURL(pdf)
-      previewWindow.location.replace(objectUrl)
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 300000)
-    } catch (error) {
-      previewWindow.close()
       throw error
     }
   }
@@ -13205,7 +13308,6 @@ function App() {
             <p className="resident-report-note">Each released certificate receives a unique control number and records its date, purpose, OR number, recipient, and issuing officer.</p>
             <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table issued-documents-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th><th>Action</th></tr></thead><tbody>{issuedDocuments.map((entry) => {
               const issuedRequest = historyRequestList.find((request) => request.id === entry.requestId)
-              const hasCertificate = Boolean(issuedRequest?.certificateData?.[entry.document])
               return <tr key={entry.id}>
                 <td>{entry.controlNumber}</td>
                 <td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td>
@@ -13214,9 +13316,7 @@ function App() {
                 <td>{entry.purpose || 'Not provided'}</td>
                 <td>{entry.orNumber || '—'}</td>
                 <td>{entry.issuingOfficer || '—'}</td>
-                <td className="issued-document-action-cell">{hasCertificate
-                  ? <IssuedDocumentPdfPreviewButton document={entry.document} onOpen={() => previewIssuedCertificatePdf(issuedRequest, entry.document)} />
-                  : <span className="issued-document-print-unavailable">Certificate unavailable</span>}</td>
+                <td className="issued-document-action-cell"><IssuedDocumentHistoryButton entry={entry} request={issuedRequest} /></td>
               </tr>
             })}{issuedDocuments.length === 0 && <tr><td colSpan="8">No documents have been released yet.</td></tr>}</tbody></table></div></TableSearch>
           </section>}
