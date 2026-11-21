@@ -1549,6 +1549,227 @@ const getParagraphText = (paragraph) => Array.from(paragraph.getElementsByTagNam
   .map((textNode) => textNode.textContent || '')
   .join('')
 
+const getWordRunProperty = (runProperties, propertyName) => Array.from(runProperties?.children || [])
+  .find((property) => property.namespaceURI === wordNamespace && property.localName === propertyName)
+
+const getCertificateEditorParagraphStyle = (paragraph) => {
+  const paragraphProperties = Array.from(paragraph.children)
+    .find((child) => child.namespaceURI === wordNamespace && child.localName === 'pPr')
+  const alignment = getWordRunProperty(paragraphProperties, 'jc')?.getAttributeNS(wordNamespace, 'val') || ''
+  const firstText = paragraph.getElementsByTagNameNS(wordNamespace, 't')[0]
+  let firstRun = firstText?.parentNode
+  while (firstRun && firstRun !== paragraph && !(firstRun.namespaceURI === wordNamespace && firstRun.localName === 'r')) {
+    firstRun = firstRun.parentNode
+  }
+  const runProperties = Array.from(firstRun?.children || [])
+    .find((child) => child.namespaceURI === wordNamespace && child.localName === 'rPr')
+  const size = getWordRunProperty(runProperties, 'sz')?.getAttributeNS(wordNamespace, 'val') || ''
+  const color = getWordRunProperty(runProperties, 'color')?.getAttributeNS(wordNamespace, 'val') || ''
+  const bold = getWordRunProperty(runProperties, 'b')
+  const italic = getWordRunProperty(runProperties, 'i')
+  const underline = getWordRunProperty(runProperties, 'u')
+  const fonts = getWordRunProperty(runProperties, 'rFonts')
+  return {
+    alignment: ['left', 'center', 'right', 'both'].includes(alignment) ? alignment : 'left',
+    fontName: fonts?.getAttributeNS(wordNamespace, 'ascii') || fonts?.getAttributeNS(wordNamespace, 'hAnsi') || '',
+    fontSize: /^\d+$/.test(size) ? String(Number(size) / 2) : '',
+    color: /^[\da-f]{6}$/i.test(color) ? `#${color}` : '',
+    bold: Boolean(bold && bold.getAttributeNS(wordNamespace, 'val') !== '0'),
+    italic: Boolean(italic && italic.getAttributeNS(wordNamespace, 'val') !== '0'),
+    underline: Boolean(underline && underline.getAttributeNS(wordNamespace, 'val') !== 'none'),
+  }
+}
+
+const getCertificateEditorImageMimeType = (path) => ({
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+}[path.split('.').pop()?.toLowerCase()] || '')
+const certificateEditorPartPathPattern = /^word\/(?:document|header\d+|footer\d+|bb1-standard-header)\.xml$/
+
+export const readCertificateTemplateForEditing = async (documentBlob) => {
+  const zip = await JSZip.loadAsync(documentBlob)
+  if (!zip.file('word/document.xml')) throw new Error('The DOCX file is missing its main Word document.')
+  const partPaths = Object.keys(zip.files)
+    .filter((path) => certificateEditorPartPathPattern.test(path))
+    .sort((first, second) => {
+      if (first === 'word/document.xml') return -1
+      if (second === 'word/document.xml') return 1
+      return first.localeCompare(second, undefined, { numeric: true })
+    })
+  const paragraphs = []
+  for (const partPath of partPaths) {
+    const xml = new DOMParser().parseFromString(await zip.file(partPath).async('text'), 'application/xml')
+    if (xml.getElementsByTagName('parsererror').length) {
+      throw new Error(`The DOCX part "${partPath}" contains invalid Word XML.`)
+    }
+    getWordParagraphs(xml).forEach((paragraph, paragraphIndex) => {
+      const text = getParagraphText(paragraph)
+      const style = getCertificateEditorParagraphStyle(paragraph)
+      paragraphs.push({
+        key: `${partPath}:${paragraphIndex}`,
+        partPath,
+        paragraphIndex,
+        partLabel: partPath === 'word/document.xml'
+          ? 'Document body'
+          : partPath === 'word/bb1-standard-header.xml'
+            ? 'Barangay header'
+            : partPath.includes('/header') ? `Header ${partPath.match(/header(\d+)/)?.[1] || ''}` : `Footer ${partPath.match(/footer(\d+)/)?.[1] || ''}`,
+        text,
+        originalText: text,
+        style,
+        originalStyle: { ...style },
+      })
+    })
+  }
+  const images = []
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir || !path.startsWith('word/media/')) continue
+    const mimeType = getCertificateEditorImageMimeType(path)
+    if (!mimeType) continue
+    images.push({
+      path,
+      mimeType,
+      dataUrl: `data:${mimeType};base64,${await entry.async('base64')}`,
+    })
+  }
+  return { paragraphs, images }
+}
+
+const setCertificateEditorProperty = (documentXml, parent, propertyName, enabled) => {
+  let property = getWordRunProperty(parent, propertyName)
+  if (!enabled) {
+    property?.parentNode.removeChild(property)
+    return null
+  }
+  if (!property) {
+    property = documentXml.createElementNS(wordNamespace, `w:${propertyName}`)
+    const order = parent.localName === 'pPr'
+      ? ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr', 'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd', 'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap', 'jc', 'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId', 'cnfStyle', 'rPr', 'sectPr', 'pPrChange']
+      : ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike', 'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden', 'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange']
+    const propertyRank = order.indexOf(propertyName)
+    const nextProperty = Array.from(parent.children).find((child) => {
+      if (child.namespaceURI !== wordNamespace) return false
+      const childRank = order.indexOf(child.localName)
+      return childRank >= 0 && (propertyRank < 0 || childRank > propertyRank)
+    })
+    parent.insertBefore(property, nextProperty || null)
+  }
+  return property
+}
+
+const updateCertificateEditorParagraph = (documentXml, paragraph, edit) => {
+  const textNodes = Array.from(paragraph.getElementsByTagNameNS(wordNamespace, 't'))
+  const value = String(edit.text ?? '').replace(/\r?\n/g, ' ').slice(0, 10000)
+  if (!textNodes.length && value) {
+    let run = Array.from(paragraph.children)
+      .find((child) => child.namespaceURI === wordNamespace && child.localName === 'r')
+    if (!run) {
+      run = documentXml.createElementNS(wordNamespace, 'w:r')
+      paragraph.appendChild(run)
+    }
+    const textNode = documentXml.createElementNS(wordNamespace, 'w:t')
+    run.appendChild(textNode)
+    textNodes.push(textNode)
+  }
+  textNodes.forEach((textNode, index) => setRunText(textNode, index === 0 ? value : ''))
+
+  if (['left', 'center', 'right', 'both'].includes(edit.alignment)) {
+    let paragraphProperties = Array.from(paragraph.children)
+      .find((child) => child.namespaceURI === wordNamespace && child.localName === 'pPr')
+    if (!paragraphProperties) {
+      paragraphProperties = documentXml.createElementNS(wordNamespace, 'w:pPr')
+      paragraph.insertBefore(paragraphProperties, paragraph.firstChild)
+    }
+    setCertificateEditorProperty(documentXml, paragraphProperties, 'jc', true)
+      .setAttributeNS(wordNamespace, 'w:val', edit.alignment)
+  }
+
+  const runs = new Set(textNodes.map((textNode) => {
+    let ancestor = textNode.parentNode
+    while (ancestor && ancestor !== paragraph && !(ancestor.namespaceURI === wordNamespace && ancestor.localName === 'r')) {
+      ancestor = ancestor.parentNode
+    }
+    return ancestor
+  }).filter(Boolean))
+  runs.forEach((run) => {
+    let runProperties = Array.from(run.children)
+      .find((child) => child.namespaceURI === wordNamespace && child.localName === 'rPr')
+    if (!runProperties) {
+      runProperties = documentXml.createElementNS(wordNamespace, 'w:rPr')
+      run.insertBefore(runProperties, run.firstChild)
+    }
+    if (edit.fontName) {
+      const fonts = setCertificateEditorProperty(documentXml, runProperties, 'rFonts', true)
+      for (const script of ['ascii', 'hAnsi', 'eastAsia', 'cs']) {
+        fonts.setAttributeNS(wordNamespace, `w:${script}`, edit.fontName.slice(0, 80))
+      }
+    }
+    if (edit.fontSize) {
+      const size = Math.round(Number(edit.fontSize) * 2)
+      if (Number.isFinite(size) && size >= 12 && size <= 192) {
+        for (const propertyName of ['sz', 'szCs']) {
+          setCertificateEditorProperty(documentXml, runProperties, propertyName, true)
+            .setAttributeNS(wordNamespace, 'w:val', String(size))
+        }
+      }
+    }
+    if (/^#[\da-f]{6}$/i.test(edit.color || '')) {
+      setCertificateEditorProperty(documentXml, runProperties, 'color', true)
+        .setAttributeNS(wordNamespace, 'w:val', edit.color.slice(1).toUpperCase())
+    }
+    for (const [propertyName, enabled] of [['b', edit.bold], ['i', edit.italic], ['u', edit.underline]]) {
+      if (enabled === undefined || enabled === null) continue
+      const property = setCertificateEditorProperty(documentXml, runProperties, propertyName, enabled)
+      if (property && propertyName === 'u') property.setAttributeNS(wordNamespace, 'w:val', 'single')
+    }
+    if (!runProperties.children.length) run.removeChild(runProperties)
+  })
+}
+
+export const updateCertificateTemplateDocx = async (documentBlob, { paragraphs = [], imageFiles = [] }) => {
+  const zip = await JSZip.loadAsync(documentBlob)
+  const groupedEdits = new Map()
+  paragraphs.forEach((edit) => {
+    if (!edit || typeof edit.partPath !== 'string' || !certificateEditorPartPathPattern.test(edit.partPath)
+      || !Number.isInteger(edit.paragraphIndex)) {
+      throw new Error('The template editor received an invalid paragraph location.')
+    }
+    const edits = groupedEdits.get(edit.partPath) || []
+    edits.push(edit)
+    groupedEdits.set(edit.partPath, edits)
+  })
+  for (const [partPath, edits] of groupedEdits) {
+    const partFile = zip.file(partPath)
+    if (!partFile) throw new Error(`The DOCX file is missing "${partPath}".`)
+    const xml = new DOMParser().parseFromString(await partFile.async('text'), 'application/xml')
+    if (xml.getElementsByTagName('parsererror').length) {
+      throw new Error(`The DOCX part "${partPath}" contains invalid Word XML.`)
+    }
+    const wordParagraphs = getWordParagraphs(xml)
+    edits.forEach((edit) => {
+      const paragraph = wordParagraphs[edit.paragraphIndex]
+      if (!paragraph) throw new Error(`The DOCX part "${partPath}" is missing paragraph ${edit.paragraphIndex + 1}.`)
+      updateCertificateEditorParagraph(xml, paragraph, edit)
+    })
+    zip.file(partPath, new XMLSerializer().serializeToString(xml))
+  }
+  for (const imageFile of imageFiles) {
+    if (!imageFile || typeof imageFile.path !== 'string' || !imageFile.path.startsWith('word/media/')
+      || typeof imageFile.contentBase64 !== 'string' || !imageFile.contentBase64
+      || getCertificateEditorImageMimeType(imageFile.path) !== imageFile.mimeType) {
+      throw new Error('Replacement images must use PNG, JPEG, or GIF format matching the original image file.')
+    }
+    if (!zip.file(imageFile.path)) throw new Error(`The DOCX file is missing image "${imageFile.path}".`)
+    zip.file(imageFile.path, imageFile.contentBase64, { base64: true })
+  }
+  return zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  })
+}
+
 const setParagraphText = (paragraph, value) => {
   const textNodes = Array.from(paragraph.getElementsByTagNameNS(wordNamespace, 't'))
   if (!textNodes.length) throw new Error('A certificate signatory line has no text run.')
@@ -2252,7 +2473,7 @@ export const createFilledCertificateDocx = async (documentName, certificateData,
     }
     const fileBytes = Uint8Array.from(atob(customTemplate.contentBase64), (character) => character.charCodeAt(0))
     let customZip = await JSZip.loadAsync(fileBytes)
-    if (!await hasCenteredStandardHeader(customZip)) {
+    if (!customTemplate.preserveHeader && !await hasCenteredStandardHeader(customZip)) {
       const normalizedBlob = await normalizeCertificateTemplateHeader(fileBytes, documentName)
       customZip = await JSZip.loadAsync(normalizedBlob)
     }

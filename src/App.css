@@ -2450,6 +2450,60 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-dashboard.dark-mode .certificate-template-preview-modal .docx-preview-toolbar h3 { color: #edf4ed; }
 .official-dashboard.dark-mode .certificate-template-zoom button, .official-dashboard.dark-mode .certificate-template-preview-controls > button { border-color: #526e56; background: #314235; color: #d9f0d2; }
 .official-dashboard.dark-mode .certificate-template-zoom span { color: #b6c2b7; }
+.certificate-template-editor-backdrop { z-index: 1150; }
+.certificate-template-content-editor { display: flex; flex-direction: column; width: min(1120px, 96vw); height: min(900px, 94vh); max-height: 94vh; gap: 12px; overflow: hidden; padding: 18px; border: 1px solid #c4d9c7; border-radius: 14px; background: #fff; box-shadow: 0 24px 70px rgba(0, 0, 0, .35); }
+.certificate-content-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid #e1ebe2; }
+.certificate-content-editor-heading h2 { margin: 0; color: #294d31; font: 700 20px/1.3 var(--heading); }
+.certificate-content-editor-heading p:last-child { max-width: 760px; margin: 5px 0 0; color: #68746a; font-size: 11px; line-height: 1.5; }
+.certificate-content-editor-heading .section-number { margin: 0 0 4px; color: #3c7a45; }
+.certificate-content-editor-heading > button { flex: 0 0 auto; min-height: 34px; padding: 6px 10px; border: 1px solid #9bbda0; border-radius: 7px; background: #fff; color: #286334; cursor: pointer; font: 700 11px var(--sans); }
+.certificate-content-editor-body { display: grid; flex: 1; grid-template-columns: 170px minmax(0, 1fr); gap: 12px; min-height: 0; }
+.certificate-content-editor-parts { display: grid; align-content: start; gap: 6px; overflow: auto; }
+.certificate-content-editor-parts button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 9px; border: 1px solid #d5e5d7; border-radius: 7px; background: #f8fbf8; color: #355d3b; cursor: pointer; font: 700 10px var(--sans); text-align: left; }
+.certificate-content-editor-parts button.active, .certificate-content-editor-paragraph.active { border-color: #6f9c75; background: #edf7ed; }
+.certificate-content-editor-parts button span { color: #68746a; font-size: 9px; }
+.certificate-content-editor-main { display: grid; align-content: start; gap: 10px; min-width: 0; overflow: auto; padding: 1px 5px 4px 1px; }
+.certificate-content-formatting { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px; border: 1px solid #d5e5d7; border-radius: 8px; background: #f8fbf8; }
+.certificate-content-formatting > label { display: grid; gap: 4px; color: #526357; font-size: 9px; font-weight: 700; }
+.certificate-content-formatting select { min-width: 100px; max-width: 150px; height: 30px; padding: 4px 6px; border: 1px solid #c4d9c7; border-radius: 5px; background: #fff; color: #263329; font: 11px var(--sans); }
+.certificate-content-formatting input[type="color"] { width: 42px; height: 30px; padding: 3px; border: 1px solid #c4d9c7; border-radius: 5px; background: #fff; }
+.certificate-content-formatting-toggles { display: flex; gap: 4px; }
+.certificate-content-formatting-toggles button { min-width: 32px; height: 30px; border: 1px solid #c4d9c7; border-radius: 5px; background: #fff; color: #355d3b; cursor: pointer; }
+.certificate-content-formatting-toggles button[aria-pressed="true"] { border-color: #3c7a45; background: #eaf4ea; color: #24552d; }
+.certificate-content-editor-paragraphs { display: grid; gap: 7px; }
+.certificate-content-editor-paragraph { display: grid; gap: 5px; padding: 8px; border: 1px solid #e1ebe2; border-radius: 7px; background: #fff; }
+.certificate-content-editor-paragraph > span { display: flex; justify-content: space-between; gap: 10px; color: #355d3b; font-size: 10px; }
+.certificate-content-editor-paragraph small { color: #68746a; font-weight: 400; }
+.certificate-content-editor-paragraph textarea { width: 100%; min-height: 42px; resize: vertical; padding: 8px; border: 1px solid #d5e5d7; border-radius: 5px; background: #fff; color: #263329; font: 12px/1.5 var(--sans); }
+.certificate-content-editor-images { display: grid; gap: 8px; padding: 10px; border: 1px solid #d5e5d7; border-radius: 8px; background: #f8fbf8; }
+.certificate-content-editor-images h3 { margin: 0; color: #294d31; font-size: 12px; }
+.certificate-content-editor-images p { margin: 3px 0 0; color: #68746a; font-size: 10px; line-height: 1.45; }
+.certificate-content-editor-image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 8px; }
+.certificate-content-editor-image-grid > label { display: grid; align-content: start; gap: 5px; min-width: 0; padding: 8px; border: 1px solid #e1ebe2; border-radius: 7px; background: #fff; color: #355d3b; font-size: 9px; overflow-wrap: anywhere; }
+.certificate-content-editor-image-grid img { width: 100%; height: 90px; object-fit: contain; background: #f5f7f5; }
+.certificate-content-editor-image-grid input { width: 100%; min-width: 0; font-size: 9px; }
+.certificate-content-editor-image-grid small { color: #68746a; font-weight: 400; }
+.certificate-content-editor-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid #e1ebe2; }
+.certificate-content-editor-actions > span { flex: 1; color: #68746a; font-size: 10px; }
+.certificate-content-editor-actions button { min-height: 34px; padding: 6px 11px; }
+.certificate-content-editor-actions button:disabled { cursor: wait; opacity: .55; }
+.certificate-template-content-editor-launch { justify-self: start; }
+.official-dashboard.dark-mode .certificate-template-content-editor { border-color: #425746; background: #243228; }
+.official-dashboard.dark-mode .certificate-content-editor-heading { border-color: #425746; }
+.official-dashboard.dark-mode .certificate-content-editor-heading h2, .official-dashboard.dark-mode .certificate-content-editor-images h3 { color: #d9f0d2; }
+.official-dashboard.dark-mode .certificate-content-editor-heading p:last-child, .official-dashboard.dark-mode .certificate-content-editor-paragraph small, .official-dashboard.dark-mode .certificate-content-editor-images p, .official-dashboard.dark-mode .certificate-content-editor-image-grid small, .official-dashboard.dark-mode .certificate-content-editor-actions > span { color: #b6c2b7; }
+.official-dashboard.dark-mode .certificate-content-editor-heading > button, .official-dashboard.dark-mode .certificate-content-editor-parts button, .official-dashboard.dark-mode .certificate-content-formatting, .official-dashboard.dark-mode .certificate-content-formatting select, .official-dashboard.dark-mode .certificate-content-formatting input[type="color"], .official-dashboard.dark-mode .certificate-content-formatting-toggles button, .official-dashboard.dark-mode .certificate-content-editor-paragraph, .official-dashboard.dark-mode .certificate-content-editor-paragraph textarea, .official-dashboard.dark-mode .certificate-content-editor-images, .official-dashboard.dark-mode .certificate-content-editor-image-grid > label { border-color: #526e56; background: #2b3b2e; color: #edf4ed; }
+.official-dashboard.dark-mode .certificate-content-editor-parts button.active, .official-dashboard.dark-mode .certificate-content-formatting-toggles button[aria-pressed="true"], .official-dashboard.dark-mode .certificate-content-editor-paragraph.active { background: #344b38; }
+.official-dashboard.dark-mode .certificate-content-formatting > label, .official-dashboard.dark-mode .certificate-content-editor-paragraph > span { color: #d9f0d2; }
+.official-dashboard.dark-mode .certificate-content-editor-actions { border-color: #425746; }
+@media (max-width: 720px) {
+  .certificate-template-content-editor { width: 100%; height: 96vh; height: 96dvh; max-height: 96vh; max-height: 96dvh; padding: 12px; }
+  .certificate-content-editor-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .certificate-content-editor-parts { display: flex; overflow: auto; }
+  .certificate-content-editor-parts button { flex: 0 0 auto; }
+  .certificate-content-editor-actions { flex-wrap: wrap; }
+  .certificate-content-editor-actions > span { flex-basis: 100%; }
+}
 @media (max-width: 720px) {
   .release-record-form { grid-template-columns: minmax(0, 1fr); }
   .release-record-form .detail-label, .release-record-form .community-update-error, .release-record-form .action-buttons { grid-column: auto; }

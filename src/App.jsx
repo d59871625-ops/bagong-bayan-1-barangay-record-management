@@ -16,8 +16,10 @@ import {
   getDefaultRequestCertificates,
   normalizeBarangayZone,
   normalizeCertificateTemplateHeader,
+  readCertificateTemplateForEditing,
   scanCertificateTemplateFields,
   shouldPreserveCertificateSourceLayout,
+  updateCertificateTemplateDocx,
 } from './certificateDocuments.js'
 import './App.css'
 
@@ -1271,6 +1273,251 @@ function CertificateTemplateRequestPicker({ document, requests, viewedState, onC
             </button>)}
           </div>
         ) : <p className="certificate-template-request-empty">There are no requests currently in document processing that still need this certificate.</p>}
+      </section>
+    </div>
+  )
+}
+
+function CertificateTemplateContentEditor({ document, customTemplates, onClose, onApply }) {
+  const [sourceBlob, setSourceBlob] = useState(null)
+  const [paragraphs, setParagraphs] = useState([])
+  const [images, setImages] = useState([])
+  const [imageReplacements, setImageReplacements] = useState({})
+  const [activeParagraphKey, setActiveParagraphKey] = useState('')
+  const [activePart, setActivePart] = useState('word/document.xml')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [previewFile, setPreviewFile] = useState(null)
+  const template = getCertificateTemplate(document, customTemplates)
+
+  useEffect(() => {
+    let isCurrent = true
+    const loadTemplate = async () => {
+      try {
+        if (!template) throw new Error(`The ${document} template is not available.`)
+        const source = template.custom
+          ? new Blob([Uint8Array.from(atob(template.contentBase64), (character) => character.charCodeAt(0))], {
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          })
+          : await fetch(template.file, { cache: 'no-store' }).then((response) => {
+            if (!response.ok) throw new Error(`The DOCX template could not be loaded (HTTP ${response.status}).`)
+            return response.blob()
+          })
+        const content = await readCertificateTemplateForEditing(source)
+        if (!isCurrent) return
+        setSourceBlob(source)
+        setParagraphs(content.paragraphs)
+        setImages(content.images)
+        setActiveParagraphKey(content.paragraphs[0]?.key || '')
+        setActivePart('word/document.xml')
+      } catch (loadError) {
+        console.error(`Unable to open the ${document} template editor.`, loadError)
+        if (isCurrent) setError(loadError.message || 'The certificate template could not be opened.')
+      } finally {
+        if (isCurrent) setIsLoading(false)
+      }
+    }
+    loadTemplate()
+    return () => { isCurrent = false }
+  }, [document, customTemplates, template])
+
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        if (previewFile) setPreviewFile(null)
+        else onClose()
+      }
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onClose, previewFile])
+
+  const updateParagraph = (key, update) => {
+    setParagraphs((current) => current.map((paragraph) => (
+      paragraph.key === key ? { ...paragraph, ...update } : paragraph
+    )))
+    setActiveParagraphKey(key)
+  }
+
+  const replaceImage = async (image, file) => {
+    if (!file) return
+    if (file.type !== image.mimeType) {
+      setError(`Choose a ${image.mimeType.split('/')[1].toUpperCase()} image to match the original ${image.path.split('/').pop()} file.`)
+      return
+    }
+    if (file.size > 1500000) {
+      setError('Replacement pictures must be 1.5 MB or smaller.')
+      return
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error || new Error('The picture could not be read.'))
+        reader.readAsDataURL(file)
+      })
+      setImageReplacements((current) => ({
+        ...current,
+        [image.path]: { dataUrl, contentBase64: dataUrl.slice(dataUrl.indexOf(',') + 1) },
+      }))
+      setError('')
+    } catch (readError) {
+      console.error(`Unable to read a replacement picture for ${document}.`, readError)
+      setError(readError.message || 'The replacement picture could not be read.')
+    }
+  }
+
+  const saveEdits = async () => {
+    if (!sourceBlob) return
+    setError('')
+    setIsSaving(true)
+    try {
+      const changedParagraphs = paragraphs
+        .filter((paragraph) => {
+          return (
+            paragraph.text !== paragraph.originalText
+            || Object.keys(paragraph.style).some((key) => paragraph.style[key] !== paragraph.originalStyle?.[key])
+          )
+        })
+        .map((paragraph) => ({
+          partPath: paragraph.partPath,
+          paragraphIndex: paragraph.paragraphIndex,
+          text: paragraph.text,
+          ...(paragraph.style.alignment !== paragraph.originalStyle?.alignment ? { alignment: paragraph.style.alignment } : {}),
+          ...(paragraph.style.fontName !== paragraph.originalStyle?.fontName && paragraph.style.fontName ? { fontName: paragraph.style.fontName } : {}),
+          ...(paragraph.style.fontSize !== paragraph.originalStyle?.fontSize && paragraph.style.fontSize ? { fontSize: paragraph.style.fontSize } : {}),
+          ...(paragraph.style.color !== paragraph.originalStyle?.color && paragraph.style.color ? { color: paragraph.style.color } : {}),
+          ...(paragraph.style.bold !== paragraph.originalStyle?.bold ? { bold: paragraph.style.bold } : {}),
+          ...(paragraph.style.italic !== paragraph.originalStyle?.italic ? { italic: paragraph.style.italic } : {}),
+          ...(paragraph.style.underline !== paragraph.originalStyle?.underline ? { underline: paragraph.style.underline } : {}),
+        }))
+      const imageFiles = images
+        .filter((image) => imageReplacements[image.path])
+        .map((image) => ({ path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }))
+      if (!changedParagraphs.length && !imageFiles.length) {
+        setError('Make a text, formatting, or picture change before applying the edited template.')
+        return
+      }
+      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles })
+      const file = new File([blob], template.originalFilename || `${document}.docx`, {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+      const applied = await onApply(file)
+      if (applied === false) return
+      onClose()
+    } catch (saveError) {
+      console.error(`Unable to apply edits to the ${document} template.`, saveError)
+      setError(saveError.message || 'The edited template could not be prepared.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const draftPreview = async () => {
+    if (!sourceBlob) return
+    setError('')
+    setIsSaving(true)
+    try {
+      const changedParagraphs = paragraphs
+        .filter((paragraph) => paragraph.text !== paragraph.originalText
+          || Object.keys(paragraph.style).some((key) => paragraph.style[key] !== paragraph.originalStyle?.[key]))
+        .map((paragraph) => ({
+          partPath: paragraph.partPath,
+          paragraphIndex: paragraph.paragraphIndex,
+          text: paragraph.text,
+          ...(paragraph.style.alignment !== paragraph.originalStyle?.alignment ? { alignment: paragraph.style.alignment } : {}),
+          ...(paragraph.style.fontName !== paragraph.originalStyle?.fontName && paragraph.style.fontName ? { fontName: paragraph.style.fontName } : {}),
+          ...(paragraph.style.fontSize !== paragraph.originalStyle?.fontSize && paragraph.style.fontSize ? { fontSize: paragraph.style.fontSize } : {}),
+          ...(paragraph.style.color !== paragraph.originalStyle?.color && paragraph.style.color ? { color: paragraph.style.color } : {}),
+          ...(paragraph.style.bold !== paragraph.originalStyle?.bold ? { bold: paragraph.style.bold } : {}),
+          ...(paragraph.style.italic !== paragraph.originalStyle?.italic ? { italic: paragraph.style.italic } : {}),
+          ...(paragraph.style.underline !== paragraph.originalStyle?.underline ? { underline: paragraph.style.underline } : {}),
+        }))
+      const imageFiles = images
+        .filter((image) => imageReplacements[image.path])
+        .map((image) => ({ path: image.path, mimeType: image.mimeType, ...imageReplacements[image.path] }))
+      const blob = await updateCertificateTemplateDocx(sourceBlob, { paragraphs: changedParagraphs, imageFiles })
+      setPreviewFile(new File([blob], template.originalFilename || `${document}.docx`, {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }))
+    } catch (previewError) {
+      console.error(`Unable to preview edits to the ${document} template.`, previewError)
+      setError(previewError.message || 'The edited template preview could not be prepared.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const visibleParagraphs = paragraphs.filter((paragraph) => paragraph.partPath === activePart)
+  const activeParagraph = paragraphs.find((paragraph) => paragraph.key === activeParagraphKey)
+  const partOptions = [...new Map(paragraphs.map((paragraph) => [paragraph.partPath, paragraph.partLabel])).entries()]
+
+  return (
+    <div className="certificate-template-preview-backdrop certificate-template-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section className="docx-preview-panel certificate-template-content-editor" role="dialog" aria-modal="true" aria-labelledby="certificate-content-editor-title">
+        <header className="certificate-content-editor-heading">
+          <div><p className="section-number">BASIC WORD-STYLE EDITOR</p><h2 id="certificate-content-editor-title">{document}</h2><p>Edit the text, paragraph formatting, header/footer text, and existing pictures. Page setup and other Word layout details stay in the DOCX.</p></div>
+          <button type="button" onClick={onClose}>Close editor</button>
+        </header>
+        {error && <p className="community-update-error" role="alert">{error}</p>}
+        {isLoading
+          ? <p className="docx-preview-loading" role="status">Opening the current DOCX template…</p>
+          : paragraphs.length === 0
+            ? <p className="docx-preview-loading">No editable Word paragraphs were found in this template.</p>
+            : <div className="certificate-content-editor-body">
+              <nav className="certificate-content-editor-parts" aria-label="Document sections">
+                {partOptions.map(([partPath, partLabel]) => <button
+                  type="button"
+                  className={activePart === partPath ? 'active' : ''}
+                  key={partPath}
+                  onClick={() => {
+                    setActivePart(partPath)
+                    setActiveParagraphKey(paragraphs.find((paragraph) => paragraph.partPath === partPath)?.key || '')
+                  }}
+                >{partLabel}<span>{paragraphs.filter((paragraph) => paragraph.partPath === partPath).length}</span></button>)}
+              </nav>
+              <div className="certificate-content-editor-main">
+                {activeParagraph && <section className="certificate-content-formatting" aria-label="Selected paragraph formatting">
+                  <label>Font<select value={activeParagraph.style.fontName} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontName: event.target.value } })}><option value="">Keep template font</option>{['Arial', 'Calibri', 'Times New Roman', 'Georgia', 'Verdana', 'Tahoma'].map((font) => <option key={font}>{font}</option>)}</select></label>
+                  <label>Size<select value={activeParagraph.style.fontSize} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, fontSize: event.target.value } })}><option value="">Keep size</option>{[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((size) => <option key={size} value={size}>{size} pt</option>)}</select></label>
+                  <label>Text color<input aria-label="Selected paragraph text color" type="color" value={activeParagraph.style.color || '#000000'} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, color: event.target.value } })} /></label>
+                  <label>Alignment<select value={activeParagraph.style.alignment} onChange={(event) => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, alignment: event.target.value } })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option><option value="both">Justified</option></select></label>
+                  <div className="certificate-content-formatting-toggles">
+                    <button type="button" aria-pressed={activeParagraph.style.bold} onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, bold: !activeParagraph.style.bold } })}><strong>B</strong></button>
+                    <button type="button" aria-pressed={activeParagraph.style.italic} onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, italic: !activeParagraph.style.italic } })}><em>I</em></button>
+                    <button type="button" aria-pressed={activeParagraph.style.underline} onClick={() => updateParagraph(activeParagraph.key, { style: { ...activeParagraph.style, underline: !activeParagraph.style.underline } })}><u>U</u></button>
+                  </div>
+                </section>}
+                <div className="certificate-content-editor-paragraphs">
+                  {visibleParagraphs.map((paragraph, index) => <label className={`certificate-content-editor-paragraph${paragraph.key === activeParagraphKey ? ' active' : ''}`} key={paragraph.key}>
+                    <span><strong>Paragraph {index + 1}</strong>{paragraph.text ? <small>{paragraph.text.length} characters</small> : <small>Blank paragraph</small>}</span>
+                    <textarea
+                      rows={Math.min(5, Math.max(2, Math.ceil(paragraph.text.length / 84)))}
+                      value={paragraph.text}
+                      placeholder="Type paragraph text"
+                      onFocus={() => setActiveParagraphKey(paragraph.key)}
+                      onChange={(event) => updateParagraph(paragraph.key, { text: event.target.value })}
+                    />
+                  </label>)}
+                </div>
+                {images.length > 0 && <section className="certificate-content-editor-images" aria-label="Document pictures">
+                  <div><h3>Pictures</h3><p>Replace an existing picture using the same image format. Its current position and size stay in the document.</p></div>
+                  <div className="certificate-content-editor-image-grid">{images.map((image) => <label key={image.path}>
+                    <img src={imageReplacements[image.path]?.dataUrl || image.dataUrl} alt={`Current ${image.path.split('/').pop()} in ${document}`} />
+                    <span>{image.path.split('/').pop()}</span>
+                    <input type="file" accept={image.mimeType} onChange={(event) => replaceImage(image, event.target.files?.[0])} />
+                    <small>{image.mimeType.split('/')[1].toUpperCase()} only · 1.5 MB maximum</small>
+                  </label>)}</div>
+                </section>}
+              </div>
+            </div>}
+        <footer className="certificate-content-editor-actions">
+          <span>{paragraphs.length} paragraphs · {images.length} pictures · DOCX layout preserved</span>
+          <button type="button" className="resident-table-action" disabled={isLoading || isSaving || !sourceBlob} onClick={draftPreview}>Preview edits</button>
+          <button type="button" className="check-button" disabled={isLoading || isSaving || !sourceBlob} onClick={saveEdits}>{isSaving ? 'Preparing…' : 'Apply edits'}</button>
+        </footer>
+        {previewFile && <CertificateTemplatePreview document={document} uploadedFile={previewFile} onClose={() => setPreviewFile(null)} />}
       </section>
     </div>
   )
@@ -4130,6 +4377,8 @@ function App() {
   const [editingCertificateTemplate, setEditingCertificateTemplate] = useState('')
   const [editingCustomTemplateId, setEditingCustomTemplateId] = useState('')
   const [customTemplateFile, setCustomTemplateFile] = useState(null)
+  const [customTemplatePreserveHeader, setCustomTemplatePreserveHeader] = useState(false)
+  const [isCertificateTemplateEditorOpen, setIsCertificateTemplateEditorOpen] = useState(false)
   const certificateTemplateUploadRef = useRef(null)
   const [customTemplateDetectedFields, setCustomTemplateDetectedFields] = useState([])
   const [customTemplateRequirements, setCustomTemplateRequirements] = useState('Valid government ID')
@@ -9777,11 +10026,13 @@ function App() {
     setEditingCustomTemplateId('')
     setCustomTemplateName('')
     setCustomTemplateFile(null)
+    setCustomTemplatePreserveHeader(false)
     setCustomTemplateDetectedFields([])
     setCustomTemplateRequirements('Valid government ID')
     setCustomTemplateError('')
     setCustomTemplateStatus('')
     setIsCustomTemplatePreviewOpen(false)
+    setIsCertificateTemplateEditorOpen(false)
   }
 
   const openCertificateTemplateEditor = (document) => {
@@ -9793,12 +10044,19 @@ function App() {
     setEditingCustomTemplateId(customTemplate?.id || '')
     setCustomTemplateName(document)
     setCustomTemplateFile(null)
+    setCustomTemplatePreserveHeader(false)
     setCustomTemplateDetectedFields([])
     setCustomTemplateRequirements((requirements.length ? requirements : ['Valid government ID']).join('\n'))
     setCustomTemplateError('')
-    setCustomTemplateStatus('Upload a revised DOCX. Request details, fees, and availability settings will be kept.')
+    setCustomTemplateStatus('Use the in-browser editor to change existing text, paragraph formatting, or pictures. The remaining DOCX layout and existing request settings will be preserved.')
     setIsCustomTemplatePreviewOpen(false)
+    setIsCertificateTemplateEditorOpen(false)
     setIsCustomTemplateFormOpen(true)
+  }
+
+  const applyCertificateTemplateEditorChanges = async (file) => {
+    const applied = await inspectCustomCertificateFile(file, { preserveHeader: true })
+    return applied
   }
 
   const startAddingCustomCertificateTemplate = () => {
@@ -9806,47 +10064,49 @@ function App() {
     setIsCustomTemplateFormOpen(true)
   }
 
-  const inspectCustomCertificateFile = async (file) => {
+  const inspectCustomCertificateFile = async (file, { preserveHeader = false } = {}) => {
     setCustomTemplateError('')
     setCustomTemplateStatus('')
     setIsCustomTemplatePreviewOpen(false)
     setCustomTemplateFile(null)
+    setCustomTemplatePreserveHeader(preserveHeader)
     setCustomTemplateDetectedFields([])
-    if (!file) return
+    if (!file) return false
     if (!file.name.toLowerCase().endsWith('.docx')) {
       setCustomTemplateError('Choose a Microsoft Word DOCX template.')
-      return
+      return false
     }
     if (file.size > 1500000) {
       setCustomTemplateError('DOCX templates must be 1.5 MB or smaller.')
-      return
+      return false
     }
-    setCustomTemplateStatus('Applying the standard barangay header and scanning the document…')
+    setCustomTemplateStatus(preserveHeader ? 'Checking the edited DOCX and scanning its resident fields…' : 'Applying the standard barangay header and scanning the document…')
     try {
-      const standardizedBlob = await normalizeCertificateTemplateHeader(file, file.name)
-      const standardizedFile = new File([standardizedBlob], file.name, {
+      const preparedBlob = preserveHeader ? file : await normalizeCertificateTemplateHeader(file, file.name)
+      const standardizedFile = new File([preparedBlob], file.name, {
         type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
       setCustomTemplateFile(standardizedFile)
-      try {
-        const fields = await scanCertificateTemplateFields(standardizedFile)
-        setCustomTemplateDetectedFields(fields)
-        const blankCount = fields.filter((field) => field.type !== 'checkbox').length
-        const checkboxOptions = fields.filter((field) => field.type === 'checkbox')
-        const checkboxGroupCount = new Set(checkboxOptions.map((field) => field.groupId)).size
-        const reviewCount = fields.filter((field) => field.needsReview).length
-        setCustomTemplateStatus(`${blankCount} blank fields and ${checkboxOptions.length} checkbox choices in ${checkboxGroupCount} groups detected. ${reviewCount ? `${reviewCount} label${reviewCount === 1 ? '' : 's'} need review. ` : ''}Signature lines are excluded.`)
-      } catch (error) {
-        console.error('Unable to detect fillable fields in the uploaded certificate template.', error)
+      const fields = await scanCertificateTemplateFields(standardizedFile)
+      if (!fields.length) {
+        setCustomTemplateFile(null)
         setCustomTemplateDetectedFields([])
-        setCustomTemplateStatus('')
-        setCustomTemplateError(error.message || 'The uploaded DOCX could not be scanned for fillable fields.')
+        setCustomTemplateError('The edited DOCX has no fillable fields. The template must include a detectable blank or checkbox before it can be saved.')
+        return false
       }
+      setCustomTemplateDetectedFields(fields)
+      const blankCount = fields.filter((field) => field.type !== 'checkbox').length
+      const checkboxOptions = fields.filter((field) => field.type === 'checkbox')
+      const checkboxGroupCount = new Set(checkboxOptions.map((field) => field.groupId)).size
+      const reviewCount = fields.filter((field) => field.needsReview).length
+      setCustomTemplateStatus(`${blankCount} blank fields and ${checkboxOptions.length} checkbox choices in ${checkboxGroupCount} groups detected. ${reviewCount ? `${reviewCount} label${reviewCount === 1 ? '' : 's'} need review. ` : ''}Signature lines are excluded.`)
+      return true
     } catch (error) {
-      console.error('Unable to scan the uploaded certificate template.', error)
+      console.error('Unable to inspect the uploaded certificate template.', error)
       setCustomTemplateFile(null)
       setCustomTemplateDetectedFields([])
       setCustomTemplateError(error.message || 'The uploaded DOCX template could not be scanned.')
+      return false
     }
   }
 
@@ -9932,6 +10192,7 @@ function App() {
         originalFilename: customTemplateFile.name,
         contentBase64,
         custom: true,
+        preserveHeader: customTemplatePreserveHeader,
         overridesBuiltIn: Boolean(templateToReplace?.overridesBuiltIn || (!templateToReplace && isBuiltInTemplate)),
         fields: customTemplateDetectedFields,
         requirements,
@@ -9957,6 +10218,7 @@ function App() {
       setEditingCertificateTemplate('')
       setEditingCustomTemplateId('')
       setCustomTemplateFile(null)
+      setCustomTemplatePreserveHeader(false)
       setCustomTemplateDetectedFields([])
       setCustomTemplateRequirements('Valid government ID')
       setCustomTemplateStatus(isEditing
@@ -12408,9 +12670,10 @@ function App() {
                 <span className="request-notification">{enabledCertificateTypes.length} enabled</span>
               </div>
             </div>
-            <p className="resident-report-note">Manage resident document types and their fees. Uploaded DOCX files receive the standard barangay header shown in the preview; the remaining layout and content are preserved, with only confirmed values inserted when a certificate is prepared.</p>
+            <p className="resident-report-note">Manage resident document types and their fees. New DOCX uploads receive the standard barangay header. Edits made in the in-browser editor preserve the selected template’s existing header and page layout.</p>
             {isCustomTemplateFormOpen && <form id="certificate-template-upload-form" ref={certificateTemplateUploadRef} className="certificate-template-upload" onSubmit={saveCustomCertificateTemplate}>
               <div><span className="section-number">{editingCertificateTemplate ? 'EDIT TEMPLATE' : 'ADD A TEMPLATE'}</span><h3>{editingCertificateTemplate ? `Replace the ${editingCertificateTemplate} layout` : 'Upload a resident document'}</h3><p>The scan reads the document text, underlined blanks, checkbox symbols, and checkbox-style lists. Each blank stays separate; checkbox options are grouped by their question. Review the counts and edit any unclear labels before residents use the form. Add required proof documents below.</p></div>
+              {editingCertificateTemplate && <button type="button" className="resident-table-action certificate-template-content-editor-launch" onClick={() => setIsCertificateTemplateEditorOpen(true)}>Edit text, formatting, and pictures in browser</button>}
               <div className="certificate-template-upload-fields">
                 <label>Document name<input type="text" value={customTemplateName} onChange={(event) => setCustomTemplateName(event.target.value)} maxLength="80" required readOnly={Boolean(editingCertificateTemplate)} /></label>
                 <label>{editingCertificateTemplate ? 'Replacement DOCX file' : 'Original DOCX file'}<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => inspectCustomCertificateFile(event.target.files?.[0])} required={!customTemplateFile} /><small>DOCX only · 1.5 MB maximum</small></label>
@@ -12488,6 +12751,12 @@ function App() {
               document={customTemplateName.trim() || customTemplateFile.name}
               uploadedFile={customTemplateFile}
               onClose={() => setIsCustomTemplatePreviewOpen(false)}
+            />}
+            {isCertificateTemplateEditorOpen && editingCertificateTemplate && <CertificateTemplateContentEditor
+              document={editingCertificateTemplate}
+              customTemplates={customCertificateTemplates}
+              onClose={() => setIsCertificateTemplateEditorOpen(false)}
+              onApply={applyCertificateTemplateEditorChanges}
             />}
             {processingTemplateDocument && <CertificateTemplateRequestPicker
               document={processingTemplateDocument}
