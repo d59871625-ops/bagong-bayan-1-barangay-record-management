@@ -1,0 +1,106 @@
+name: Deploy to InfinityFree
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "src/**"
+      - "public/**"
+      - "backend/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.js"
+      - ".github/workflows/deploy-infinityfree.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infinityfree-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+        # env:
+        #   VITE_API_URL: https://yourdomain.infinityfreeapp.com/backend
+
+      - name: Set up PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer
+
+      - name: Validate PHP endpoints
+        run: |
+          php -l backend/api.php
+          php -l backend/db.php
+          php -l backend/public-community.php
+          php -l backend/certificate-to-pdf.php
+          php -l backend/resident-request-sync.php
+
+      - name: Prepare production files
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --working-dir=backend
+          mkdir -p deploy/backend
+          cp -R dist/. deploy/
+          rsync -a backend/ deploy/backend/ \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='*.log' \
+            --exclude='*.backup' \
+            --exclude='*.bak' \
+            --exclude='*.sql' \
+            --exclude='test.php' \
+            --exclude='create-admin.php' \
+            --exclude='seed-initial-residents.php' \
+            --exclude='start-local-api.ps1' \
+            --exclude='reset-admin-password.ps1' \
+            --exclude='vendor/**/tests/' \
+            --exclude='vendor/**/Tests/' \
+            --exclude='vendor/**/docs/' \
+            --exclude='vendor/**/.git*'
+
+      - name: Check deploy folder
+        run: |
+          test -f deploy/index.html || (echo "index.html missing in deploy/" && exit 1)
+          test -d deploy/backend || (echo "backend folder missing" && exit 1)
+          find deploy -type f | wc -l
+
+      - name: Upload to InfinityFree
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftp
+          port: 21
+          local-dir: ./deploy/
+          server-dir: /htdocs/
+          dangerous-clean-slate: false
+          timeout: 120000
+          log-level: standard
+          exclude: |
+            **/.env
+            **/.env.*
+            **/*.log
+            **/uploads/**
