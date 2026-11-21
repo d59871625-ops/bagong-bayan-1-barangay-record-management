@@ -82,3 +82,5 @@ Certificate PDFs are converted from the filled DOCX template by LibreOffice so t
 5. If the PDF endpoint has a different URL, set `VITE_CERTIFICATE_PDF_URL` in `.env` and restart Vite.
 
 The PDF action fills only values present in the resident's confirmed request. Missing values are left blank. The original DOCX files in `src/certificate-templates` are never modified. Keep the endpoint's admin/official authentication enabled and its CORS allowlist limited to the exact frontend origins.
+
+The template editor renders the selected DOCX paper size in its page preview. Changing paper size updates the page dimensions without rewriting the template body or margins, and document-title paragraphs are centered in the editor.
