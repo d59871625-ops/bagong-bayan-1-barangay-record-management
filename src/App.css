@@ -296,6 +296,22 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-dashboard.dark-mode .password-visibility-toggle { color: #b7dfbc; }
 .official-login-form input:focus { border-color: #3c7a45; box-shadow: 0 0 0 3px rgba(60, 122, 69, 0.14); }
 .official-login-form .check-button { padding: 10px 14px; border-radius: 10px; font-size: 13px; }
+.official-password-reset-toggle { align-self: center; margin: 2px 0 0; padding: 4px 6px; border: 0; background: transparent; color: #d7edc9; font: 700 12px var(--sans); text-decoration: underline; cursor: pointer; }
+.official-password-reset-toggle:hover { color: #fff; }
+.official-password-reset-backdrop { position: fixed; z-index: 250; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(2, 20, 11, .72); backdrop-filter: blur(8px); }
+.official-password-reset-modal { width: min(440px, 100%); max-height: calc(100svh - 40px); overflow: auto; padding: 22px; border: 1px solid rgba(215,237,199,.38); border-radius: 18px; background: #f8faf7; box-shadow: 0 24px 70px rgba(0,0,0,.35); color: #263329; }
+.official-password-reset-modal header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.official-password-reset-modal header h2 { margin: 3px 0 0; color: #2b5e38; }
+.official-password-reset-modal header > button { width: 34px; height: 34px; padding: 0; border: 1px solid #c9dacb; border-radius: 50%; background: #fff; color: #355b3d; cursor: pointer; font-size: 20px; }
+.official-password-reset-modal form { display: grid; gap: 9px; }
+.official-password-reset-modal form > p { margin: 0 0 4px; color: #526357; line-height: 1.5; }
+.official-password-reset-modal label { color: #355d3b; font-size: 13px; font-weight: 700; }
+.official-password-reset-modal input { width: 100%; box-sizing: border-box; padding: 11px 12px; border: 1px solid #bfd2c1; border-radius: 9px; background: #fff; color: #263329; }
+.official-password-reset-modal input:focus { border-color: #4b8a56; outline: 3px solid rgba(75,138,86,.14); }
+.official-password-reset-error { margin: 2px 0 0; color: #9d3d32; font-size: 12px; }
+.official-password-reset-status { margin: 2px 0 0; color: #347741; font-size: 12px; }
+.official-password-reset-done { display: grid; gap: 14px; text-align: center; }
+.official-password-reset-done p { color: #347741; line-height: 1.5; }
 .login-status { min-height: 20px; margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 400; }
 .official-login-page { position: relative; isolation: isolate; grid-template-columns: minmax(0, 1fr); place-items: center; width: min(460px, 92%); gap: 0; padding: 32px 0; }
 .official-login-page::before, .resident-choice-page::before { position: fixed; z-index: 0; top: 50%; left: 50%; width: min(clamp(340px, 52vw, 640px), calc(100svh - 180px)); aspect-ratio: 1; border: 1px solid rgba(215, 237, 199, .17); border-radius: 50%; background: radial-gradient(circle, rgba(201, 230, 165, .11), transparent 62%); box-shadow: 0 0 0 24px rgba(215,237,199,.035), 0 0 0 25px rgba(215,237,199,.1), 0 0 0 58px rgba(215,237,199,.025), 0 0 0 59px rgba(215,237,199,.07); content: ""; pointer-events: none; transform: translate(-50%, -50%); }
