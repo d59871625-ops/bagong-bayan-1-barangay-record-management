@@ -55,7 +55,6 @@ jobs:
           php -l backend/api.php
           php -l backend/db.php
           php -l backend/certificate-to-pdf.php
-          php -l backend/resident-request-sync.php
 
       - name: Prepare production files
         run: |
