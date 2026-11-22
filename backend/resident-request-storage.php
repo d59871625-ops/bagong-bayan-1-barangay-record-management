@@ -19,6 +19,35 @@ function bb1EnsureResidentRequestChangesTable(PDO $pdo): void
     $ensured = true;
 }
 
+function bb1EnsureSyncRevisionTable(PDO $pdo): void
+{
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS bb1_sync_revision (
+            revision_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+            revision BIGINT UNSIGNED NOT NULL DEFAULT 0
+        ) ENGINE=InnoDB
+    ");
+    $pdo->exec("INSERT IGNORE INTO bb1_sync_revision (revision_id, revision) VALUES (1, 0)");
+    $ensured = true;
+}
+
+function bb1CurrentSyncRevision(PDO $pdo): string
+{
+    bb1EnsureSyncRevisionTable($pdo);
+    return (string) $pdo->query("SELECT revision FROM bb1_sync_revision WHERE revision_id = 1")->fetchColumn();
+}
+
+function bb1BumpSyncRevision(PDO $pdo): void
+{
+    bb1EnsureSyncRevisionTable($pdo);
+    $pdo->exec("UPDATE bb1_sync_revision SET revision = revision + 1 WHERE revision_id = 1");
+}
+
 function bb1LoadResidentRequestChanges(
     PDO $pdo,
     bool $stripEvidence = false,

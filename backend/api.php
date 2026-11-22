@@ -111,6 +111,7 @@ try {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
     bb1EnsureResidentRequestChangesTable($pdo);
+    bb1EnsureSyncRevisionTable($pdo);
 
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
         if (isset($_GET["key"])) {
@@ -373,6 +374,15 @@ try {
         }
 
         $isPriorityLoad = ($_GET["priority"] ?? "") === "1";
+        if ($isPriorityLoad) {
+            $etag = '"admin-priority-' . bb1CurrentSyncRevision($pdo) . '"';
+            header("ETag: " . $etag);
+            $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+            if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+                http_response_code(304);
+                exit;
+            }
+        }
         $requestChanges = bb1LoadResidentRequestChanges($pdo, $isPriorityLoad);
         $priorityRequestSummary = $isPriorityLoad
             ? bb1LoadPriorityResidentRequests($pdo)
@@ -722,6 +732,7 @@ try {
         if ($hasRequestChanges) {
             bb1SaveResidentRequestChanges($pdo, $requestUpserts, array_keys($requestDeleteIds));
         }
+        bb1BumpSyncRevision($pdo);
         $pdo->commit();
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {

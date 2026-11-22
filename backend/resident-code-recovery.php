@@ -3,6 +3,7 @@
 require_once __DIR__ . "/vendor/autoload.php";
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/resident-request-storage.php";
 
 use PHPMailer\PHPMailer\PHPMailer;
 
@@ -299,6 +300,7 @@ if ($deliveryMethod !== "email") {
 }
 
 try {
+    bb1EnsureSyncRevisionTable($pdo);
     $pdo->beginTransaction();
 
     $residentStmt = $pdo->prepare("
@@ -444,6 +446,7 @@ try {
 
     sendRecoveryCodeByEmail($destination, trim($firstName . " " . $lastName), $newCode);
 
+    bb1BumpSyncRevision($pdo);
     $pdo->commit();
     respond(200, [
         "success" => true,

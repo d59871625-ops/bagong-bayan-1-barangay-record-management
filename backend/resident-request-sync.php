@@ -633,6 +633,7 @@ try {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
     bb1EnsureResidentRequestChangesTable($pdo);
+    bb1EnsureSyncRevisionTable($pdo);
     $residentStatement = $pdo->prepare("
         SELECT
             r.resident_code,
@@ -1151,6 +1152,7 @@ try {
         foreach ($valuesToUpdate as $stateKey => $newValue) {
             $update->execute([$newValue, $stateKey]);
         }
+        bb1BumpSyncRevision($pdo);
         $pdo->commit();
 
         $ownRequests = residentSyncOwnedRecords($allRequests, $residentCode, $fullName);

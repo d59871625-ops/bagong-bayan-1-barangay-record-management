@@ -5,6 +5,7 @@ header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/resident-request-storage.php";
 
 $user = authenticateUser($pdo, ["admin", "official"]);
 
@@ -103,6 +104,7 @@ try {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
+    bb1EnsureSyncRevisionTable($pdo);
     $pdo->beginTransaction();
     $restored = [];
     $snapshotStmt = $pdo->prepare("
@@ -170,6 +172,7 @@ try {
         $restored[$key] = count($merged);
     }
 
+    bb1BumpSyncRevision($pdo);
     $pdo->commit();
     restoreRespond(200, [
         "success" => true,

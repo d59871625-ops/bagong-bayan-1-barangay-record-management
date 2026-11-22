@@ -6,6 +6,7 @@ header("Pragma: no-cache");
 header("Expires: 0");
 
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/resident-request-storage.php";
 
 function recoveryRequestRespond(int $status, array $payload): void
 {
@@ -80,6 +81,7 @@ try {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
+    bb1EnsureSyncRevisionTable($pdo);
     $pdo->beginTransaction();
     $pdo->exec("DELETE FROM bb1_public_recovery_rate_limits WHERE window_started_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)");
     $limit = $pdo->prepare("
@@ -184,6 +186,7 @@ try {
         json_encode(array_values($requests), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
         $requestStateKey,
     ]);
+    bb1BumpSyncRevision($pdo);
     $pdo->commit();
     recoveryRequestRespond(200, ["success" => true, "data" => ["request" => $request]]);
 } catch (Throwable $error) {
