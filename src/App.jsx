@@ -6528,9 +6528,6 @@ function App() {
   const pendingRecoveryRequestCount = residentCodeRecoveryRequests.filter((request) => request.status === 'Pending').length
   const adminPaymentRecords = groupPaymentRequests(residentRequests.filter((request) => Number(request.feeAmount || 0) > 0))
   const activePaymentRecords = adminPaymentRecords
-  const unpaidResidentPaymentRecords = groupPaymentRequests(residentPaymentDrafts.filter((request) => (
-    request.awaitingPaymentSubmission && Number(request.feeAmount || 0) > 0
-  )))
   const paymentAssessmentRecords = activePaymentRecords.filter((payment) => (
     payment.paymentStatus === 'Pending verification'
       && payment.requests.some((request) => request.status !== 'Cancelled')
@@ -6569,7 +6566,6 @@ function App() {
       `official:${index}:${getAdminNavigationItemId(official)}`
     )),
     payments: [
-      ...unpaidResidentPaymentRecords.map((request) => `payment-draft:${getAdminNavigationItemId(request)}`),
       ...paymentAssessmentRecords.map((request) => `payment:${getAdminNavigationItemId(request)}`),
       ...cancelledPaymentRequests
         .filter((request) => request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
@@ -6651,7 +6647,6 @@ function App() {
       request.status === 'Pending' && isAdminNotificationUnread('residents', 'profile-update', request)
     )).length
     + paymentAssessmentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment', request)).length
-    + unpaidResidentPaymentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment-draft', request)).length
     + cancelledPaymentRequests.filter((request) => (
       (request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
         && isAdminNotificationUnread('payments', 'refund', request)
@@ -12160,7 +12155,6 @@ function App() {
                   {residentCodeRecoveryRequests.filter((request) => request.status === 'Pending' && isAdminNotificationUnread('residents', 'recovery', request)).map((request) => <button type="button" key={request.id} onClick={() => { markAdminNotificationRead('residents', 'recovery', request); const closestResident = getClosestResidentRecord(request.fullName, adminResidents); setAdminView('residents'); setResidentRecordsTab('active'); setResidentRecordsSearch(closestResident?.name || request.fullName); setHighlightedResidentId(closestResident?.id || ''); setAdminRecoveryMessage(''); setNotificationsOpen(false) }}><span>Resident code recovery</span><small>{request.fullName} · {request.id}</small></button>)}
                   {residentProfileUpdateRequests.filter((request) => request.status === 'Pending' && isAdminNotificationUnread('residents', 'profile-update', request)).map((request) => <button type="button" key={request.id} onClick={() => { markAdminNotificationRead('residents', 'profile-update', request); setAdminView('residents'); setResidentRecordsTab('active'); setResidentProfileUpdateResidentCode(request.residentCode); setProfileUpdateError(''); setNotificationsOpen(false) }}><span>Profile update request</span><small>{request.resident} · {request.id}</small></button>)}
                   {paymentAssessmentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment', request)).map((request) => <button type="button" key={`payment-${request.id}`} onClick={() => { markAdminNotificationRead('payments', 'payment', request); setAdminView('payments'); setPaymentReviewRequestId(request.id); setNotificationsOpen(false) }}><span>Payment proof to verify</span><small>{request.resident} · {request.documents.join(' · ')}</small></button>)}
-                  {unpaidResidentPaymentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment-draft', request)).map((request) => <button type="button" key={`payment-draft-${request.id}`} onClick={() => { markAdminNotificationRead('payments', 'payment-draft', request); setAdminView('payments'); setNotificationsOpen(false) }}><span>Document request awaiting resident payment</span><small>{request.resident} · {request.documents.join(' · ')}</small></button>)}
                   {cancelledPaymentRequests.filter((request) => (
                     (request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
                       && isAdminNotificationUnread('payments', 'refund', request)
@@ -12429,19 +12423,6 @@ function App() {
               <span>Current status</span>
               <span>Action</span>
             </div>
-            {documentQueueFilter === 'incoming' && unpaidResidentPaymentRecords
-              .filter((payment) => {
-                const query = requestSearch.trim().toLowerCase()
-                return !query || [payment.resident, payment.residentCode, payment.id, ...(payment.documents || [])]
-                  .some((value) => String(value || '').toLowerCase().includes(query))
-              })
-              .filter((payment) => requestDocumentFilter === 'all' || payment.documents.includes(requestDocumentFilter))
-              .map((payment) => <article className="request-item payment-assessment-item" key={`incoming-payment-${payment.id}`}>
-                <div className="request-meta"><span>Request saved</span><small>{payment.paymentDraftedAt ? new Date(payment.paymentDraftedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</small></div>
-                <div className="request-resident"><strong>{payment.resident}</strong><small>{payment.documents?.join(' · ') || 'Document request'} · {payment.id}</small></div>
-                <div className="request-status"><span className="payment-action-needed">Awaiting resident payment</span><small>₱{Number(payment.feeAmount || 0).toFixed(2)} due</small></div>
-                <button type="button" className="payment-assessment-toggle" onClick={() => setAdminView('payments')}>View payment tracking</button>
-              </article>)}
             </>}
             <div className="request-list">
               {requestListEntries.map((entry) => {
@@ -13216,22 +13197,6 @@ function App() {
           {adminView === 'payments' && <section className="admin-payment-management-page">
             <PaymentWorkflowTabs activeView="payments" onSelect={setAdminView} />
             <div className="payment-dashboard-panels">
-              {unpaidResidentPaymentRecords.length > 0 && <section className="payment-assessment-panel" aria-labelledby="payment-awaiting-title">
-                <header className="admin-panel-heading">
-                  <div><span className="section-number">REQUESTS RECEIVED</span><h3 id="payment-awaiting-title">Awaiting resident payment</h3><p>These paid document requests are saved. Residents must submit payment proof before they enter the review queue.</p></div>
-                  <span className="admin-panel-count">{unpaidResidentPaymentRecords.length}</span>
-                </header>
-                <div className="payment-assessment-list">
-                  {unpaidResidentPaymentRecords.map((payment) => <article className="payment-assessment-item" key={`awaiting-payment-${payment.id}`}>
-                    <div className="payment-assessment-summary">
-                      <div className="payment-assessment-resident"><strong>{payment.resident}</strong><span>{payment.residentCode || 'Resident code not recorded'} · {payment.id}</span></div>
-                      <div className="payment-assessment-request"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><span>{payment.requests.length} request{payment.requests.length === 1 ? '' : 's'} · Submitted {payment.paymentDraftedAt ? new Date(payment.paymentDraftedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'date not recorded'}</span></div>
-                      <span className="payment-action-needed">Awaiting payment</span>
-                      <div className="payment-assessment-amount-wrap"><span>Amount due</span><strong className="payment-assessment-amount">₱{Number(payment.feeAmount || 0).toFixed(2)}</strong></div>
-                    </div>
-                  </article>)}
-                </div>
-              </section>}
               <section className="payment-assessment-panel" aria-labelledby="payment-assessment-title">
                 <header className="admin-panel-heading">
                   <div><span className="section-number">ACTION REQUIRED</span><h3 id="payment-assessment-title">Payment assessment</h3><p>Check the resident’s proof, then record the verified official receipt number.</p></div>
