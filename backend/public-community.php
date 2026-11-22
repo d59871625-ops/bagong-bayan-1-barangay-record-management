@@ -19,6 +19,16 @@ if (($_SERVER["REQUEST_METHOD"] ?? "") !== "GET") {
     respond(405, ["success" => false, "message" => "Method not allowed."]);
 }
 
+if (($_GET["health"] ?? "") === "1") {
+    try {
+        $pdo->query("SELECT COUNT(*) FROM bb1_app_state")->fetchColumn();
+        respond(200, ["success" => true, "database" => "connected"]);
+    } catch (Throwable $error) {
+        error_log("Database health check error: " . $error->getMessage());
+        respond(503, ["success" => false, "message" => "Shared database is unavailable."]);
+    }
+}
+
 $publicKeys = [
     "bb1-community-updates",
     "bb1-about-contact-information",

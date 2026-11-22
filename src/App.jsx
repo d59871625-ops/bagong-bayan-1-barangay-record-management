@@ -26,6 +26,8 @@ const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3
 const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const DATABASE_REFRESH_INTERVAL_MS = 15000
+const DATABASE_HEALTH_TIMEOUT_MS = 2000
+const DATABASE_HEALTH_RETRY_INTERVAL_MS = 5000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 5000
 const DATABASE_REQUEST_TIMEOUT_MS = 30000
 const productionBackendApiUrl = `${window.location.origin}/backend`
@@ -36,6 +38,7 @@ const API_URL = configuredApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(
   ? configuredApiUrl
   : `${BACKEND_API_URL}/api.php`
 const PUBLIC_COMMUNITY_API_URL = `${BACKEND_API_URL}/public-community.php`
+const DATABASE_HEALTH_URL = `${PUBLIC_COMMUNITY_API_URL}?health=1`
 const RESIDENT_REQUEST_SYNC_URL = `${BACKEND_API_URL}/resident-request-sync.php`
 const EMPTY_CERTIFICATE_TEMPLATES = Object.freeze([])
 const CERTIFICATE_PDF_URL = import.meta.env.VITE_CERTIFICATE_PDF_URL?.trim()
@@ -5080,6 +5083,62 @@ function App() {
   const [isUsingLocalPrivateSnapshot, setIsUsingLocalPrivateSnapshot] = useState(false)
   const [hasResolvedLegacyBrowserSnapshot, setHasResolvedLegacyBrowserSnapshot] = useState(false)
   const [legacyBrowserRecoveryError, setLegacyBrowserRecoveryError] = useState('')
+  const [sharedDatabaseHealth, setSharedDatabaseHealth] = useState('checking')
+  useEffect(() => {
+    let cancelled = false
+    let requestPending = false
+    let retryTimer
+    let activeController
+    const scheduleCheck = (delay) => {
+      window.clearTimeout(retryTimer)
+      retryTimer = window.setTimeout(checkDatabaseHealth, delay)
+    }
+    const checkDatabaseHealth = async () => {
+      if (cancelled || requestPending) return
+      if (document.visibilityState !== 'visible') {
+        scheduleCheck(DATABASE_HEALTH_RETRY_INTERVAL_MS)
+        return
+      }
+      requestPending = true
+      activeController = new AbortController()
+      try {
+        const { response, result } = await fetchJsonWithTimeout(DATABASE_HEALTH_URL, {
+          cache: 'no-store',
+          signal: activeController.signal,
+        }, 'Shared database health check', DATABASE_HEALTH_TIMEOUT_MS)
+        if (!response.ok || !result?.success || result.database !== 'connected') {
+          throw new Error('Shared database health check failed.')
+        }
+        if (!cancelled) setSharedDatabaseHealth('connected')
+        scheduleCheck(DATABASE_REFRESH_INTERVAL_MS)
+      } catch (error) {
+        if (!cancelled && error.name !== 'AbortError') setSharedDatabaseHealth('offline')
+        if (!cancelled) scheduleCheck(DATABASE_HEALTH_RETRY_INTERVAL_MS)
+      } finally {
+        requestPending = false
+      }
+    }
+    const refreshWhenOnline = () => {
+      if (document.visibilityState !== 'visible') return
+      window.clearTimeout(retryTimer)
+      checkDatabaseHealth()
+    }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshWhenOnline()
+    }
+    checkDatabaseHealth()
+    window.addEventListener('online', refreshWhenOnline)
+    window.addEventListener('focus', refreshWhenOnline)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      cancelled = true
+      window.clearTimeout(retryTimer)
+      activeController?.abort()
+      window.removeEventListener('online', refreshWhenOnline)
+      window.removeEventListener('focus', refreshWhenOnline)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [])
   const [isPublicCommunityConnected, setIsPublicCommunityConnected] = useState(false)
   const [isResidentDatabaseConnected, setIsResidentDatabaseConnected] = useState(false)
   const [residentDatabaseSyncError, setResidentDatabaseSyncError] = useState('')
@@ -11981,7 +12040,12 @@ function App() {
             <span className="eyebrow">Barangay Bagong Bayan 1</span>
             <strong>BARANGAY RECORD MANAGEMENT</strong>
           </div>
-          <span className="topbar-note"><i aria-hidden="true" /> LOCAL SERVICES · COMMUNITY UPDATES</span>
+          <span className={`topbar-note is-${sharedDatabaseHealth}`} role="status" aria-live="polite">
+            <i aria-hidden="true" />
+            {sharedDatabaseHealth === 'connected'
+              ? 'SHARED DATABASE REACHABLE'
+              : sharedDatabaseHealth === 'offline' ? 'DATABASE OFFLINE · RETRYING' : 'CHECKING DATABASE'}
+          </span>
         </header>
       )}
 
@@ -15858,6 +15922,11 @@ function App() {
               Start system <span aria-hidden="true">→</span>
             </button>
             <p className="startup-start-hint">Start here to continue to the portal</p>
+            <p className={`startup-start-hint startup-database-health is-${sharedDatabaseHealth}`} role="status" aria-live="polite">
+              {sharedDatabaseHealth === 'connected'
+                ? 'Shared database connected'
+                : sharedDatabaseHealth === 'offline' ? 'Database unavailable · reconnecting automatically' : 'Checking shared database'}
+            </p>
           </div>
           <div className="startup-visual" aria-hidden="true">
             <div className="startup-orbit startup-orbit-outer" />

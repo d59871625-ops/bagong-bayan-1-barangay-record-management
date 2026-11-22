@@ -4854,6 +4854,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   background: #b7dc8e;
   box-shadow: 0 0 0 4px rgba(183, 220, 142, .15);
 }
+.topbar-note.is-offline i { background: #e67867; box-shadow: 0 0 0 4px rgba(230, 120, 103, .16); }
+.topbar-note.is-checking i { background: #efc066; box-shadow: 0 0 0 4px rgba(239, 192, 102, .16); }
 .is-home-page .welcome-content {
   grid-template-columns: minmax(0, 1.12fr) minmax(350px, .88fr);
   gap: clamp(44px, 7vw, 104px);
@@ -5189,6 +5191,9 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .startup-start-button:hover > span { transform: translateX(4px); }
 .startup-start-button:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
 .startup-start-hint { margin: 12px 0 0 3px; color: rgba(237, 246, 235, .68); font-size: 10px; letter-spacing: .3px; }
+.startup-database-health { color: #b7dc8e; }
+.startup-database-health.is-offline { color: #ffb1a5; }
+.startup-database-health.is-checking { color: rgba(237, 246, 235, .68); }
 .startup-visual {
   position: relative;
   display: grid;
