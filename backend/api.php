@@ -386,7 +386,10 @@ try {
             "bb1-resident-request-drafts",
             "bb1-resident-history",
             "bb1-archived-residents",
+            "bb1-issued-documents",
             "bb1-certificate-templates",
+            "bb1-official-profiles",
+            "bb1-official-availability",
             "bb1-official-photos",
         ]));
         $responseKeys = $isPriorityLoad

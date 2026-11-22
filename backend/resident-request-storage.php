@@ -19,7 +19,11 @@ function bb1EnsureResidentRequestChangesTable(PDO $pdo): void
     $ensured = true;
 }
 
-function bb1LoadResidentRequestChanges(PDO $pdo, bool $stripEvidence = false): array
+function bb1LoadResidentRequestChanges(
+    PDO $pdo,
+    bool $stripEvidence = false,
+    ?string $residentCode = null
+): array
 {
     bb1EnsureResidentRequestChangesTable($pdo);
     $selectColumns = $stripEvidence
@@ -28,11 +32,31 @@ function bb1LoadResidentRequestChanges(PDO $pdo, bool $stripEvidence = false): a
             is_deleted,
             JSON_CONTAINS_PATH(data_value, 'one', '$.requirementPhotos', '$.philsysVerificationEvidence', '$.paymentProof') AS has_evidence"
         : "request_id, data_value, is_deleted, 0 AS has_evidence";
-    $statement = $pdo->query("
+    $where = "";
+    $parameters = [];
+    if ($residentCode !== null) {
+        $residentCodeExpression = "COALESCE(
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.residentCode'))), ''),
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.resident_code'))), ''),
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.code'))), ''),
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.request.residentCode'))), ''),
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.request.resident_code'))), ''),
+            NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.request.code'))), ''),
+            ''
+        )";
+        $where = "WHERE is_deleted = 1
+            OR $residentCodeExpression = ''
+            OR UPPER($residentCodeExpression) = UPPER(?)";
+        $parameters[] = $residentCode;
+    }
+
+    $statement = $pdo->prepare("
         SELECT $selectColumns
         FROM bb1_resident_request_changes
+        $where
         ORDER BY request_id
     ");
+    $statement->execute($parameters);
     return $statement->fetchAll(PDO::FETCH_ASSOC);
 }
 

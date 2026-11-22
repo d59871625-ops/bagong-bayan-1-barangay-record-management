@@ -176,6 +176,49 @@ function residentSyncReadOwnedState(
     }
 }
 
+function residentSyncGetDataEtag(PDO $pdo): string
+{
+    $keys = [
+        "bb1-resident-history",
+        "bb1-resident-request-drafts",
+        "bb1-resident-code-recovery-requests",
+        "bb1-resident-profile-update-requests",
+        "bb1-resident-requests",
+        "bb1-resident-payment-drafts",
+    ];
+    $placeholders = implode(",", array_fill(0, count($keys), "?"));
+    $stateStatement = $pdo->prepare("
+        SELECT data_key, updated_at
+        FROM bb1_app_state
+        WHERE data_key IN ($placeholders)
+        ORDER BY data_key
+    ");
+    $stateStatement->execute($keys);
+    $etagContext = hash_init("sha256");
+    foreach ($stateStatement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        hash_update(
+            $etagContext,
+            (string) $row["data_key"] . "\0" . (string) $row["updated_at"] . "\0"
+        );
+    }
+
+    $changesStatement = $pdo->query("
+        SELECT request_id, is_deleted, updated_at
+        FROM bb1_resident_request_changes
+        ORDER BY request_id
+    ");
+    foreach ($changesStatement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        hash_update(
+            $etagContext,
+            (string) $row["request_id"] . "\0"
+                . (string) $row["is_deleted"] . "\0"
+                . (string) $row["updated_at"] . "\0"
+        );
+    }
+
+    return '"' . hash_final($etagContext) . '"';
+}
+
 function residentSyncPendingSubmissions(
     $records,
     string $kind,
@@ -617,6 +660,41 @@ try {
         residentSyncRespond(409, ["success" => false, "message" => "Resident account details are incomplete."]);
     }
 
+    if ($method === "GET") {
+        $etag = residentSyncGetDataEtag($pdo);
+        header("ETag: " . $etag);
+        $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+        if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+            http_response_code(304);
+            exit;
+        }
+
+        $history = residentSyncReadOwnedState($pdo, "bb1-resident-history", $residentCode, $fullName);
+        $requestDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-request-drafts", $residentCode, $fullName);
+        $recoveryRequests = residentSyncReadOwnedState($pdo, "bb1-resident-code-recovery-requests", $residentCode, $fullName);
+        $profileUpdateRequests = residentSyncReadOwnedState($pdo, "bb1-resident-profile-update-requests", $residentCode, $fullName);
+        $requests = residentSyncOwnedRecords(
+            bb1MergeResidentRequestChanges(
+                residentSyncReadOwnedState($pdo, "bb1-resident-requests", $residentCode, $fullName),
+                bb1LoadResidentRequestChanges($pdo, false, $residentCode)
+            ),
+            $residentCode,
+            $fullName
+        );
+        $paymentDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-payment-drafts", $residentCode, $fullName);
+        residentSyncRespond(200, [
+            "success" => true,
+            "data" => [
+                "requests" => $requests,
+                "drafts" => $paymentDrafts,
+                "requestDrafts" => $requestDrafts,
+                "recoveryRequests" => $recoveryRequests,
+                "profileUpdateRequests" => $profileUpdateRequests,
+                "history" => $history,
+            ],
+        ]);
+    }
+
     $allowedDocuments = [
         "Barangay Clearance",
         "Business Clearance",
@@ -669,33 +747,6 @@ try {
             throw new RuntimeException("A saved document fee is invalid.");
         }
         $documentFees[$document] = (float) $fee;
-    }
-
-    if ($method === "GET") {
-        $history = residentSyncReadOwnedState($pdo, "bb1-resident-history", $residentCode, $fullName);
-        $requestDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-request-drafts", $residentCode, $fullName);
-        $recoveryRequests = residentSyncReadOwnedState($pdo, "bb1-resident-code-recovery-requests", $residentCode, $fullName);
-        $profileUpdateRequests = residentSyncReadOwnedState($pdo, "bb1-resident-profile-update-requests", $residentCode, $fullName);
-        $requests = residentSyncOwnedRecords(
-            bb1MergeResidentRequestChanges(
-                residentSyncReadOwnedState($pdo, "bb1-resident-requests", $residentCode, $fullName),
-                bb1LoadResidentRequestChanges($pdo)
-            ),
-            $residentCode,
-            $fullName
-        );
-        $paymentDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-payment-drafts", $residentCode, $fullName);
-        residentSyncRespond(200, [
-            "success" => true,
-            "data" => [
-                "requests" => $requests,
-                "drafts" => $paymentDrafts,
-                "requestDrafts" => $requestDrafts,
-                "recoveryRequests" => $recoveryRequests,
-                "profileUpdateRequests" => $profileUpdateRequests,
-                "history" => $history,
-            ],
-        ]);
     }
 
     $body = file_get_contents("php://input");
@@ -1115,6 +1166,7 @@ try {
             $residentCode,
             $fullName
         );
+        header("ETag: " . residentSyncGetDataEtag($pdo));
         residentSyncRespond(200, [
             "success" => true,
             "data" => [

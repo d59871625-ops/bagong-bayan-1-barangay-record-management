@@ -26,17 +26,19 @@ const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3
 const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const DATABASE_REFRESH_INTERVAL_MS = 15000
-const DATABASE_HEALTH_TIMEOUT_MS = 2000
+const DATABASE_HEALTH_TIMEOUT_MS = 8000
 const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 2000
 const DATABASE_ADMIN_READ_TIMEOUT_MS = 5000
-const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 5000
+const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 15000
+const DATABASE_ADMIN_RECONNECT_TIMEOUT_MS = 15000
 const DATABASE_ADMIN_SUPPLEMENTAL_READ_TIMEOUT_MS = 15000
 const DATABASE_ADMIN_COUNT_TIMEOUT_MS = 5000
 const DATABASE_RECONNECT_INTERVAL_MS = 2000
 const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
 const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 2000
 const RESIDENT_REQUEST_READ_TIMEOUT_MS = 5000
+const RESIDENT_REQUEST_INITIAL_READ_TIMEOUT_MS = 15000
 const DATABASE_REQUEST_TIMEOUT_MS = 20000
 const ADMIN_RECORD_CACHE_DB = 'bb1-admin-record-cache'
 const ADMIN_RECORD_CACHE_STORE = 'snapshots'
@@ -5117,6 +5119,8 @@ function App() {
   const residentRequestsRef = useRef(residentRequests)
   const residentHistoryRef = useRef(residentHistory)
   const residentRequestSyncSnapshotRef = useRef(new Map())
+  const residentRequestSyncEtagRef = useRef('')
+  const residentSyncAccountKeyRef = useRef('')
   const residentPaymentDraftSyncSnapshotRef = useRef(new Map())
   const residentRequestDraftSyncSnapshotRef = useRef(null)
   const residentRecoverySyncSnapshotRef = useRef(null)
@@ -5126,6 +5130,8 @@ function App() {
   const residentRequestSyncPauseUntilRef = useRef(0)
   const resetResidentSyncConnection = () => {
     residentRequestSyncSnapshotRef.current = new Map()
+    residentRequestSyncEtagRef.current = ''
+    residentSyncAccountKeyRef.current = ''
     residentPaymentDraftSyncSnapshotRef.current = new Map()
     residentRequestDraftSyncSnapshotRef.current = null
     residentRecoverySyncSnapshotRef.current = null
@@ -6400,7 +6406,7 @@ function App() {
             ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
           },
           signal: controller.signal,
-        }, 'Database reconnection', DATABASE_ADMIN_READ_TIMEOUT_MS)
+        }, 'Database reconnection', DATABASE_ADMIN_RECONNECT_TIMEOUT_MS)
         if (response.status === 304) {
           if (databaseRecordsRef.current) {
             setDatabaseSaveError('')
@@ -7943,11 +7949,19 @@ function App() {
   useEffect(() => {
     if (!isStorageLoaded || !residentToken || !residentName.code || registrationCommunityOnlyAccess) {
       residentRequestSyncSnapshotRef.current = new Map()
+      residentRequestSyncEtagRef.current = ''
+      residentSyncAccountKeyRef.current = ''
       residentPaymentDraftSyncSnapshotRef.current = new Map()
       residentRequestDraftSyncSnapshotRef.current = null
       residentRecoverySyncSnapshotRef.current = null
       residentProfileUpdateSyncSnapshotRef.current = null
       return undefined
+    }
+
+    const syncAccountKey = `${residentToken}:${residentName.code.toUpperCase()}`
+    if (residentSyncAccountKeyRef.current !== syncAccountKey) {
+      residentSyncAccountKeyRef.current = syncAccountKey
+      residentRequestSyncEtagRef.current = ''
     }
 
     const controller = new AbortController()
@@ -7964,6 +7978,9 @@ function App() {
       if (document.visibilityState !== 'visible') return
       if (requestPending) return
       requestPending = true
+      const readTimeoutMs = residentRequestSyncEtagRef.current
+        ? RESIDENT_REQUEST_READ_TIMEOUT_MS
+        : RESIDENT_REQUEST_INITIAL_READ_TIMEOUT_MS
       try {
         const currentOwnedRequests = residentRequestsRef.current.filter((request) => (
           request?.id && residentRecordMatchesAccount(request, residentAccount)
@@ -7993,7 +8010,7 @@ function App() {
             cache: 'no-store',
             headers: { Authorization: `Bearer ${residentToken}` },
             signal: controller.signal,
-          }, 'Resident request sync', RESIDENT_REQUEST_READ_TIMEOUT_MS)
+          }, 'Resident request sync', readTimeoutMs)
           if (!response.ok || !result.success || !result.data
             || !Array.isArray(result.data.requests)
             || !result.data.requests.every((request) => request && typeof request.id === 'string')) {
@@ -8040,10 +8057,19 @@ function App() {
           headers: {
             Authorization: `Bearer ${residentToken}`,
             ...(shouldSubmit ? { 'Content-Type': 'application/json' } : {}),
+            ...(!shouldSubmit && residentRequestSyncEtagRef.current
+              ? { 'If-None-Match': residentRequestSyncEtagRef.current }
+              : {}),
           },
           ...(shouldSubmit ? { body: JSON.stringify(syncPayload) } : {}),
           signal: controller.signal,
-        }, 'Resident request sync', shouldSubmit ? DATABASE_REQUEST_TIMEOUT_MS : RESIDENT_REQUEST_READ_TIMEOUT_MS)
+        }, 'Resident request sync', shouldSubmit ? DATABASE_REQUEST_TIMEOUT_MS : readTimeoutMs)
+        if (response.status === 304) {
+          setResidentDatabaseSyncError('')
+          setResidentDraftError('')
+          setIsResidentDatabaseConnected(true)
+          return
+        }
         if (!response.ok || !result.success || !result.data
           || !Array.isArray(result.data.requests) || !Array.isArray(result.data.drafts)
           || !Array.isArray(result.data.requestDrafts) || !Array.isArray(result.data.recoveryRequests)
@@ -8056,6 +8082,7 @@ function App() {
           || !result.data.history.every((request) => request && typeof request.id === 'string')) {
           throw new Error(result.message || `Resident request sync failed with status ${response.status}.`)
         }
+        residentRequestSyncEtagRef.current = response.headers.get('ETag') || ''
 
         const archivedIds = new Set(result.data.history.map((request) => request.id))
         const remoteRequests = splitMultiDocumentRequests(
