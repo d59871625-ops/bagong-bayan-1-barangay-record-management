@@ -5974,17 +5974,17 @@ function App() {
           Object.entries(records).filter(([key, value]) => (
             key !== residentRequestsStorageKey
             && (
-              !Object.prototype.hasOwnProperty.call(data, key)
-              || JSON.stringify(data[key]) !== JSON.stringify(value)
+              Object.prototype.hasOwnProperty.call(data, key)
+                ? JSON.stringify(data[key]) !== JSON.stringify(value)
+                : Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
             )
           )),
         )
         const hasRequestRecoveryChanges = requestRecoveryChanges.upserts.length > 0
           || requestRecoveryChanges.deletes.length > 0
-        if (officialBackendToken && (Object.keys(recoveredRecords).length || hasRequestRecoveryChanges)) {
+        const hasRecoveryChanges = Object.keys(recoveredRecords).length > 0 || hasRequestRecoveryChanges
+        if (officialBackendToken && hasRecoveryChanges) {
           await saveDatabaseRecords(recoveredRecords, officialBackendToken, requestRecoveryChanges)
-        }
-        if (officialBackendToken) {
           const verificationResponse = await fetchWithTimeout(API_URL, {
             method: 'GET',
             cache: 'no-store',
@@ -5996,7 +5996,11 @@ function App() {
             throw new Error(verificationResult?.message || 'Saved records could not be verified from the shared database.')
           }
           const verifiedData = verificationResult.data
-          Object.entries(records).forEach(([key, expected]) => {
+          const recordsToVerify = { ...recoveredRecords }
+          if (hasRequestRecoveryChanges) {
+            recordsToVerify[residentRequestsStorageKey] = records[residentRequestsStorageKey]
+          }
+          Object.entries(recordsToVerify).forEach(([key, expected]) => {
             if (!Object.prototype.hasOwnProperty.call(verifiedData, key)) {
               throw new Error(`The shared database did not return ${key} after saving.`)
             }
