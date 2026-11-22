@@ -153,6 +153,121 @@ try {
             respond(200, ["success" => true, "data" => ["request" => $request]]);
         }
 
+        if (($_GET["counts"] ?? "") === "1") {
+            $residentCountStatement = $pdo->prepare("
+                SELECT JSON_TYPE(data_value), JSON_LENGTH(data_value)
+                FROM bb1_app_state
+                WHERE data_key = ?
+                LIMIT 1
+            ");
+            $residentCountStatement->execute(["bb1-resident-records"]);
+            $residentCountRow = $residentCountStatement->fetch(PDO::FETCH_NUM);
+            if ($residentCountRow && ($residentCountRow[0] !== "ARRAY" || !is_numeric($residentCountRow[1]))) {
+                throw new RuntimeException("Saved resident records are not a list.");
+            }
+            $residentCount = $residentCountRow ? (int) $residentCountRow[1] : 0;
+
+            $requestIdsStatement = $pdo->prepare("
+                SELECT JSON_EXTRACT(data_value, '$[*].id')
+                FROM bb1_app_state
+                WHERE data_key = ?
+                LIMIT 1
+            ");
+            $requestIdsStatement->execute(["bb1-resident-requests"]);
+            $requestIdsJson = $requestIdsStatement->fetchColumn();
+            $baseRequestIds = $requestIdsJson === false || $requestIdsJson === null
+                ? []
+                : json_decode((string) $requestIdsJson, true, 512, JSON_THROW_ON_ERROR);
+            if ($baseRequestIds === null) {
+                $baseRequestIds = [];
+            }
+            if (!is_array($baseRequestIds)) {
+                throw new RuntimeException("Saved resident requests are not a list.");
+            }
+
+            $requestIds = [];
+            foreach ($baseRequestIds as $requestId) {
+                if (!is_scalar($requestId) || (string) $requestId === "") {
+                    throw new RuntimeException("A saved resident request is invalid.");
+                }
+                $requestIds[(string) $requestId] = true;
+            }
+
+            $historyStatement = $pdo->prepare("
+                SELECT data_value
+                FROM bb1_app_state
+                WHERE data_key = ?
+                LIMIT 1
+            ");
+            $historyStatement->execute(["bb1-resident-history"]);
+            $historyJson = $historyStatement->fetchColumn();
+            $history = $historyJson === false
+                ? []
+                : json_decode((string) $historyJson, false, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($history)) {
+                throw new RuntimeException("Saved resident history is not a list.");
+            }
+            $historyRequestIds = [];
+            foreach ($history as $entry) {
+                if (($entry->type ?? null) === "documentRequest"
+                    && ($entry->request ?? null) instanceof stdClass
+                    && is_scalar($entry->request->id ?? null)
+                    && (string) $entry->request->id !== "") {
+                    $historyRequestIds[(string) $entry->request->id] = true;
+                }
+            }
+
+            $changeStatement = $pdo->query("
+                SELECT request_id, is_deleted,
+                    JSON_UNQUOTE(JSON_EXTRACT(data_value, '$.id')) AS data_id
+                FROM bb1_resident_request_changes
+                ORDER BY request_id
+            ");
+            foreach ($changeStatement->fetchAll(PDO::FETCH_ASSOC) as $change) {
+                $requestId = (string) ($change["request_id"] ?? "");
+                if ($requestId === "") {
+                    throw new RuntimeException("A saved resident request change is invalid.");
+                }
+                if ((int) ($change["is_deleted"] ?? 0) === 1) {
+                    unset($requestIds[$requestId]);
+                    continue;
+                }
+                if ((string) ($change["data_id"] ?? "") !== $requestId) {
+                    throw new RuntimeException("A saved resident request change is invalid.");
+                }
+                $requestIds[$requestId] = true;
+            }
+
+            $deletedIdsStatement = $pdo->prepare("
+                SELECT data_value
+                FROM bb1_app_state
+                WHERE data_key = ?
+                LIMIT 1
+            ");
+            $deletedIdsStatement->execute(["bb1-deleted-request-ids"]);
+            $deletedIdsJson = $deletedIdsStatement->fetchColumn();
+            $deletedIds = $deletedIdsJson === false
+                ? []
+                : json_decode((string) $deletedIdsJson, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($deletedIds)) {
+                throw new RuntimeException("Saved deleted request IDs are not a list.");
+            }
+            foreach ($deletedIds as $requestId) {
+                if (!is_string($requestId)) {
+                    throw new RuntimeException("A saved deleted request ID is invalid.");
+                }
+                unset($requestIds[$requestId], $historyRequestIds[$requestId]);
+            }
+
+            respond(200, [
+                "success" => true,
+                "counts" => [
+                    "residents" => $residentCount,
+                    "requests" => count($requestIds + $historyRequestIds),
+                ],
+            ]);
+        }
+
         $requestChanges = bb1LoadResidentRequestChanges($pdo);
         $priorityKeys = array_values(array_diff($allowedKeys, [
             "bb1-registration-requests",

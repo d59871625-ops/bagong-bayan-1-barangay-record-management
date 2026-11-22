@@ -4946,6 +4946,8 @@ function App() {
   const [databaseSaveStatus, setDatabaseSaveStatus] = useState('checking')
   const [databaseSaveError, setDatabaseSaveError] = useState('')
   const [databaseLoadVersion, setDatabaseLoadVersion] = useState(0)
+  const [adminDatabaseCounts, setAdminDatabaseCounts] = useState(null)
+  const [isLoadingAdminDatabaseCounts, setIsLoadingAdminDatabaseCounts] = useState(false)
   const [adminFastSync, setAdminFastSync] = useState(null)
   const [residentRequests, setResidentRequests] = useState([])
   const [residentNotificationReadState, setResidentNotificationReadState] = useState({})
@@ -5018,6 +5020,8 @@ function App() {
   const [adminDatabaseHealth, setAdminDatabaseHealth] = useState('checking')
   const setOfficialBackendToken = useCallback((token) => {
     setOfficialBackendTokenState(token)
+    setAdminDatabaseCounts(null)
+    setIsLoadingAdminDatabaseCounts(Boolean(token))
     setAdminDatabaseHealth('checking')
     databaseEtagRef.current = ''
     pendingRegistrationEtagRef.current = ''
@@ -5026,6 +5030,53 @@ function App() {
     setRequestEvidenceAvailableIds(new Set())
     setRequestEvidenceLoadedIds(new Set())
   }, [])
+  useEffect(() => {
+    if (!officialBackendToken) return undefined
+
+    let cancelled = false
+    let requestPending = false
+    let retryTimer
+    const controller = new AbortController()
+    const loadCounts = async () => {
+      if (cancelled || requestPending) return
+      requestPending = true
+      try {
+        const { response, result } = await fetchJsonWithTimeout(
+          `${API_URL}${API_URL.includes('?') ? '&' : '?'}counts=1`,
+          {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { Authorization: `Bearer ${officialBackendToken}` },
+            signal: controller.signal,
+          },
+          'Admin record counts',
+          DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS,
+        )
+        if (cancelled) return
+        if (!response.ok || !result.success
+          || !Number.isSafeInteger(result.counts?.residents)
+          || !Number.isSafeInteger(result.counts?.requests)) {
+          throw new Error(result.message || 'The database returned invalid admin record counts.')
+        }
+        setAdminDatabaseCounts(result.counts)
+        setIsLoadingAdminDatabaseCounts(false)
+      } catch (error) {
+        if (cancelled || error.name === 'AbortError') return
+        console.error('Unable to load saved admin record counts.', error)
+        setIsLoadingAdminDatabaseCounts(false)
+        retryTimer = window.setTimeout(loadCounts, 15000)
+      } finally {
+        requestPending = false
+      }
+    }
+
+    loadCounts()
+    return () => {
+      cancelled = true
+      window.clearTimeout(retryTimer)
+      controller.abort()
+    }
+  }, [officialBackendToken])
   useEffect(() => {
     if (!officialBackendToken) return undefined
     let cancelled = false
@@ -6566,11 +6617,13 @@ function App() {
   const isLoadingPrivateDatabaseData = Boolean(officialBackendToken)
     && !hasLoadedPrivateDatabaseData
     && databaseSaveStatus === 'checking'
-  const getPrivateDatabaseCount = (count) => (
-    officialBackendToken && !hasLoadedPrivateDatabaseData
-      ? isLoadingPrivateDatabaseData ? '…' : '—'
-      : count
-  )
+  const getPrivateDatabaseCount = (count, serverCount) => {
+    if (officialBackendToken && !hasLoadedPrivateDatabaseData) {
+      if (Number.isSafeInteger(serverCount)) return serverCount
+      return isLoadingPrivateDatabaseData || isLoadingAdminDatabaseCounts ? '…' : '—'
+    }
+    return count
+  }
   const getPrivateDatabaseEmptyMessage = (label, emptyMessage) => {
     if (hasLoadedPrivateDatabaseData || !officialBackendToken) return emptyMessage
     return isLoadingPrivateDatabaseData
@@ -12318,8 +12371,8 @@ function App() {
           </div>}
           {adminView === 'overview' && <>
             <div className="overview-stats">
-              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length)}</strong></article>
-              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length)}</strong></article>
+              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length, adminDatabaseCounts?.residents)}</strong></article>
+              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length, adminDatabaseCounts?.requests)}</strong></article>
               <article className="overview-completion-stat">
                 <span>Completion rate</span>
                 <strong>{getPrivateDatabaseCount(`${dashboardCompletionRate}%`)}</strong>
