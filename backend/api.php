@@ -46,6 +46,13 @@ function bb1RequestHasEvidence($request): bool
         return true;
     }
 
+    $paymentProof = $request->paymentProof ?? null;
+    if ($paymentProof instanceof stdClass
+        && is_string($paymentProof->dataUrl ?? null)
+        && strpos($paymentProof->dataUrl, "data:image/") === 0) {
+        return true;
+    }
+
     return false;
 }
 
@@ -57,7 +64,8 @@ function bb1StripRequestEvidence($request)
 
     unset(
         $request->requirementPhotos,
-        $request->philsysVerificationEvidence
+        $request->philsysVerificationEvidence,
+        $request->paymentProof
     );
 
     return $request;
@@ -105,6 +113,36 @@ try {
     bb1EnsureResidentRequestChangesTable($pdo);
 
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
+        if (isset($_GET["key"])) {
+            $key = (string) $_GET["key"];
+            if (!in_array($key, ["bb1-certificate-templates", "bb1-official-photos"], true)) {
+                respond(400, ["success" => false, "message" => "This record is not enabled for database access."]);
+            }
+
+            $statement = $pdo->prepare("
+                SELECT data_value
+                FROM bb1_app_state
+                WHERE data_key = ?
+                LIMIT 1
+            ");
+            $statement->execute([$key]);
+            $dataValue = $statement->fetchColumn();
+            if ($dataValue === false) {
+                respond(200, ["success" => true, "data" => (object) []]);
+            }
+            $etag = '"' . hash("sha256", (string) $dataValue) . '"';
+            header("ETag: " . $etag);
+            $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+            if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+                http_response_code(304);
+                exit;
+            }
+            respond(200, [
+                "success" => true,
+                "data" => (object) [$key => json_decode((string) $dataValue, false, 512, JSON_THROW_ON_ERROR)],
+            ]);
+        }
+
         if (array_key_exists("requestEvidence", $_GET)) {
             $requestId = trim((string) $_GET["requestEvidence"]);
             if (!preg_match('/^[A-Za-z0-9._:-]{1,100}$/', $requestId)) {
@@ -147,6 +185,66 @@ try {
                 }
             }
 
+            if (!($request instanceof stdClass) || !bb1RequestHasEvidence($request)) {
+                $baseRequestStatement = $pdo->prepare("
+                    SELECT data_value
+                    FROM bb1_app_state
+                    WHERE data_key = ?
+                    LIMIT 1
+                ");
+                $baseRequestStatement->execute(["bb1-resident-requests"]);
+                $baseRequestJson = $baseRequestStatement->fetchColumn();
+                if ($baseRequestJson !== false) {
+                    $baseRequests = json_decode((string) $baseRequestJson, false, 512, JSON_THROW_ON_ERROR);
+                    if (is_array($baseRequests)) {
+                        foreach ($baseRequests as $baseRequest) {
+                            if ($baseRequest instanceof stdClass
+                                && (string) ($baseRequest->id ?? "") === $requestId
+                                && bb1RequestHasEvidence($baseRequest)) {
+                                if (!($request instanceof stdClass)) {
+                                    $request = $baseRequest;
+                                } else {
+                                    $request->requirementPhotos = $baseRequest->requirementPhotos ?? null;
+                                    $request->philsysVerificationEvidence = $baseRequest->philsysVerificationEvidence ?? null;
+                                    $request->paymentProof = $baseRequest->paymentProof ?? null;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!($request instanceof stdClass) || !bb1RequestHasEvidence($request)) {
+                $historyStatement = $pdo->prepare("
+                    SELECT data_value
+                    FROM bb1_app_state
+                    WHERE data_key = ?
+                    LIMIT 1
+                ");
+                $historyStatement->execute(["bb1-resident-history"]);
+                $historyJson = $historyStatement->fetchColumn();
+                if ($historyJson !== false) {
+                    $history = json_decode((string) $historyJson, false, 512, JSON_THROW_ON_ERROR);
+                    if (is_array($history)) {
+                        foreach ($history as $entry) {
+                            if ($entry instanceof stdClass
+                                && ($entry->type ?? null) === "documentRequest"
+                                && ($entry->request ?? null) instanceof stdClass
+                                && (string) ($entry->request->id ?? "") === $requestId
+                                && bb1RequestHasEvidence($entry->request)) {
+                                if (!($request instanceof stdClass)) {
+                                    $request = $entry->request;
+                                } else {
+                                    $request->requirementPhotos = $entry->request->requirementPhotos ?? null;
+                                    $request->philsysVerificationEvidence = $entry->request->philsysVerificationEvidence ?? null;
+                                    $request->paymentProof = $entry->request->paymentProof ?? null;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             if (!($request instanceof stdClass)) {
                 respond(404, ["success" => false, "message" => "The resident request or its evidence could not be found."]);
             }
@@ -273,13 +371,15 @@ try {
         $priorityRequestSummary = $isPriorityLoad
             ? bb1LoadPriorityResidentRequests($pdo)
             : ["requests" => [], "evidence_ids" => []];
+        $priorityHistorySummary = $isPriorityLoad
+            ? bb1LoadPriorityResidentHistory($pdo)
+            : ["history" => [], "evidence_ids" => []];
         $priorityKeys = array_values(array_diff($allowedKeys, [
             "bb1-registration-requests",
             "bb1-resident-payment-drafts",
             "bb1-resident-request-drafts",
             "bb1-resident-history",
             "bb1-archived-residents",
-            "bb1-issued-documents",
             "bb1-certificate-templates",
             "bb1-official-photos",
         ]));
@@ -322,10 +422,14 @@ try {
         }
         if ($isPriorityLoad) {
             $data["bb1-resident-requests"] = $priorityRequestSummary["requests"];
+            $data["bb1-resident-history"] = $priorityHistorySummary["history"];
         }
         $baseRequests = $data["bb1-resident-requests"] ?? [];
         $requests = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
-        $requestEvidenceIdSet = array_fill_keys($priorityRequestSummary["evidence_ids"], true);
+        $requestEvidenceIdSet = array_fill_keys(
+            array_merge($priorityRequestSummary["evidence_ids"], $priorityHistorySummary["evidence_ids"]),
+            true
+        );
         foreach ($requests as $request) {
             if ($request instanceof stdClass
                 && is_scalar($request->id ?? null)
@@ -341,8 +445,6 @@ try {
             } elseif ($isPriorityLoad) {
                 if ((int) ($change["has_evidence"] ?? 0) === 1) {
                     $requestEvidenceIdSet[$requestId] = true;
-                } else {
-                    unset($requestEvidenceIdSet[$requestId]);
                 }
             }
         }
@@ -564,13 +666,22 @@ try {
                     }
                 }
 
+                $existingRequestsById = [];
+                foreach ($existingRequests as $existingRequest) {
+                    if ($existingRequest instanceof stdClass && isset($existingRequest->id)) {
+                        $existingRequestsById[(string) $existingRequest->id] = $existingRequest;
+                    }
+                }
                 $incomingRequestIds = [];
                 $mergedRequests = [];
                 foreach ($records->{$key} as $request) {
                     $requestId = (string) $request->id;
                     if (isset($excludedRequestIds[$requestId])) continue;
                     $incomingRequestIds[$requestId] = true;
-                    $mergedRequests[] = $request;
+                    $mergedRequests[] = bb1PreserveMissingRequestEvidence(
+                        $request,
+                        $existingRequestsById[$requestId] ?? null
+                    );
                 }
                 foreach ($existingRequests as $existingRequest) {
                     if (!($existingRequest instanceof stdClass) || !isset($existingRequest->id)) {
@@ -585,6 +696,12 @@ try {
                 }
                 $value = json_encode(
                     array_values($mergedRequests),
+                    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+                );
+            } elseif ($key === "bb1-resident-history") {
+                $incomingHistory = json_decode($value, false, 512, JSON_THROW_ON_ERROR);
+                $value = json_encode(
+                    bb1MergeResidentHistoryEvidence($pdo, $incomingHistory),
                     JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
                 );
             }

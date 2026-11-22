@@ -83,6 +83,7 @@ const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !is
 const API_URL = configuredApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredApiUrl))
   ? configuredApiUrl
   : `${BACKEND_API_URL}/api.php`
+const ADMIN_PRIORITY_API_URL = `${API_URL}${API_URL.includes('?') ? '&' : '?'}priority=1`
 const PUBLIC_COMMUNITY_API_URL = `${BACKEND_API_URL}/public-community.php`
 const DATABASE_HEALTH_URL = `${PUBLIC_COMMUNITY_API_URL}?health=1`
 const ADMIN_DATABASE_HEALTH_URL = `${API_URL}${API_URL.includes('?') ? '&' : '?'}health=1`
@@ -352,7 +353,7 @@ const createRequirementPhoto = async (file) => {
   if (file.size > 15 * 1024 * 1024) throw new Error('Choose an image smaller than 15 MB.')
 
   const bitmap = await createImageBitmap(file)
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height))
+  const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height))
   const canvas = window.document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(bitmap.width * scale))
   canvas.height = Math.max(1, Math.round(bitmap.height * scale))
@@ -373,21 +374,21 @@ const createRequirementPhoto = async (file) => {
   })
   let compressedPhoto
   try {
-    compressedPhoto = await compress(0.78)
-    if (compressedPhoto.size > 800 * 1024) compressedPhoto = await compress(0.62)
-    if (compressedPhoto.size > 800 * 1024) {
-      const resizeScale = Math.min(1, 1200 / Math.max(canvas.width, canvas.height))
+    compressedPhoto = await compress(0.62)
+    if (compressedPhoto.size > 350 * 1024) compressedPhoto = await compress(0.5)
+    if (compressedPhoto.size > 350 * 1024) {
+      const resizeScale = Math.min(1, 1000 / Math.max(canvas.width, canvas.height))
       canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
       canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
       context.fillStyle = '#ffffff'
       context.fillRect(0, 0, canvas.width, canvas.height)
       context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-      compressedPhoto = await compress(0.58)
+      compressedPhoto = await compress(0.48)
     }
   } finally {
     bitmap.close()
   }
-  if (compressedPhoto.size > 800 * 1024) {
+  if (compressedPhoto.size > 350 * 1024) {
     throw new Error('This photo is too large to send. Choose a smaller or clearer cropped image.')
   }
   const dataUrl = await new Promise((resolve, reject) => {
@@ -411,7 +412,7 @@ const createCommunityUpdateImage = async (file) => {
   if (file.size > 15 * 1024 * 1024) throw new Error('Choose an image smaller than 15 MB.')
 
   const bitmap = await createImageBitmap(file)
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height))
+  const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height))
   const canvas = window.document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(bitmap.width * scale))
   canvas.height = Math.max(1, Math.round(bitmap.height * scale))
@@ -423,15 +424,29 @@ const createCommunityUpdateImage = async (file) => {
   context.fillStyle = '#ffffff'
   context.fillRect(0, 0, canvas.width, canvas.height)
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-  bitmap.close()
-
-  const compressedImage = await new Promise((resolve, reject) => {
+  const compress = (quality) => new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob)
       else reject(new Error('The image could not be compressed for upload.'))
-    }, 'image/jpeg', 0.84)
+    }, 'image/jpeg', quality)
   })
-  if (compressedImage.size > 1.5 * 1024 * 1024) {
+  let compressedImage
+  try {
+    compressedImage = await compress(0.68)
+    if (compressedImage.size > 350 * 1024) compressedImage = await compress(0.55)
+    if (compressedImage.size > 350 * 1024) {
+      const resizeScale = Math.min(1, 1000 / Math.max(canvas.width, canvas.height))
+      canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
+      canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      compressedImage = await compress(0.48)
+    }
+  } finally {
+    bitmap.close()
+  }
+  if (compressedImage.size > 350 * 1024) {
     throw new Error('The image is still too large after compression. Choose a smaller image.')
   }
 
@@ -510,7 +525,7 @@ const createOfficialPortrait = async (file) => {
   const bitmap = await createImageBitmap(file)
   let compressedPortrait
   try {
-    const scale = Math.min(1, 1000 / Math.max(bitmap.width, bitmap.height))
+    const scale = Math.min(1, 800 / Math.max(bitmap.width, bitmap.height))
     const canvas = window.document.createElement('canvas')
     canvas.width = Math.max(1, Math.round(bitmap.width * scale))
     canvas.height = Math.max(1, Math.round(bitmap.height * scale))
@@ -519,16 +534,27 @@ const createOfficialPortrait = async (file) => {
     context.fillStyle = '#ffffff'
     context.fillRect(0, 0, canvas.width, canvas.height)
     context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-    compressedPortrait = await new Promise((resolve, reject) => {
+    const compress = (quality) => new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
         if (blob) resolve(blob)
         else reject(new Error('The photo could not be compressed for saving.'))
-      }, 'image/jpeg', 0.76)
+      }, 'image/jpeg', quality)
     })
+    compressedPortrait = await compress(0.62)
+    if (compressedPortrait.size > 350 * 1024) compressedPortrait = await compress(0.48)
+    if (compressedPortrait.size > 350 * 1024) {
+      const resizeScale = Math.min(1, 700 / Math.max(canvas.width, canvas.height))
+      canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
+      canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      compressedPortrait = await compress(0.45)
+    }
   } finally {
     bitmap.close()
   }
-  if (compressedPortrait.size > 900 * 1024) {
+  if (compressedPortrait.size > 350 * 1024) {
     throw new Error('The photo is still too large after compression. Choose a smaller image.')
   }
 
@@ -545,6 +571,110 @@ const createOfficialPortrait = async (file) => {
     reader.readAsDataURL(compressedPortrait)
   })
   return dataUrl
+}
+
+const compressStoredImageDataUrl = async (dataUrl, maxDimension = 1200) => {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl
+  const response = await fetch(dataUrl)
+  if (!response.ok) throw new Error('The saved photo could not be opened for optimization.')
+  const sourceBlob = await response.blob()
+  const bitmap = await createImageBitmap(sourceBlob)
+  if (sourceBlob.size <= 350 * 1024
+    && Math.max(bitmap.width, bitmap.height) <= maxDimension) {
+    bitmap.close()
+    return dataUrl
+  }
+
+  const canvas = window.document.createElement('canvas')
+  const initialScale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height))
+  canvas.width = Math.max(1, Math.round(bitmap.width * initialScale))
+  canvas.height = Math.max(1, Math.round(bitmap.height * initialScale))
+  const context = canvas.getContext('2d')
+  if (!context) {
+    bitmap.close()
+    throw new Error('The saved photo could not be prepared for optimization.')
+  }
+  const draw = () => {
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  }
+  const compress = (quality) => new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob)
+      else reject(new Error('The saved photo could not be compressed.'))
+    }, 'image/jpeg', quality)
+  })
+
+  let optimizedBlob
+  try {
+    draw()
+    optimizedBlob = await compress(0.62)
+    if (optimizedBlob.size > 350 * 1024) optimizedBlob = await compress(0.5)
+    if (optimizedBlob.size > 350 * 1024) {
+      const resizeScale = Math.min(1, 1000 / Math.max(canvas.width, canvas.height))
+      canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
+      canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
+      draw()
+      optimizedBlob = await compress(0.48)
+    }
+    if (optimizedBlob.size > 350 * 1024) {
+      const resizeScale = Math.min(1, 800 / Math.max(canvas.width, canvas.height))
+      canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
+      canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
+      draw()
+      optimizedBlob = await compress(0.4)
+    }
+  } finally {
+    bitmap.close()
+  }
+  if (optimizedBlob.size >= sourceBlob.size) return dataUrl
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('The optimized photo could not be read.'))
+        return
+      }
+      resolve(reader.result)
+    }
+    reader.onerror = () => reject(new Error('The optimized photo could not be read.'))
+    reader.readAsDataURL(optimizedBlob)
+  })
+}
+
+const compressStoredRequestImages = async (request) => {
+  let changed = false
+  const compressPhoto = async (photo) => {
+    if (!photo || typeof photo !== 'object' || typeof photo.dataUrl !== 'string') return photo
+    const dataUrl = await compressStoredImageDataUrl(photo.dataUrl)
+    if (dataUrl === photo.dataUrl) return photo
+    changed = true
+    return { ...photo, mediaType: 'image/jpeg', dataUrl }
+  }
+  const nextRequest = { ...request }
+
+  if (nextRequest.requirementPhotos && typeof nextRequest.requirementPhotos === 'object') {
+    nextRequest.requirementPhotos = Object.fromEntries(await Promise.all(
+      Object.entries(nextRequest.requirementPhotos).map(async ([key, photo]) => [
+        key,
+        await compressPhoto(photo),
+      ]),
+    ))
+  }
+  if (typeof nextRequest.philsysVerificationEvidence === 'string') {
+    const dataUrl = await compressStoredImageDataUrl(nextRequest.philsysVerificationEvidence)
+    if (dataUrl !== nextRequest.philsysVerificationEvidence) {
+      nextRequest.philsysVerificationEvidence = dataUrl
+      changed = true
+    }
+  } else {
+    nextRequest.philsysVerificationEvidence = await compressPhoto(nextRequest.philsysVerificationEvidence)
+  }
+  nextRequest.paymentProof = await compressPhoto(nextRequest.paymentProof)
+
+  return { request: nextRequest, changed }
 }
 
 const createRegistrationEvidence = async (file) => {
@@ -936,6 +1066,18 @@ const restoreUnprintedApprovedRequests = (requests, history) => {
 }
 
 const isRequestRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+const preserveRequestEvidence = (request, previous) => {
+  if (!previous) return request
+  const preserved = { ...request }
+  for (const field of ['requirementPhotos', 'philsysVerificationEvidence', 'paymentProof']) {
+    if (!Object.prototype.hasOwnProperty.call(preserved, field)
+      && Object.prototype.hasOwnProperty.call(previous, field)) {
+      preserved[field] = previous[field]
+    }
+  }
+  return preserved
+}
 
 const mergeRequestValues = (preferred, fallback) => {
   if (preferred === undefined || preferred === null
@@ -4783,6 +4925,8 @@ function App() {
   const fastSyncRef = useRef(null)
   const adminSyncDataHandlerRef = useRef(null)
   const databaseRecordsRef = useRef(null)
+  const adminSupplementalCacheRef = useRef({})
+  const adminPriorityCacheSignatureRef = useRef('')
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
   const pendingRegistrationEtagRef = useRef('')
@@ -5678,11 +5822,14 @@ function App() {
   const normalizeResidentName = (name) => normalizeRecoveryIdentity(name)
 
   useEffect(() => {
-    if (!selectedRequestId || !officialBackendToken || !showOfficialDashboard
-      || !requestEvidenceAvailableIdsRef.current.has(selectedRequestId)
-      || requestEvidenceLoadedIdsRef.current.has(selectedRequestId)) return undefined
+    const paymentRequest = residentRequestsRef.current.find((request) => (
+      request.id === paymentReviewRequestId || request.paymentGroupId === paymentReviewRequestId
+    ))
+    const requestId = selectedRequestId || paymentRequest?.id || paymentReviewRequestId
+    if (!requestId || !officialBackendToken || !showOfficialDashboard
+      || !requestEvidenceAvailableIdsRef.current.has(requestId)
+      || requestEvidenceLoadedIdsRef.current.has(requestId)) return undefined
 
-    const requestId = selectedRequestId
     const controller = new AbortController()
     let cancelled = false
     const loadRequestEvidence = async () => {
@@ -5698,8 +5845,26 @@ function App() {
         }
         if (cancelled) return
 
+        let loadedRequest = result.data.request
+        let optimizationMessage = ''
+        let optimizedRequest = null
+        try {
+          const optimized = await compressStoredRequestImages(loadedRequest)
+          loadedRequest = optimized.request
+          if (optimized.changed) optimizedRequest = loadedRequest
+        } catch (error) {
+          console.error('Unable to optimize saved request photos.', error)
+          optimizationMessage = `Photos loaded, but could not be optimized: ${error.message || 'unknown error'}`
+        }
+        if (cancelled) return
+
         const nextRequests = residentRequestsRef.current.map((request) => (
-          request.id === requestId ? { ...request, ...result.data.request } : request
+          request.id === requestId ? {
+            ...request,
+            requirementPhotos: loadedRequest.requirementPhotos,
+            philsysVerificationEvidence: loadedRequest.philsysVerificationEvidence,
+            paymentProof: loadedRequest.paymentProof,
+          } : request
         ))
         residentRequestsRef.current = nextRequests
         if (databaseRecordsRef.current) {
@@ -5710,8 +5875,31 @@ function App() {
         }
         requestEvidenceLoadedIdsRef.current.add(requestId)
         setRequestEvidenceLoadedIds(new Set(requestEvidenceLoadedIdsRef.current))
-        setRequestEvidenceError(null)
+        setRequestEvidenceError(optimizationMessage ? { requestId, message: optimizationMessage } : null)
         setResidentRequests(nextRequests)
+        if (optimizedRequest && !cancelled) {
+          const currentRequest = nextRequests.find((request) => request.id === requestId)
+          const requestToSave = currentRequest
+            ? {
+              ...currentRequest,
+              requirementPhotos: optimizedRequest.requirementPhotos,
+              philsysVerificationEvidence: optimizedRequest.philsysVerificationEvidence,
+              paymentProof: optimizedRequest.paymentProof,
+            }
+            : optimizedRequest
+          void queueDatabaseRecords(databaseSaveQueueRef, {}, officialBackendToken, {
+            upserts: [requestToSave],
+            deletes: [],
+          }, fastSyncRef.current).catch((error) => {
+            console.error('Unable to save optimized request photos.', error)
+            if (!cancelled) {
+              setRequestEvidenceError({
+                requestId,
+                message: `Photos are visible, but their smaller copies could not be saved: ${error.message || 'database save failed'}`,
+              })
+            }
+          })
+        }
       } catch (error) {
         if (!cancelled && error.name !== 'AbortError') {
           console.error('Unable to load evidence for the selected resident request.', error)
@@ -5727,6 +5915,7 @@ function App() {
     }
   }, [
     officialBackendToken,
+    paymentReviewRequestId,
     requestEvidenceAvailableIds,
     requestEvidenceLoadedIds,
     residentRequests,
@@ -5834,6 +6023,13 @@ function App() {
           }
         }
         if (cancelled) return
+        if (cachedData && typeof cachedData === 'object' && !Array.isArray(cachedData)) {
+          adminSupplementalCacheRef.current = Object.fromEntries(
+            [certificateTemplatesStorageKey, officialPhotosStorageKey]
+              .filter((key) => Object.prototype.hasOwnProperty.call(cachedData, key))
+              .map((key) => [key, cachedData[key]]),
+          )
+        }
         const usingCachedRecords = Boolean(cachedData
           && typeof cachedData === 'object'
           && !Array.isArray(cachedData)
@@ -5842,7 +6038,7 @@ function App() {
         const isPriorityLoad = Boolean(officialBackendToken && !databaseRecordsRef.current)
         const initialDatabaseUrl = officialBackendToken
           ? isPriorityLoad
-            ? `${API_URL}${API_URL.includes('?') ? '&' : '?'}priority=1`
+            ? ADMIN_PRIORITY_API_URL
             : API_URL
           : PUBLIC_COMMUNITY_API_URL
         const { response, result } = usingCachedRecords
@@ -6056,9 +6252,12 @@ function App() {
         }
 
         databaseRecordsRef.current = records
-        if (officialBackendToken) void writeAdminRecordCache(data).catch((error) => {
-          console.warn('Could not refresh the local admin data cache.', error)
-        })
+        if (officialBackendToken) {
+          adminPriorityCacheSignatureRef.current = JSON.stringify(data)
+          void writeAdminRecordCache({ ...data, ...adminSupplementalCacheRef.current }).catch((error) => {
+            console.warn('Could not refresh the local admin data cache.', error)
+          })
+        }
         if (officialBackendToken) setHasLoadedPrivateDatabaseData(true)
         setDatabaseSaveError('')
         setDatabaseSaveStatus(officialBackendToken && usingCachedRecords ? 'checking' : officialBackendToken ? 'saved' : 'offline')
@@ -6158,7 +6357,7 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const { response, result } = await fetchJsonWithTimeout(API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(ADMIN_PRIORITY_API_URL, {
           cache: 'no-store',
           headers: {
             Authorization: `Bearer ${officialBackendToken}`,
@@ -7272,7 +7471,7 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const { response, result } = await fetchJsonWithTimeout(API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(ADMIN_PRIORITY_API_URL, {
           cache: 'no-store',
           headers: {
             Authorization: `Bearer ${officialBackendToken}`,
@@ -7302,7 +7501,22 @@ function App() {
         const nextRequests = remoteRequests === undefined
           ? residentRequestsRef.current
           : splitMultiDocumentRequests(remoteRequests.map(withRequestStatusHistory), customCertificateTemplates)
-        const nextHistory = remoteHistory === undefined ? residentHistoryRef.current : remoteHistory
+            .map((request) => preserveRequestEvidence(
+              request,
+              residentRequestsRef.current.find((currentRequest) => currentRequest.id === request.id),
+            ))
+        const localHistoryByRequestId = new Map(residentHistoryRef.current
+          .filter((entry) => entry.type === 'documentRequest' && entry.request)
+          .map((entry) => [entry.requestId || entry.request.id, entry]))
+        const nextHistory = remoteHistory === undefined
+          ? residentHistoryRef.current
+          : remoteHistory.map((entry) => {
+            if (entry.type !== 'documentRequest' || !entry.request) return entry
+            const previousEntry = localHistoryByRequestId.get(entry.requestId || entry.request.id)
+            return previousEntry?.request
+              ? { ...entry, request: preserveRequestEvidence(entry.request, previousEntry.request) }
+              : entry
+          })
         const requestsChanged = JSON.stringify(residentRequestsRef.current) !== JSON.stringify(nextRequests)
         const historyChanged = JSON.stringify(residentHistoryRef.current) !== JSON.stringify(nextHistory)
         if (!requestsChanged && !historyChanged) return
@@ -7359,10 +7573,11 @@ function App() {
     let nextRequests = residentRequestsRef.current
     if (!Array.isArray(remoteRequests)) throw new Error('Saved resident requests must be a list.')
     if (residentRequestSavePendingRef.current === 0 && Date.now() >= residentRequestSyncPauseUntilRef.current) {
+      const localRequestsById = new Map(residentRequestsRef.current.map((request) => [request.id, request]))
       nextRequests = splitMultiDocumentRequests(
         remoteRequests.map(withRequestStatusHistory),
         customCertificateTemplates,
-      )
+      ).map((request) => preserveRequestEvidence(request, localRequestsById.get(request.id)))
     }
 
     const remoteHistory = data[residentHistoryStorageKey] ?? []
@@ -7370,7 +7585,19 @@ function App() {
     let nextHistory = residentHistoryRef.current
     if (residentRequestSavePendingRef.current === 0
       && Date.now() >= residentRequestSyncPauseUntilRef.current) {
-      nextHistory = remoteHistory
+      const localHistoryByRequestId = new Map(residentHistoryRef.current
+        .filter((entry) => entry.type === 'documentRequest' && entry.request)
+        .map((entry) => [entry.requestId || entry.request.id, entry]))
+      nextHistory = remoteHistory.map((entry) => {
+        if (entry.type !== 'documentRequest' || !entry.request) return entry
+        const previousEntry = localHistoryByRequestId.get(entry.requestId || entry.request.id)
+        return previousEntry?.request
+          ? {
+            ...entry,
+            request: preserveRequestEvidence(entry.request, previousEntry.request),
+          }
+          : entry
+      })
     }
     const restoredRequests = restoreUnprintedApprovedRequests(nextRequests, nextHistory)
     const requestsChanged = JSON.stringify(residentRequestsRef.current) !== JSON.stringify(restoredRequests.requests)
@@ -7419,7 +7646,145 @@ function App() {
   useEffect(() => {
     adminSyncDataHandlerRef.current = applyAdminSyncData
   }, [applyAdminSyncData])
+  useEffect(() => {
+    if (!isStorageLoaded || !officialBackendToken
+      || !hasLoadedPrivateDatabaseData || !isDatabaseConnected) return undefined
 
+    const controller = new AbortController()
+    const etags = new Map()
+    let requestPending = false
+    const supplementalKeys = [certificateTemplatesStorageKey, officialPhotosStorageKey]
+    const refreshSupplementalRecords = async () => {
+      if (requestPending || document.visibilityState !== 'visible') return
+      requestPending = true
+      try {
+        for (const key of supplementalKeys) {
+          if (controller.signal.aborted) return
+          try {
+            const keyUrl = `${API_URL}${API_URL.includes('?') ? '&' : '?'}key=${encodeURIComponent(key)}`
+            const { response, result } = await fetchJsonWithTimeout(keyUrl, {
+              cache: 'no-store',
+              headers: {
+                Authorization: `Bearer ${officialBackendToken}`,
+                ...(etags.has(key) ? { 'If-None-Match': etags.get(key) } : {}),
+              },
+              signal: controller.signal,
+            }, 'Supplemental admin records', DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS)
+            if (response.status === 304) continue
+            if (!response.ok || !result?.success || !result.data
+              || typeof result.data !== 'object' || Array.isArray(result.data)) {
+              throw new Error(result?.message || `The ${key} record could not be loaded.`)
+            }
+            etags.set(key, response.headers.get('ETag') || '')
+
+            if (key === certificateTemplatesStorageKey) {
+              applySharedCertificateCatalog(result.data)
+              adminSupplementalCacheRef.current = {
+                ...adminSupplementalCacheRef.current,
+                [key]: result.data[key],
+              }
+              databaseRecordsRef.current = {
+                ...(databaseRecordsRef.current || {}),
+                ...result.data,
+              }
+              void writeAdminRecordCache({
+                ...(databaseRecordsRef.current || {}),
+                ...adminSupplementalCacheRef.current,
+              }).catch((error) => {
+                console.warn('Could not cache supplemental certificate templates.', error)
+              })
+              continue
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(result.data, key)) continue
+            const storedPhotos = normalizeOfficialPhotoMap(result.data[key])
+            if (!storedPhotos) throw new Error('Saved official photos must use a valid image map.')
+            let photoOptimizationError = ''
+            const entries = await Promise.all(Object.entries(storedPhotos).map(async ([index, photo]) => {
+              try {
+                return [index, await compressStoredImageDataUrl(photo, 800)]
+              } catch (error) {
+                console.error(`Unable to optimize the saved portrait for official ${index}.`, error)
+                photoOptimizationError = error.message || 'An official photo could not be optimized.'
+                return [index, photo]
+              }
+            }))
+            const optimizedPhotos = Object.fromEntries(entries)
+            const photosChanged = JSON.stringify(storedPhotos) !== JSON.stringify(optimizedPhotos)
+            adminSupplementalCacheRef.current = {
+              ...adminSupplementalCacheRef.current,
+              [key]: optimizedPhotos,
+            }
+            databaseRecordsRef.current = {
+              ...(databaseRecordsRef.current || {}),
+              [key]: optimizedPhotos,
+            }
+            communityRecordsRef.current = {
+              ...communityRecordsRef.current,
+              [key]: optimizedPhotos,
+            }
+            setOfficialPhotos(optimizedPhotos)
+            let photoSaveError = false
+            void writeAdminRecordCache({
+              ...(databaseRecordsRef.current || {}),
+              ...adminSupplementalCacheRef.current,
+            }).catch((error) => {
+              console.warn('Could not cache supplemental official photos.', error)
+            })
+            if (photosChanged) {
+              try {
+                await queueDatabaseRecords(
+                  databaseSaveQueueRef,
+                  { [key]: optimizedPhotos },
+                  officialBackendToken,
+                  null,
+                  fastSyncRef.current,
+                )
+              } catch (error) {
+                console.error('Unable to save optimized official portraits.', error)
+                photoSaveError = true
+                setOfficialPhotoError(`Portraits are visible, but their smaller copies could not be saved: ${error.message || 'database save failed'}`)
+              }
+            }
+            if (photoOptimizationError) setOfficialPhotoError(photoOptimizationError)
+            else if (!photoSaveError) setOfficialPhotoError('')
+          } catch (error) {
+            if (error.name === 'AbortError') return
+            console.error(`Unable to load supplemental admin record ${key}.`, error)
+            if (key === officialPhotosStorageKey) {
+              setOfficialPhotoError(error.message || 'Official photos could not be loaded.')
+            } else {
+              setCustomTemplateError(error.message || 'Certificate templates could not be loaded.')
+            }
+          }
+        }
+      } finally {
+        requestPending = false
+      }
+    }
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refreshSupplementalRecords()
+    }
+    void refreshSupplementalRecords()
+    const refreshTimer = window.setInterval(refreshSupplementalRecords, 30000)
+    window.addEventListener('focus', refreshWhenVisible)
+    window.addEventListener('online', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', refreshWhenVisible)
+      window.removeEventListener('online', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      controller.abort()
+    }
+  }, [
+    applySharedCertificateCatalog,
+    hasLoadedPrivateDatabaseData,
+    isDatabaseConnected,
+    isStorageLoaded,
+    officialBackendToken,
+  ])
   useEffect(() => {
     if (!isStorageLoaded || !officialBackendToken
       || !hasLoadedPrivateDatabaseData || !isDatabaseConnected) return undefined
@@ -7427,14 +7792,18 @@ function App() {
     const fastSync = createFastSync()
     fastSyncRef.current = fastSync
     fastSync.start({
-      url: API_URL,
+      url: ADMIN_PRIORITY_API_URL,
       getToken: () => officialBackendToken,
       initialEtag: databaseEtagRef.current,
       onData: async (data) => {
         await adminSyncDataHandlerRef.current?.(data)
-        void writeAdminRecordCache(data).catch((error) => {
-          console.warn('Could not refresh the local admin data cache.', error)
-        })
+        const signature = JSON.stringify(data)
+        if (signature !== adminPriorityCacheSignatureRef.current) {
+          adminPriorityCacheSignatureRef.current = signature
+          void writeAdminRecordCache({ ...data, ...adminSupplementalCacheRef.current }).catch((error) => {
+            console.warn('Could not refresh the local admin data cache.', error)
+          })
+        }
       },
       onEtag: (etag) => {
         databaseEtagRef.current = etag
@@ -13342,6 +13711,11 @@ function App() {
                       <button type="button" className="payment-assessment-toggle" aria-expanded={paymentReviewRequestId === payment.id} onClick={() => { setPaymentReviewRequestId(paymentReviewRequestId === payment.id ? '' : payment.id); setPaymentOrNumber('') }}>{paymentReviewRequestId === payment.id ? 'Close' : 'Assess proof'}</button>
                     </div>
                     {paymentReviewRequestId === payment.id && <div className="payment-assessment-detail">
+                      {requestEvidenceAvailableIds.has(payment.requests[0]?.id)
+                        && !requestEvidenceLoadedIds.has(payment.requests[0]?.id)
+                        && <p role="status">Loading the saved payment proof…</p>}
+                      {requestEvidenceError?.requestId === payment.requests[0]?.id
+                        && <p className="community-update-error" role="alert">{requestEvidenceError.message}</p>}
                       <dl>
                         <div><dt>Payment method</dt><dd>{payment.paymentMethod === 'walk-in' ? 'Walk-in at Barangay Hall' : payment.paymentMethod === 'gcash' ? 'GCash transfer' : payment.paymentMethod || 'Not provided'}</dd></div>
                         <div><dt>Resident reference</dt><dd>{payment.paymentProofOrNumber || 'Not provided'}</dd></div>
