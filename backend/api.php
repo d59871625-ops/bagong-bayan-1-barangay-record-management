@@ -160,43 +160,46 @@ try {
             "bb1-official-photos",
         ]));
         $responseKeys = ($_GET["priority"] ?? "") === "1" ? $priorityKeys : $allowedKeys;
+        $isPriorityLoad = ($_GET["priority"] ?? "") === "1";
         $placeholders = implode(",", array_fill(0, count($responseKeys), "?"));
-        $metadataStatement = $pdo->prepare(
-            "SELECT data_key, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
-        );
-        $metadataStatement->execute($responseKeys);
-        $metadataRows = $metadataStatement->fetchAll();
-        $changeMetadata = $pdo->query("
-            SELECT request_id, is_deleted, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch
-            FROM bb1_resident_request_changes
-            ORDER BY request_id
-        ")->fetchAll();
-        $etagContext = hash_init("sha256");
-        $metadataIsFresh = false;
-        $now = time();
-        foreach ($metadataRows as $row) {
-            hash_update($etagContext, $row["data_key"] . "\0" . $row["updated_at"] . "\0");
-            $metadataIsFresh = $metadataIsFresh || (int) $row["updated_epoch"] >= $now - 10;
-        }
-        foreach ($changeMetadata as $change) {
-            hash_update(
-                $etagContext,
-                "resident-request-change\0"
-                    . $change["request_id"] . "\0"
-                    . (string) $change["is_deleted"] . "\0"
-                    . (string) $change["updated_at"] . "\0"
+        if (!$isPriorityLoad) {
+            $metadataStatement = $pdo->prepare(
+                "SELECT data_key, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
             );
-            $metadataIsFresh = $metadataIsFresh || (int) $change["updated_epoch"] >= $now - 10;
-        }
-        $etag = '"' . hash_final($etagContext) . '"';
-        header("ETag: " . $etag);
-        $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
-        if ($clientEtag !== "" && hash_equals($etag, $clientEtag) && !$metadataIsFresh) {
-            http_response_code(304);
-            exit;
+            $metadataStatement->execute($responseKeys);
+            $metadataRows = $metadataStatement->fetchAll();
+            $changeMetadata = $pdo->query("
+                SELECT request_id, is_deleted, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch
+                FROM bb1_resident_request_changes
+                ORDER BY request_id
+            ")->fetchAll();
+            $etagContext = hash_init("sha256");
+            $metadataIsFresh = false;
+            $now = time();
+            foreach ($metadataRows as $row) {
+                hash_update($etagContext, $row["data_key"] . "\0" . $row["updated_at"] . "\0");
+                $metadataIsFresh = $metadataIsFresh || (int) $row["updated_epoch"] >= $now - 10;
+            }
+            foreach ($changeMetadata as $change) {
+                hash_update(
+                    $etagContext,
+                    "resident-request-change\0"
+                        . $change["request_id"] . "\0"
+                        . (string) $change["is_deleted"] . "\0"
+                        . (string) $change["updated_at"] . "\0"
+                );
+                $metadataIsFresh = $metadataIsFresh || (int) $change["updated_epoch"] >= $now - 10;
+            }
+            $etag = '"' . hash_final($etagContext) . '"';
+            header("ETag: " . $etag);
+            $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+            if ($clientEtag !== "" && hash_equals($etag, $clientEtag) && !$metadataIsFresh) {
+                http_response_code(304);
+                exit;
+            }
         }
 
-        $requestChanges = bb1LoadResidentRequestChanges($pdo);
+        $requestChanges = bb1LoadResidentRequestChangesForAdmin($pdo);
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
@@ -209,15 +212,29 @@ try {
         }
         $baseRequests = $data["bb1-resident-requests"] ?? [];
         $requests = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
+        $evidenceRequestIds = [];
+        foreach ($baseRequests as $baseRequest) {
+            if ($baseRequest instanceof stdClass
+                && is_scalar($baseRequest->id ?? null)
+                && (string) $baseRequest->id !== ""
+                && bb1RequestHasEvidence($baseRequest)) {
+                $evidenceRequestIds[(string) $baseRequest->id] = true;
+            }
+        }
+        foreach ($requestChanges as $change) {
+            $requestId = (string) ($change["request_id"] ?? "");
+            if ($requestId === "") {
+                continue;
+            }
+            if ((int) ($change["is_deleted"] ?? 0) === 1 || (int) ($change["has_evidence"] ?? 0) !== 1) {
+                unset($evidenceRequestIds[$requestId]);
+            } else {
+                $evidenceRequestIds[$requestId] = true;
+            }
+        }
         $data["requestEvidenceIds"] = array_values(array_map(
-            static fn($request) => (string) $request->id,
-            array_filter(
-                $requests,
-                static fn($request) => $request instanceof stdClass
-                    && is_scalar($request->id ?? null)
-                    && (string) $request->id !== ""
-                    && bb1RequestHasEvidence($request)
-            )
+            static fn($requestId) => (string) $requestId,
+            array_keys($evidenceRequestIds)
         ));
         $data["bb1-resident-requests"] = array_map("bb1StripRequestEvidence", $requests);
 
