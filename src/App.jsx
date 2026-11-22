@@ -85,6 +85,41 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   }
 }
 
+const fetchJsonWithTimeout = async (url, options = {}, endpointName, timeoutMs = 8000) => {
+  const { signal: externalSignal, ...requestOptions } = options
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort()
+  if (externalSignal?.aborted) {
+    controller.abort()
+  } else {
+    externalSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  }
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const response = await fetch(url, { ...requestOptions, signal: controller.signal })
+    return {
+      response,
+      result: response.status === 304 ? null : await readJsonResponse(response, endpointName),
+    }
+  } catch (error) {
+    if (timedOut && !externalSignal?.aborted) {
+      throw new Error(
+        `The server request timed out after ${timeoutMs / 1000} seconds.`,
+        { cause: error },
+      )
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+    externalSignal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
 const getResidentRequestChanges = (savedRequests, nextRequests) => {
   const savedById = new Map()
   const nextById = new Map()
@@ -4948,6 +4983,7 @@ function App() {
   const databaseSaveQueueRef = useRef(Promise.resolve())
   const databaseRecordsRef = useRef(null)
   const legacyBrowserRecordsRef = useRef(null)
+  const legacyBrowserRecoveryAppliedRef = useRef(false)
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
   const [selectedRole, setSelectedRole] = useState('')
@@ -5046,6 +5082,8 @@ function App() {
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [hasLoadedPrivateDatabaseData, setHasLoadedPrivateDatabaseData] = useState(false)
+  const [hasResolvedLegacyBrowserSnapshot, setHasResolvedLegacyBrowserSnapshot] = useState(false)
+  const [legacyBrowserRecoveryError, setLegacyBrowserRecoveryError] = useState('')
   const [isPublicCommunityConnected, setIsPublicCommunityConnected] = useState(false)
   const [isResidentDatabaseConnected, setIsResidentDatabaseConnected] = useState(false)
   const [residentDatabaseSyncError, setResidentDatabaseSyncError] = useState('')
@@ -5741,28 +5779,45 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const databaseRequest = fetchWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+        const databaseRequest = fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
           signal: controller.signal,
-        }, officialBackendToken ? DATABASE_REQUEST_TIMEOUT_MS : undefined)
-          .then(async (response) => ({
-            response,
-            result: await readJsonResponse(response, 'Database request'),
-          }))
+        }, 'Database request', officialBackendToken ? DATABASE_REQUEST_TIMEOUT_MS : undefined)
         const browserRecordsRequest = officialBackendToken
           ? legacyBrowserRecordsRef.current === null
             ? loadLegacyBrowserRecordSnapshot().then((records) => {
               legacyBrowserRecordsRef.current = records
+              setHasResolvedLegacyBrowserSnapshot(true)
+              setLegacyBrowserRecoveryError('')
               return records
+            }).catch((error) => {
+              console.error('Unable to read legacy browser recovery records.', error)
+              legacyBrowserRecordsRef.current = {}
+              legacyBrowserRecoveryAppliedRef.current = true
+              setHasResolvedLegacyBrowserSnapshot(true)
+              setLegacyBrowserRecoveryError(error.message || 'Saved browser recovery data could not be read.')
+              return {}
             })
             : Promise.resolve(legacyBrowserRecordsRef.current)
           : Promise.resolve({})
-        const [{ response, result }, browserResidentRecords] = await Promise.all([
+        let browserSnapshotTimeoutId
+        const browserSnapshotTimeout = new Promise((resolve) => {
+          browserSnapshotTimeoutId = window.setTimeout(() => resolve(null), 1200)
+        })
+        const [{ response, result }, initialBrowserRecords] = await Promise.all([
           databaseRequest,
-          browserRecordsRequest,
+          officialBackendToken
+            ? Promise.race([browserRecordsRequest, browserSnapshotTimeout])
+            : Promise.resolve({}),
         ])
+        window.clearTimeout(browserSnapshotTimeoutId)
+        const browserSnapshotIncluded = initialBrowserRecords !== null
+        const browserResidentRecords = initialBrowserRecords || {}
+        if (officialBackendToken && browserSnapshotIncluded) {
+          legacyBrowserRecoveryAppliedRef.current = true
+        }
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
@@ -5987,13 +6042,12 @@ function App() {
         const hasRecoveryChanges = Object.keys(recoveredRecords).length > 0 || hasRequestRecoveryChanges
         if (officialBackendToken && hasRecoveryChanges) {
           await saveDatabaseRecords(recoveredRecords, officialBackendToken, requestRecoveryChanges)
-          const verificationResponse = await fetchWithTimeout(API_URL, {
+          const { response: verificationResponse, result: verificationResult } = await fetchJsonWithTimeout(API_URL, {
             method: 'GET',
             cache: 'no-store',
             headers: { Authorization: `Bearer ${officialBackendToken}` },
             signal: controller.signal,
-          }, DATABASE_REQUEST_TIMEOUT_MS)
-          const verificationResult = await readJsonResponse(verificationResponse, 'Database verification')
+          }, 'Database verification', DATABASE_REQUEST_TIMEOUT_MS)
           if (!verificationResponse.ok || !verificationResult.success || !verificationResult.data) {
             throw new Error(verificationResult?.message || 'Saved records could not be verified from the shared database.')
           }
@@ -6051,6 +6105,13 @@ function App() {
       controller.abort()
     }
   }, [databaseLoadVersion, officialBackendToken])
+
+  useEffect(() => {
+    if (!officialBackendToken || !isDatabaseConnected || !hasResolvedLegacyBrowserSnapshot
+      || legacyBrowserRecoveryAppliedRef.current) return
+    legacyBrowserRecoveryAppliedRef.current = true
+    setDatabaseLoadVersion((version) => version + 1)
+  }, [hasResolvedLegacyBrowserSnapshot, isDatabaseConnected, officialBackendToken])
 
   useEffect(() => {
     if (!showOfficialDashboard || !officialBackendToken) return undefined
@@ -6114,14 +6175,14 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetchWithTimeout(API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(API_URL, {
           cache: 'no-store',
           headers: {
             Authorization: `Bearer ${officialBackendToken}`,
             ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
           },
           signal: controller.signal,
-        }, DATABASE_REQUEST_TIMEOUT_MS)
+        }, 'Database reconnection', DATABASE_REQUEST_TIMEOUT_MS)
         if (response.status === 304) {
           if (databaseRecordsRef.current) {
             setDatabaseSaveError('')
@@ -6141,7 +6202,6 @@ function App() {
           return
         }
         if (!response.ok) throw new Error(`Database reconnection failed with status ${response.status}.`)
-        const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
           throw new Error('The server returned invalid database records during reconnection.')
         }
@@ -12267,13 +12327,12 @@ function App() {
             </aside>}
             <div className="admin-content" ref={adminContentRef}>
           {!isDatabaseConnected
-            ? <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
+            ? databaseSaveStatus === 'checking' ? null : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
-              <span>{databaseSaveStatus === 'checking'
-                ? 'Connecting to shared database…'
-                : `Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
+              <span>{`Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
             </div>
             : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{databaseSaveStatus === 'saving' ? 'Saving changes to shared database…' : databaseSaveStatus === 'error' ? `Database save failed. ${databaseSaveError}` : 'Changes saved to shared database'}</span></div>}
+          {legacyBrowserRecoveryError && <div className="database-save-indicator is-error" role="alert">Legacy browser recovery data could not be read. {legacyBrowserRecoveryError}</div>}
           {adminView === 'overview' && <div className="dashboard-heading admin-overview-heading">
             <h1>Overview</h1>
             <span className="dashboard-date">{new Date().toLocaleDateString('en-US', { dateStyle: 'full' })}</span>
