@@ -12415,7 +12415,21 @@ function App() {
               <span>Resident &amp; requested documents</span>
               <span>Current status</span>
               <span>Action</span>
-            </div></>}
+            </div>
+            {documentQueueFilter === 'incoming' && unpaidResidentPaymentRecords
+              .filter((payment) => {
+                const query = requestSearch.trim().toLowerCase()
+                return !query || [payment.resident, payment.residentCode, payment.id, ...(payment.documents || [])]
+                  .some((value) => String(value || '').toLowerCase().includes(query))
+              })
+              .filter((payment) => requestDocumentFilter === 'all' || payment.documents.includes(requestDocumentFilter))
+              .map((payment) => <article className="request-item payment-assessment-item" key={`incoming-payment-${payment.id}`}>
+                <div className="request-meta"><span>Request saved</span><small>{payment.paymentDraftedAt ? new Date(payment.paymentDraftedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</small></div>
+                <div className="request-resident"><strong>{payment.resident}</strong><small>{payment.documents?.join(' · ') || 'Document request'} · {payment.id}</small></div>
+                <div className="request-status"><span className="payment-action-needed">Awaiting resident payment</span><small>₱{Number(payment.feeAmount || 0).toFixed(2)} due</small></div>
+                <button type="button" className="payment-assessment-toggle" onClick={() => setAdminView('payments')}>View payment tracking</button>
+              </article>)}
+            </>}
             <div className="request-list">
               {requestListEntries.map((entry) => {
                 if (entry.type === 'resident') {
