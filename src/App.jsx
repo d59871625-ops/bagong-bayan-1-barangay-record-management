@@ -3064,7 +3064,7 @@ function ResidentDocumentGuide({ documents, onClose, onAcknowledge, customTempla
   )
 }
 
-function ApprovedCertificateEditor({ request, certificateDownloadError, getCurrentCertificateData, saveCertificateReview, downloadApprovedCertificate, downloadApprovedCertificatePdf, printApprovedCertificatePdf, recordPrintedDocument, initialDocument, customTemplates = [] }) {
+function ApprovedCertificateEditor({ request, certificateDownloadError, getCurrentCertificateData, saveCertificateReview, downloadApprovedCertificate, printApprovedCertificatePdf, recordPrintedDocument, initialDocument, customTemplates = [] }) {
   const certificateDataByDocument = getCurrentCertificateData(request)
   const copyCount = Number.isSafeInteger(Number(request.copyCount)) && Number(request.copyCount) > 0
     ? Number(request.copyCount)
@@ -3100,20 +3100,10 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
     }
   }
 
-  const downloadSubmittedPdf = async (document) => {
-    setIsPreparingPreview(true)
-    try {
-      saveCertificateReview(request)
-      return await downloadApprovedCertificatePdf(request, document)
-    } finally {
-      setIsPreparingPreview(false)
-    }
-  }
-
   const downloadSelectedOutput = async (document) => {
     if (isPreparingPreview) return
     if (outputFormat === 'pdf') {
-      await downloadSubmittedPdf(document)
+      await preparePreview(document, certificateDataByDocument[document])
       return
     }
 
@@ -12069,16 +12059,6 @@ function App() {
     }
   }
 
-  const downloadApprovedCertificatePdf = async (request, document) => {
-    try {
-      return await printApprovedCertificatePdf(request, document)
-    } catch (error) {
-      console.error(`Unable to prepare the ${document} PDF for printing.`, error)
-      setCertificateDownloadError(`The ${document} PDF could not be prepared. ${error.message}`)
-      return false
-    }
-  }
-
   const printApprovedCertificatePdf = async (request, document) => {
     const printWindow = window.open('about:blank', '_blank')
     if (!printWindow) throw new Error('Allow pop-ups to open the certificate for printing.')
@@ -12088,6 +12068,19 @@ function App() {
         throw new Error('The requested copy count is invalid.')
       }
       const docx = await createFilledCertificateDocx(document, getSubmittedCertificateData(request, document), customCertificateTemplates)
+      const templateContent = await getCertificateTemplateContent(docx)
+      const templatePageSize = templateContent.pageSize
+      const pageWidthTwips = templatePageSize.orientation === 'landscape'
+        ? templatePageSize.heightTwips
+        : templatePageSize.widthTwips
+      const pageHeightTwips = templatePageSize.orientation === 'landscape'
+        ? templatePageSize.widthTwips
+        : templatePageSize.heightTwips
+      if (!(pageWidthTwips > 0) || !(pageHeightTwips > 0)) {
+        throw new Error('The certificate template does not contain valid page dimensions.')
+      }
+      const pageWidthInches = (pageWidthTwips / 1440).toFixed(4)
+      const pageHeightInches = (pageHeightTwips / 1440).toFixed(4)
       const rendered = window.document.createElement('div')
       const pages = await renderCertificateDocxPages(rendered, docx, document)
       if (!pages.length) throw new Error('The certificate template did not render any pages.')
@@ -12108,7 +12101,7 @@ function App() {
       })
       const printStyles = printDocument.createElement('style')
       printStyles.textContent = `
-        @page { size: ${Math.round(pages[0].getBoundingClientRect().width)}px ${Math.round(pages[0].getBoundingClientRect().height)}px; margin: 0; }
+        @page { size: ${pageWidthInches}in ${pageHeightInches}in; margin: 0; }
         html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
         .docx-wrapper { margin: 0 !important; padding: 0 !important; background: #fff !important; }
         .docx-wrapper > section.certificate-docx { margin: 0 !important; box-shadow: none !important; break-after: page; page-break-after: always; }
@@ -12690,7 +12683,6 @@ function App() {
                   getCurrentCertificateData={getCurrentCertificateData}
                   saveCertificateReview={saveCertificateReview}
                   downloadApprovedCertificate={downloadApprovedCertificate}
-                  downloadApprovedCertificatePdf={downloadApprovedCertificatePdf}
                   printApprovedCertificatePdf={printApprovedCertificatePdf}
                   recordPrintedDocument={(request, document, certificateData) => {
                     const sourceRequests = (request.processingRequestIds || [request.id])
