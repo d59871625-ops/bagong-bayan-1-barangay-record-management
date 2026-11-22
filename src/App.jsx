@@ -5223,7 +5223,7 @@ function App() {
       } catch (error) {
         if (cancelled || error.name === 'AbortError') return
         console.error('Unable to load saved admin record counts.', error)
-        setIsLoadingAdminDatabaseCounts(false)
+        setIsLoadingAdminDatabaseCounts(true)
         retryTimer = window.setTimeout(loadCounts, 15000)
       } finally {
         requestPending = false
@@ -12826,7 +12826,9 @@ function App() {
             : !isDatabaseConnected
             ? adminDatabaseHealth === 'offline'
               ? <div className="database-save-indicator is-offline" role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{`Shared database offline; retrying automatically. ${databaseSaveError}`}</span></div>
-              : databaseSaveStatus === 'checking' ? null : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
+              : databaseSaveStatus === 'checking' && officialBackendToken
+                ? <div className="database-save-indicator is-saving" role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>Connecting to the shared database and loading saved residents, requests, and admin records…</span></div>
+                : databaseSaveStatus === 'checking' ? null : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
               <span>{`Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
             </div>
