@@ -4948,7 +4948,6 @@ function App() {
   const databaseSaveQueueRef = useRef(Promise.resolve())
   const databaseRecordsRef = useRef(null)
   const legacyBrowserRecordsRef = useRef(null)
-  const pendingOfficialDashboardOpenRef = useRef(false)
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
   const [selectedRole, setSelectedRole] = useState('')
@@ -5752,21 +5751,6 @@ function App() {
             response,
             result: await readJsonResponse(response, 'Database request'),
           }))
-        const pendingRegistrationsRequest = officialBackendToken
-          ? fetchWithTimeout(`${BACKEND_API_URL}/pending-registrations.php`, {
-            cache: 'no-store',
-            headers: { Authorization: `Bearer ${officialBackendToken}` },
-            signal: controller.signal,
-          })
-            .then(async (response) => {
-              const result = await readJsonResponse(response, 'Pending registrations')
-              if (!response.ok || !result.success || !Array.isArray(result.data)) {
-                throw new Error(result.message || 'The registration service returned an invalid response.')
-              }
-              return { records: result.data.map(mapBackendRegistrationRequest), error: null }
-            })
-            .catch((error) => ({ records: null, error }))
-          : Promise.resolve({ records: null, error: null })
         const browserRecordsRequest = officialBackendToken
           ? legacyBrowserRecordsRef.current === null
             ? loadLegacyBrowserRecordSnapshot().then((records) => {
@@ -5775,15 +5759,13 @@ function App() {
             })
             : Promise.resolve(legacyBrowserRecordsRef.current)
           : Promise.resolve({})
-        const [{ response, result }, browserResidentRecords, pendingRegistrationLoad] = await Promise.all([
+        const [{ response, result }, browserResidentRecords] = await Promise.all([
           databaseRequest,
           browserRecordsRequest,
-          pendingRegistrationsRequest,
         ])
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
-            pendingOfficialDashboardOpenRef.current = false
             setIsPreparingOfficialDashboard(false)
             setOfficialBackendToken('')
             setIsDatabaseConnected(false)
@@ -5902,9 +5884,6 @@ function App() {
           ),
           residents,
         )
-        const completeRegistrations = pendingRegistrationLoad.records
-          ? mergeRegistrationRequestLists(registrations, pendingRegistrationLoad.records)
-          : registrations
         const profileUpdates = loadMergedList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
         const profiles = loadValue(officialProfilesStorageKey, initialOfficialProfiles)
         const photos = normalizeOfficialPhotoMap(
@@ -5945,16 +5924,7 @@ function App() {
         setIssuedDocuments(issued)
         setCustomCertificateTemplates(customTemplates)
         setEnabledCertificateTypes(enabledTemplates)
-        setRegistrationRequests((currentRequests) => mergeRegistrationRequestLists(completeRegistrations, currentRequests))
-        if (officialBackendToken && pendingRegistrationLoad.records) {
-          setHasLoadedPendingRegistrations(true)
-          setRegistrationSyncError('')
-        } else if (officialBackendToken && pendingRegistrationLoad.error) {
-          setHasLoadedPendingRegistrations(false)
-          setRegistrationSyncError(/failed to fetch/i.test(pendingRegistrationLoad.error.message || '')
-            ? 'The registration service is unavailable. Saved applications remain visible; try again when the connection is restored.'
-            : pendingRegistrationLoad.error.message || 'Pending account registrations could not be loaded.')
-        }
+        setRegistrationRequests((currentRequests) => mergeRegistrationRequestLists(registrations, currentRequests))
         setResidentCodeRecoveryRequests(codeRecoveryRequests)
         setResidentProfileUpdateRequests(profileUpdates)
         setOfficialProfiles(profiles)
@@ -6058,16 +6028,10 @@ function App() {
         setDatabaseSaveStatus(officialBackendToken ? 'saved' : 'offline')
         setIsDatabaseConnected(Boolean(officialBackendToken))
         setIsPublicCommunityConnected(true)
+        if (officialBackendToken) setIsPreparingOfficialDashboard(false)
         console.log(officialBackendToken
           ? 'Barangay records loaded from database.'
           : 'Public community records loaded from database.')
-        if (officialBackendToken && pendingOfficialDashboardOpenRef.current) {
-          pendingOfficialDashboardOpenRef.current = false
-          setIsPreparingOfficialDashboard(false)
-          setLoginStatus('')
-          setShowOfficialLogin(false)
-          setShowOfficialDashboard(true)
-        }
       } catch (error) {
         if (cancelled) return
         console.error('Database loading error:', error)
@@ -6075,13 +6039,7 @@ function App() {
         setDatabaseSaveError(error.message || 'The database could not be loaded.')
         setDatabaseSaveStatus('offline')
         setIsDatabaseConnected(false)
-        if (pendingOfficialDashboardOpenRef.current) {
-          pendingOfficialDashboardOpenRef.current = false
-          setIsPreparingOfficialDashboard(false)
-          setOfficialBackendToken('')
-          setShowOfficialLogin(true)
-          setLoginStatus(`Signed in, but the shared records could not be loaded. ${error.message || 'Please try again.'}`)
-        }
+        if (officialBackendToken) setIsPreparingOfficialDashboard(false)
       } finally {
         if (!cancelled) setIsStorageLoaded(true)
       }
@@ -6133,7 +6091,7 @@ function App() {
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') refreshBackendRegistrations()
     }
-    if (!hasLoadedPendingRegistrations) refreshBackendRegistrations()
+    refreshBackendRegistrations()
     const refreshTimer = window.setInterval(refreshBackendRegistrations, ADMIN_INBOX_REFRESH_INTERVAL_MS)
     window.addEventListener('focus', refreshBackendRegistrations)
     window.addEventListener('online', refreshBackendRegistrations)
@@ -6145,7 +6103,7 @@ function App() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [hasLoadedPendingRegistrations, officialBackendToken, showOfficialDashboard])
+  }, [officialBackendToken, showOfficialDashboard])
 
   useEffect(() => {
     if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken || isPreparingOfficialDashboard) return undefined
@@ -10706,12 +10664,32 @@ function App() {
       return
     }
 
-    pendingOfficialDashboardOpenRef.current = false
     setIsPreparingOfficialDashboard(true)
     setLoginStatus('Signing in…')
     setOfficialBackendToken('')
+    setIsDatabaseConnected(false)
     setHasLoadedPrivateDatabaseData(false)
     setHasLoadedPendingRegistrations(false)
+    setResidentRequests([])
+    setResidentPaymentDrafts([])
+    setResidentDrafts([])
+    setAdminResidents([])
+    setResidentCodeRecoveryRequests([])
+    setResidentProfileUpdateRequests([])
+    setDocumentFees(initialDocumentFees)
+    setOfficialProfiles(initialOfficialProfiles)
+    setResidentHistory([])
+    setArchivedResidents([])
+    setIssuedDocuments([])
+    setCustomCertificateTemplates([])
+    setEnabledCertificateTypes(initialEnabledCertificateTypes)
+    setRegistrationRequests([])
+    setGcashRecipients(initialGcashRecipients)
+    setOfficialAvailability(initialAvailability)
+    setOfficialPhotos({})
+    setRegistrationSyncError('')
+    setAdminView('overview')
+    setSelectedRequestId(null)
     databaseRecordsRef.current = null
     setDatabaseSaveStatus('checking')
     setDatabaseSaveError('')
@@ -10729,7 +10707,6 @@ function App() {
         setOfficialCredentials({ username: '', password: '' })
         return
       }
-      pendingOfficialDashboardOpenRef.current = true
       setOfficialBackendToken(result.token)
     } catch (error) {
       console.error('Unable to authenticate admin with the resident database service.', error)
@@ -10740,11 +10717,12 @@ function App() {
     }
 
     setOfficialCredentials({ username: '', password: '' })
-    setLoginStatus('Loading your official records…')
+    setLoginStatus('')
+    setShowOfficialLogin(false)
+    setShowOfficialDashboard(true)
   }
 
   const logoutOfficial = () => {
-    pendingOfficialDashboardOpenRef.current = false
     setIsPreparingOfficialDashboard(false)
     setOfficialBackendToken('')
     setHasLoadedPrivateDatabaseData(false)
@@ -13959,7 +13937,7 @@ function App() {
               <input id="official-username" type="email" value={officialCredentials.username} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, username: event.target.value }); setLoginStatus('') }} placeholder="Enter your admin email" autoComplete="email" disabled={isPreparingOfficialDashboard} required />
               <label htmlFor="official-password">Password</label>
               <input id="official-password" type="password" value={officialCredentials.password} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, password: event.target.value }); setLoginStatus('') }} placeholder="Enter your password" autoComplete="current-password" disabled={isPreparingOfficialDashboard} required />
-              <button type="submit" className="check-button" disabled={isPreparingOfficialDashboard}>{isPreparingOfficialDashboard ? 'Loading records…' : 'Log in'}</button>
+              <button type="submit" className="check-button" disabled={isPreparingOfficialDashboard}>{isPreparingOfficialDashboard ? 'Signing in…' : 'Log in'}</button>
               <button type="button" className="official-password-reset-toggle" onClick={openOfficialPasswordReset} disabled={isPreparingOfficialDashboard}>Forgot password?</button>
               <p className="login-status" aria-live="polite">{loginStatus}</p>
             </form>
