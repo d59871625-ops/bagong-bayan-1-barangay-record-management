@@ -78,7 +78,9 @@ const createFastSync = () => {
     if (!started) return
     window.clearTimeout(timer)
     const baseDelay = document.hidden ? config.hiddenMs : config.visibleMs
-    const backoff = Math.min(config.maxBackoffMs, failures * config.backoffStepMs)
+    const backoff = failures > 0
+      ? Math.min(config.maxBackoffMs, config.backoffStepMs * (2 ** Math.min(failures - 1, 5)))
+      : 0
     timer = window.setTimeout(async () => {
       await pull()
       schedule()
@@ -216,7 +218,7 @@ const createFastSync = () => {
       initialEtag: '',
       visibleMs: 2000,
       hiddenMs: 40000,
-      pullTimeoutMs: 5000,
+      pullTimeoutMs: 30000,
       saveTimeoutMs: 20000,
       saveRetries: 4,
       retryDelayMs: 800,
