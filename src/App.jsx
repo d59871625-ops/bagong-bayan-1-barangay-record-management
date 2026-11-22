@@ -5797,12 +5797,18 @@ function App() {
           && !Array.isArray(cachedData)
           && Array.isArray(cachedData[residentRequestsStorageKey])
           && Array.isArray(cachedData[residentRecordsStorageKey]))
+        const isPriorityLoad = Boolean(officialBackendToken && !databaseRecordsRef.current)
+        const initialDatabaseUrl = officialBackendToken
+          ? isPriorityLoad
+            ? `${API_URL}${API_URL.includes('?') ? '&' : '?'}priority=1`
+            : API_URL
+          : PUBLIC_COMMUNITY_API_URL
         const { response, result } = usingCachedRecords
           ? {
             response: { ok: true, headers: new Headers() },
             result: { success: true, data: cachedData },
           }
-          : await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+          : await fetchJsonWithTimeout(initialDatabaseUrl, {
             method: 'GET',
             cache: 'no-store',
             ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
@@ -5823,7 +5829,9 @@ function App() {
         if (!result.success) {
           throw new Error('Unable to load database records.')
         }
-        if (officialBackendToken) databaseEtagRef.current = usingCachedRecords ? '' : response.headers.get('ETag') || ''
+        if (officialBackendToken) databaseEtagRef.current = usingCachedRecords || isPriorityLoad
+          ? ''
+          : response.headers.get('ETag') || ''
 
         const data = result.data || {}
         if (data.requestEvidenceIds !== undefined
