@@ -36,7 +36,14 @@ function residentSyncRecordBelongsTo($record, string $residentCode, string $full
         return false;
     }
 
-    $recordCode = $record->residentCode ?? $record->resident_code ?? "";
+    $details = ($record->request ?? null) instanceof stdClass ? $record->request : new stdClass();
+    $recordCode = $record->residentCode
+        ?? $record->resident_code
+        ?? $record->code
+        ?? $details->residentCode
+        ?? $details->resident_code
+        ?? $details->code
+        ?? "";
     if (is_string($recordCode) && trim($recordCode) !== "") {
         return strtoupper(trim($recordCode)) === strtoupper($residentCode);
     }
@@ -45,6 +52,10 @@ function residentSyncRecordBelongsTo($record, string $residentCode, string $full
         ?? $record->name
         ?? $record->fullName
         ?? $record->full_name
+        ?? $details->resident
+        ?? $details->name
+        ?? $details->fullName
+        ?? $details->full_name
         ?? "";
 
     return is_string($recordName)
@@ -78,6 +89,91 @@ function residentSyncOwnedRecords($records, string $residentCode, string $fullNa
         $records,
         static fn($record) => residentSyncRecordBelongsTo($record, $residentCode, $fullName)
     ));
+}
+
+function residentSyncReadOwnedState(
+    PDO $pdo,
+    string $key,
+    string $residentCode,
+    string $fullName
+): array {
+    $typeStatement = $pdo->prepare("
+        SELECT JSON_TYPE(data_value)
+        FROM bb1_app_state
+        WHERE data_key = ?
+        LIMIT 1
+    ");
+    $typeStatement->execute([$key]);
+    $storedType = $typeStatement->fetchColumn();
+    if ($storedType === false) {
+        return [];
+    }
+    if ($storedType !== "ARRAY") {
+        throw new RuntimeException("Saved resident records must be a list.");
+    }
+
+    $query = <<<'SQL'
+        SELECT JSON_EXTRACT(app_state.data_value, CONCAT('$[', owner_record.ordinal - 1, ']')) AS record_json
+        FROM (
+            SELECT data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+        ) AS app_state
+        CROSS JOIN JSON_TABLE(app_state.data_value, '$[*]' COLUMNS (
+            ordinal FOR ORDINALITY,
+            resident_code VARCHAR(100) PATH '$.residentCode' NULL ON EMPTY,
+            resident_code_alias VARCHAR(100) PATH '$.resident_code' NULL ON EMPTY,
+            legacy_code VARCHAR(100) PATH '$.code' NULL ON EMPTY,
+            nested_resident_code VARCHAR(100) PATH '$.request.residentCode' NULL ON EMPTY,
+            nested_resident_code_alias VARCHAR(100) PATH '$.request.resident_code' NULL ON EMPTY,
+            nested_legacy_code VARCHAR(100) PATH '$.request.code' NULL ON EMPTY
+        )) AS owner_record
+        WHERE (
+              COALESCE(
+                  NULLIF(TRIM(owner_record.resident_code), ''),
+                  NULLIF(TRIM(owner_record.resident_code_alias), ''),
+                  NULLIF(TRIM(owner_record.legacy_code), ''),
+                  NULLIF(TRIM(owner_record.nested_resident_code), ''),
+                  NULLIF(TRIM(owner_record.nested_resident_code_alias), ''),
+                  NULLIF(TRIM(owner_record.nested_legacy_code), ''),
+                  ''
+              ) = ''
+              OR UPPER(COALESCE(
+                  NULLIF(TRIM(owner_record.resident_code), ''),
+                  NULLIF(TRIM(owner_record.resident_code_alias), ''),
+                  NULLIF(TRIM(owner_record.legacy_code), ''),
+                  NULLIF(TRIM(owner_record.nested_resident_code), ''),
+                  NULLIF(TRIM(owner_record.nested_resident_code_alias), ''),
+                  NULLIF(TRIM(owner_record.nested_legacy_code), ''),
+                  ''
+              )) = UPPER(?)
+          )
+        ORDER BY owner_record.ordinal
+        SQL;
+
+    try {
+        $statement = $pdo->prepare($query);
+        $statement->execute([$key, $residentCode]);
+        $records = [];
+        while (($recordJson = $statement->fetchColumn()) !== false) {
+            $record = json_decode((string) $recordJson, false, 512, JSON_THROW_ON_ERROR);
+            if ($record instanceof stdClass
+                && residentSyncRecordBelongsTo($record, $residentCode, $fullName)) {
+                $records[] = $record;
+            }
+        }
+        return $records;
+    } catch (PDOException $error) {
+        if ($error->getCode() !== "42000") {
+            throw $error;
+        }
+        error_log("Resident request sync is using the compatibility read for " . $key . ": " . $error->getMessage());
+        return residentSyncOwnedRecords(
+            residentSyncReadState($pdo, $key, []),
+            $residentCode,
+            $fullName
+        );
+    }
 }
 
 function residentSyncPendingSubmissions(
@@ -575,41 +671,20 @@ try {
         $documentFees[$document] = (float) $fee;
     }
 
-    $history = residentSyncOwnedRecords(
-        residentSyncReadState($pdo, "bb1-resident-history", []),
-        $residentCode,
-        $fullName
-    );
-    $requestDrafts = residentSyncOwnedRecords(
-        residentSyncReadState($pdo, "bb1-resident-request-drafts", []),
-        $residentCode,
-        $fullName
-    );
-    $recoveryRequests = residentSyncOwnedRecords(
-        residentSyncReadState($pdo, "bb1-resident-code-recovery-requests", []),
-        $residentCode,
-        $fullName
-    );
-    $profileUpdateRequests = residentSyncOwnedRecords(
-        residentSyncReadState($pdo, "bb1-resident-profile-update-requests", []),
-        $residentCode,
-        $fullName
-    );
-
     if ($method === "GET") {
+        $history = residentSyncReadOwnedState($pdo, "bb1-resident-history", $residentCode, $fullName);
+        $requestDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-request-drafts", $residentCode, $fullName);
+        $recoveryRequests = residentSyncReadOwnedState($pdo, "bb1-resident-code-recovery-requests", $residentCode, $fullName);
+        $profileUpdateRequests = residentSyncReadOwnedState($pdo, "bb1-resident-profile-update-requests", $residentCode, $fullName);
         $requests = residentSyncOwnedRecords(
             bb1MergeResidentRequestChanges(
-                residentSyncReadState($pdo, "bb1-resident-requests", []),
+                residentSyncReadOwnedState($pdo, "bb1-resident-requests", $residentCode, $fullName),
                 bb1LoadResidentRequestChanges($pdo)
             ),
             $residentCode,
             $fullName
         );
-        $paymentDrafts = residentSyncOwnedRecords(
-            residentSyncReadState($pdo, "bb1-resident-payment-drafts", []),
-            $residentCode,
-            $fullName
-        );
+        $paymentDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-payment-drafts", $residentCode, $fullName);
         residentSyncRespond(200, [
             "success" => true,
             "data" => [

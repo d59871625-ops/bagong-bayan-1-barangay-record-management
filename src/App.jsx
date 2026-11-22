@@ -3776,6 +3776,7 @@ const mapBackendRegistrationRequest = (application) => {
     data.municipalityCity,
     data.province,
   ].filter(Boolean).join(', ')
+  const backendStatus = String(application.status || 'pending').toLowerCase()
 
   return {
     id: `DB-REG-${backendRegistrationId}`,
@@ -3784,7 +3785,9 @@ const mapBackendRegistrationRequest = (application) => {
     name,
     address,
     submittedAt: application.created_at || '',
-    status: 'Pending',
+    status: backendStatus === 'approved' ? 'Approved' : ['rejected', 'declined'].includes(backendStatus) ? 'Declined' : 'Pending',
+    reviewedAt: application.reviewed_at || '',
+    rejectionReason: application.rejection_reason || '',
     data,
     files: application.application_data
       ? {
@@ -4875,8 +4878,9 @@ function TableSearch({ label, children }) {
 
       const emptyStateRow = row.children.length === 1
         && row.firstElementChild?.matches('td[colspan]')
+      const searchableText = row.dataset.searchText ?? row.textContent
       const matches = !normalizedQuery
-        || (!emptyStateRow && row.textContent.toLocaleLowerCase().includes(normalizedQuery))
+        || (!emptyStateRow && searchableText.toLocaleLowerCase().includes(normalizedQuery))
       row.hidden = !matches
       if (matches && !emptyStateRow) visibleRows += 1
     })
@@ -5144,6 +5148,10 @@ function App() {
     certificateCatalogRef.current = { customCertificateTemplates, enabledCertificateTypes, documentFees }
   }, [customCertificateTemplates, enabledCertificateTypes, documentFees])
   const [registrationRequests, setRegistrationRequests] = useState([])
+  const registrationRequestsRef = useRef(registrationRequests)
+  useEffect(() => {
+    registrationRequestsRef.current = registrationRequests
+  }, [registrationRequests])
   const [hasLoadedPendingRegistrations, setHasLoadedPendingRegistrations] = useState(false)
   const [expandedRegistrationId, setExpandedRegistrationId] = useState(null)
   const [registrationReviewStage, setRegistrationReviewStage] = useState('details')
@@ -6182,11 +6190,11 @@ function App() {
           throw new Error('Saved enabled certificate types must be a list of document names.')
         }
         const restoredRequests = restoreUnprintedApprovedRequests(requests, history)
-        const remoteRegistrations = loadValue(registrationRequestsStorageKey, [])
+        const remoteRegistrations = loadValue(registrationRequestsStorageKey, registrationRequestsRef.current)
         if (!Array.isArray(remoteRegistrations)) {
           throw new Error('Saved registration requests must be a list.')
         }
-        const registrations = remoteRegistrations
+        const registrations = mergeRegistrationRequestLists(remoteRegistrations, registrationRequestsRef.current)
         const profileUpdates = loadServerList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
         const profiles = loadValue(officialProfilesStorageKey, initialOfficialProfiles)
         const serverPhotos = Object.prototype.hasOwnProperty.call(data, officialPhotosStorageKey)
@@ -6228,6 +6236,7 @@ function App() {
         setIssuedDocuments(issued)
         setCustomCertificateTemplates(customTemplates)
         setEnabledCertificateTypes(enabledTemplates)
+        registrationRequestsRef.current = registrations
         setRegistrationRequests(registrations)
         setResidentCodeRecoveryRequests(codeRecoveryRequests)
         setResidentProfileUpdateRequests(profileUpdates)
@@ -6328,9 +6337,19 @@ function App() {
           throw new Error(result.message || 'The registration service returned an invalid response.')
         }
 
+        if (!Array.isArray(result.history)) {
+          throw new Error('The registration service returned an invalid application history.')
+        }
+        const registrationRecords = [
+          ...result.data.map(mapBackendRegistrationRequest),
+          ...result.history.map(mapBackendRegistrationRequest),
+        ]
+        setRegistrationRequests((requests) => {
+          const mergedRequests = mergeRegistrationRequestLists(registrationRecords, requests)
+          registrationRequestsRef.current = mergedRequests
+          return mergedRequests
+        })
         pendingRegistrationEtagRef.current = response.headers.get('ETag') || ''
-        const pendingRequests = result.data.map(mapBackendRegistrationRequest)
-        setRegistrationRequests((requests) => mergeRegistrationRequestLists(pendingRequests, requests))
         setRegistrationSyncError('')
         setHasLoadedPendingRegistrations(true)
       } catch (error) {
@@ -7236,17 +7255,14 @@ function App() {
     resident.firstName,
     resident.middleName,
     resident.lastName,
-    resident.address,
     resident.code,
     resident.residentCode,
     resident.resident_code,
   ].some((value) => String(value || '').toLowerCase().includes(residentRecordsQuery)))
   const filteredDeclinedRegistrationRequests = declinedRegistrationRequests.filter((request) => [
-    request.id,
     request.name,
     request.fullName,
     request.full_name,
-    request.address,
     request.assignedResidentCode,
     request.data?.firstName,
     request.data?.middleName,
@@ -13846,6 +13862,9 @@ function App() {
               </header>
               <TableSearch label="payment history"><div className="table-scroll"><table className="admin-table payment-history-table"><thead><tr><th>Resident</th><th>Resident code</th><th>Request</th><th>Payment submitted</th><th>Amount</th><th>Payment reference</th><th>Status</th></tr></thead><tbody>
                 {paymentHistoryRecords.map((payment) => {
+                  const paymentDate = payment.paymentSubmittedAt
+                    ? new Date(payment.paymentSubmittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })
+                    : 'Time not recorded'
                   const cancelledRequests = payment.requests.filter((request) => request.status === 'Cancelled')
                   const refundedAmount = payment.requests
                     .filter((request) => request.refundStatus === 'Refunded')
@@ -13854,11 +13873,11 @@ function App() {
                     cancelledRequests.length ? `${cancelledRequests.length} of ${payment.requests.length} requests cancelled` : '',
                     refundedAmount > 0 ? `Refunded ₱${refundedAmount.toFixed(2)} · net ₱${Math.max(0, Number(payment.feeAmount || 0) - refundedAmount).toFixed(2)}` : '',
                   ].filter(Boolean).join(' · ')
-                  return <tr key={payment.groupKey}>
+                  return <tr key={payment.groupKey} data-search-text={[payment.resident, paymentDate, payment.paymentOrNumber || payment.paymentProofOrNumber].filter(Boolean).join(' ')}>
                     <td><strong>{payment.resident}</strong></td>
                     <td>{payment.residentCode || 'Not recorded'}</td>
                     <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.requests.length > 1 ? `${payment.requests.length} requests · ` : ''}{payment.id}</small></td>
-                    <td>{payment.paymentSubmittedAt ? new Date(payment.paymentSubmittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Time not recorded'}</td>
+                    <td>{paymentDate}</td>
                     <td>₱{Number(payment.feeAmount || 0).toFixed(2)}</td>
                     <td>{payment.paymentOrNumber || payment.paymentProofOrNumber || 'No reference recorded'}</td>
                     <td className="payment-history-status-cell"><span className={`compliance-status ${String(payment.paymentStatus || 'Unpaid').toLowerCase().replace(/\s+/g, '-')}`}>{payment.paymentStatus || 'Unpaid'}</span>{paymentOutcome && <small>{paymentOutcome}</small>}</td>
@@ -13966,7 +13985,7 @@ function App() {
               <button type="button" aria-pressed={residentRecordsTab === 'recovery'} className={residentRecordsTab === 'recovery' ? 'active' : ''} onClick={() => { setResidentRecordsTab('recovery'); setAdminRecoveryMessage('') }}>Resident code recovery <span>{pendingRecoveryRequestCount}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'rejected'} className={residentRecordsTab === 'rejected' ? 'active' : ''} onClick={() => setResidentRecordsTab('rejected')}>Rejected registrations <span>{declinedRegistrationRequests.length}</span></button>
             </div>
-            {residentRecordsTab !== 'recovery' && <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder={residentRecordsTab === 'rejected' ? 'Search applicant, address, request ID, or resident code' : 'Search by name, address, resident code, or request ID'} /></label>}
+            {residentRecordsTab !== 'recovery' && <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder={residentRecordsTab === 'rejected' ? 'Search applicant name or resident code' : 'Search resident name or resident code'} /></label>}
             {residentRecordsTab === 'active' ? <section className="resident-record-tab-panel">
               <button type="button" className="resident-add-form-toggle" aria-expanded={residentFormOpen || Boolean(editingResidentId)} disabled={Boolean(editingResidentId)} onClick={() => { setResidentFormOpen((isOpen) => !isOpen); setResidentFormError('') }}>
                 <span aria-hidden="true">{residentFormOpen || editingResidentId ? '−' : '+'}</span>{editingResidentId ? 'Editing resident' : residentFormOpen ? 'Hide resident form' : 'Add resident'}
@@ -14301,7 +14320,7 @@ function App() {
             <p className="resident-report-note">Each released certificate receives a unique control number and records its date, purpose, OR number, recipient, and issuing officer.</p>
             <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table issued-documents-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th><th>Action</th></tr></thead><tbody>{issuedDocuments.map((entry) => {
               const issuedRequest = historyRequestList.find((request) => request.id === entry.requestId)
-              return <tr key={entry.id}>
+              return <tr key={entry.id} data-search-text={[entry.releasedTo || entry.resident, entry.document, entry.purpose].filter(Boolean).join(' ')}>
                 <td>{entry.controlNumber}</td>
                 <td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td>
                 <td>{entry.releasedTo || entry.resident}</td>
@@ -15080,7 +15099,11 @@ function App() {
                             payment.status === 'Cancelled' ? 'Request cancelled' : '',
                             payment.refundStatus === 'Refunded' ? `Refunded ₱${Number(payment.feeAmount || 0).toFixed(2)}` : '',
                           ].filter(Boolean).join(' · ')
-                          return <tr key={payment.id}>
+                          return <tr key={payment.id} data-search-text={[
+                            [residentName.firstName, residentName.middleName, residentName.lastName, residentName.suffix].filter(Boolean).join(' '),
+                            paymentDate,
+                            payment.paymentOrNumber || payment.paymentProofOrNumber,
+                          ].filter(Boolean).join(' ')}>
                             <td>{paymentDate}</td>
                             <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.id}</small></td>
                             <td>₱{Number(payment.feeAmount || 0).toFixed(2)}</td>

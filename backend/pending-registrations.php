@@ -28,9 +28,8 @@ $admin = authenticateUser($pdo, ["admin", "official"]);
 
 try {
     $versionStatement = $pdo->query("
-        SELECT id, status, created_at
+        SELECT id, status, created_at, reviewed_at, rejection_reason
         FROM registration_requests
-        WHERE status = 'pending'
         ORDER BY created_at ASC, id ASC
     ");
     $versionRows = $versionStatement->fetchAll(PDO::FETCH_ASSOC);
@@ -41,6 +40,8 @@ try {
             (string) $versionRow["id"] . "\0"
                 . (string) $versionRow["status"] . "\0"
                 . (string) $versionRow["created_at"] . "\0"
+                . (string) ($versionRow["reviewed_at"] ?? "") . "\0"
+                . (string) ($versionRow["rejection_reason"] ?? "") . "\0"
         );
     }
     $etag = '"' . hash_final($etagContext) . '"';
@@ -91,11 +92,39 @@ try {
     }
     unset($application);
 
+    $historyStatement = $pdo->query("
+        SELECT
+            id,
+            first_name,
+            middle_name,
+            last_name,
+            suffix,
+            email,
+            date_of_birth,
+            sex,
+            civil_status,
+            contact_number,
+            house_no_street,
+            purok,
+            barangay,
+            city_municipality,
+            province,
+            status,
+            created_at,
+            reviewed_at,
+            rejection_reason
+        FROM registration_requests
+        WHERE status IN ('approved', 'rejected')
+        ORDER BY created_at DESC, id DESC
+    ");
+    $history = $historyStatement->fetchAll(PDO::FETCH_ASSOC);
+
     echo json_encode([
         "success" => true,
-        "message" => "Pending registrations retrieved successfully.",
+        "message" => "Registration requests retrieved successfully.",
         "total" => count($applications),
-        "data" => $applications
+        "data" => $applications,
+        "history" => $history
     ]);
 
 } catch (Throwable $e) {
