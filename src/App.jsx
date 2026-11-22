@@ -31,6 +31,7 @@ const DATABASE_HEALTH_TIMEOUT_MS = 8000
 const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 5000
 const DATABASE_ADMIN_READ_TIMEOUT_MS = 8000
+const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 60000
 const DATABASE_RECONNECT_INTERVAL_MS = 2000
 const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
 const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 5000
@@ -5806,7 +5807,7 @@ function App() {
             cache: 'no-store',
             ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
             signal: controller.signal,
-          }, 'Database request', officialBackendToken ? DATABASE_ADMIN_READ_TIMEOUT_MS : undefined)
+        }, 'Database request', officialBackendToken ? DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS : undefined)
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
