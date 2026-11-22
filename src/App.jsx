@@ -30,7 +30,7 @@ const DATABASE_REFRESH_INTERVAL_MS = 15000
 const DATABASE_HEALTH_TIMEOUT_MS = 8000
 const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 5000
-const DATABASE_ADMIN_READ_TIMEOUT_MS = 30000
+const DATABASE_ADMIN_READ_TIMEOUT_MS = 8000
 const DATABASE_RECONNECT_INTERVAL_MS = 2000
 const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
 const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 5000
@@ -5734,10 +5734,7 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const initialDatabaseUrl = officialBackendToken
-          ? `${API_URL}${API_URL.includes('?') ? '&' : '?'}priority=1`
-          : PUBLIC_COMMUNITY_API_URL
-        const { response, result } = await fetchJsonWithTimeout(initialDatabaseUrl, {
+        const { response, result } = await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),

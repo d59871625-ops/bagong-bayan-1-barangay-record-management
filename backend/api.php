@@ -153,18 +153,11 @@ try {
             respond(200, ["success" => true, "data" => ["request" => $request]]);
         }
 
-        $priorityKeys = array_values(array_diff($allowedKeys, [
-            "bb1-registration-requests",
-            "bb1-archived-residents",
-            "bb1-issued-documents",
-            "bb1-official-photos",
-        ]));
-        $responseKeys = ($_GET["priority"] ?? "") === "1" ? $priorityKeys : $allowedKeys;
-        $placeholders = implode(",", array_fill(0, count($responseKeys), "?"));
+        $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
         $metadataStatement = $pdo->prepare(
             "SELECT data_key, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
-        $metadataStatement->execute($responseKeys);
+        $metadataStatement->execute($allowedKeys);
         $metadataRows = $metadataStatement->fetchAll();
         $changeMetadata = $pdo->query("
             SELECT request_id, is_deleted, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch
@@ -200,7 +193,7 @@ try {
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
-        $statement->execute($responseKeys);
+        $statement->execute($allowedKeys);
         $rows = $statement->fetchAll();
 
         $data = [];
