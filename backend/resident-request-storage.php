@@ -19,15 +19,89 @@ function bb1EnsureResidentRequestChangesTable(PDO $pdo): void
     $ensured = true;
 }
 
-function bb1LoadResidentRequestChanges(PDO $pdo): array
+function bb1LoadResidentRequestChanges(PDO $pdo, bool $stripEvidence = false): array
 {
     bb1EnsureResidentRequestChangesTable($pdo);
+    $selectColumns = $stripEvidence
+        ? "request_id,
+            JSON_REMOVE(data_value, '$.requirementPhotos', '$.philsysVerificationEvidence') AS data_value,
+            is_deleted,
+            JSON_CONTAINS_PATH(data_value, 'one', '$.requirementPhotos', '$.philsysVerificationEvidence') AS has_evidence"
+        : "request_id, data_value, is_deleted, 0 AS has_evidence";
     $statement = $pdo->query("
-        SELECT request_id, data_value, is_deleted
+        SELECT $selectColumns
         FROM bb1_resident_request_changes
         ORDER BY request_id
     ");
     return $statement->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function bb1LoadPriorityResidentRequests(PDO $pdo): array
+{
+    $countStatement = $pdo->prepare("
+        SELECT JSON_TYPE(data_value), JSON_LENGTH(data_value)
+        FROM bb1_app_state
+        WHERE data_key = ?
+        LIMIT 1
+    ");
+    $countStatement->execute(["bb1-resident-requests"]);
+    $countRow = $countStatement->fetch(PDO::FETCH_NUM);
+    if (!$countRow) {
+        return ["requests" => [], "evidence_ids" => []];
+    }
+    if ($countRow[0] !== "ARRAY" || !is_numeric($countRow[1])) {
+        throw new RuntimeException("Saved resident requests are not a list.");
+    }
+
+    $requestCount = (int) $countRow[1];
+    $removePaths = [];
+    $evidenceFlags = [];
+    for ($index = 0; $index < $requestCount; $index++) {
+        $requirementPath = '$[' . $index . '].requirementPhotos';
+        $philsysPath = '$[' . $index . '].philsysVerificationEvidence';
+        $removePaths[] = $pdo->quote($requirementPath);
+        $removePaths[] = $pdo->quote($philsysPath);
+        $evidenceFlags[] = "JSON_CONTAINS_PATH(data_value, 'one', "
+            . $pdo->quote($requirementPath) . ", " . $pdo->quote($philsysPath) . ")";
+    }
+
+    $requestExpression = $removePaths
+        ? "JSON_REMOVE(data_value, " . implode(", ", $removePaths) . ")"
+        : "data_value";
+    $evidenceExpression = $evidenceFlags
+        ? "JSON_ARRAY(" . implode(", ", $evidenceFlags) . ")"
+        : "JSON_ARRAY()";
+    $statement = $pdo->query("
+        SELECT $requestExpression AS data_value, $evidenceExpression AS evidence_flags
+        FROM bb1_app_state
+        WHERE data_key = 'bb1-resident-requests'
+        LIMIT 1
+    ");
+    $row = $statement->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return ["requests" => [], "evidence_ids" => []];
+    }
+
+    $requests = json_decode((string) $row["data_value"], false, 512, JSON_THROW_ON_ERROR);
+    $evidenceFlags = json_decode((string) $row["evidence_flags"], true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($requests) || count($requests) !== $requestCount
+        || !is_array($evidenceFlags) || count($evidenceFlags) !== $requestCount) {
+        throw new RuntimeException("Saved resident requests could not be summarized.");
+    }
+
+    $evidenceIds = [];
+    foreach ($requests as $index => $request) {
+        if (!($request instanceof stdClass)
+            || !is_scalar($request->id ?? null)
+            || (string) $request->id === "") {
+            throw new RuntimeException("A saved resident request is invalid.");
+        }
+        if ((int) $evidenceFlags[$index] === 1) {
+            $evidenceIds[] = (string) $request->id;
+        }
+    }
+
+    return ["requests" => $requests, "evidence_ids" => $evidenceIds];
 }
 
 function bb1MergeResidentRequestChanges($baseRequests, array $changes): array

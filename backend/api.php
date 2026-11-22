@@ -268,14 +268,24 @@ try {
             ]);
         }
 
-        $requestChanges = bb1LoadResidentRequestChanges($pdo);
+        $isPriorityLoad = ($_GET["priority"] ?? "") === "1";
+        $requestChanges = bb1LoadResidentRequestChanges($pdo, $isPriorityLoad);
+        $priorityRequestSummary = $isPriorityLoad
+            ? bb1LoadPriorityResidentRequests($pdo)
+            : ["requests" => [], "evidence_ids" => []];
         $priorityKeys = array_values(array_diff($allowedKeys, [
             "bb1-registration-requests",
+            "bb1-resident-payment-drafts",
+            "bb1-resident-request-drafts",
+            "bb1-resident-history",
             "bb1-archived-residents",
             "bb1-issued-documents",
+            "bb1-certificate-templates",
             "bb1-official-photos",
         ]));
-        $responseKeys = ($_GET["priority"] ?? "") === "1" ? $priorityKeys : $allowedKeys;
+        $responseKeys = $isPriorityLoad
+            ? array_values(array_diff($priorityKeys, ["bb1-resident-requests"]))
+            : $allowedKeys;
         $placeholders = implode(",", array_fill(0, count($responseKeys), "?"));
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
@@ -283,43 +293,60 @@ try {
         $statement->execute($responseKeys);
 
         $rows = $statement->fetchAll();
-        $etagContext = hash_init("sha256");
-        foreach ($rows as $row) {
-            hash_update($etagContext, $row["data_key"] . "\0" . $row["data_value"] . "\0");
-        }
-        foreach ($requestChanges as $change) {
-            hash_update(
-                $etagContext,
-                "resident-request-change\0"
-                    . $change["request_id"] . "\0"
-                    . (string) $change["is_deleted"] . "\0"
-                    . (string) ($change["data_value"] ?? "") . "\0"
-            );
-        }
-        $etag = '"' . hash_final($etagContext) . '"';
-        header("ETag: " . $etag);
-        $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
-        if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
-            http_response_code(304);
-            exit;
+        if (!$isPriorityLoad) {
+            $etagContext = hash_init("sha256");
+            foreach ($rows as $row) {
+                hash_update($etagContext, $row["data_key"] . "\0" . $row["data_value"] . "\0");
+            }
+            foreach ($requestChanges as $change) {
+                hash_update(
+                    $etagContext,
+                    "resident-request-change\0"
+                        . $change["request_id"] . "\0"
+                        . (string) $change["is_deleted"] . "\0"
+                        . (string) ($change["data_value"] ?? "") . "\0"
+                );
+            }
+            $etag = '"' . hash_final($etagContext) . '"';
+            header("ETag: " . $etag);
+            $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+            if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+                http_response_code(304);
+                exit;
+            }
         }
 
         $data = [];
         foreach ($rows as $row) {
             $data[$row["data_key"]] = json_decode($row["data_value"], false, 512, JSON_THROW_ON_ERROR);
         }
+        if ($isPriorityLoad) {
+            $data["bb1-resident-requests"] = $priorityRequestSummary["requests"];
+        }
         $baseRequests = $data["bb1-resident-requests"] ?? [];
         $requests = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
-        $data["requestEvidenceIds"] = array_values(array_map(
-            static fn($request) => (string) $request->id,
-            array_filter(
-                $requests,
-                static fn($request) => $request instanceof stdClass
-                    && is_scalar($request->id ?? null)
-                    && (string) $request->id !== ""
-                    && bb1RequestHasEvidence($request)
-            )
-        ));
+        $requestEvidenceIdSet = array_fill_keys($priorityRequestSummary["evidence_ids"], true);
+        foreach ($requests as $request) {
+            if ($request instanceof stdClass
+                && is_scalar($request->id ?? null)
+                && (string) $request->id !== ""
+                && bb1RequestHasEvidence($request)) {
+                $requestEvidenceIdSet[(string) $request->id] = true;
+            }
+        }
+        foreach ($requestChanges as $change) {
+            $requestId = (string) ($change["request_id"] ?? "");
+            if ((int) ($change["is_deleted"] ?? 0) === 1) {
+                unset($requestEvidenceIdSet[$requestId]);
+            } elseif ($isPriorityLoad) {
+                if ((int) ($change["has_evidence"] ?? 0) === 1) {
+                    $requestEvidenceIdSet[$requestId] = true;
+                } else {
+                    unset($requestEvidenceIdSet[$requestId]);
+                }
+            }
+        }
+        $data["requestEvidenceIds"] = array_keys($requestEvidenceIdSet);
         $data["bb1-resident-requests"] = array_map("bb1StripRequestEvidence", $requests);
 
         respond(200, ["success" => true, "data" => (object) $data]);
