@@ -3043,6 +3043,129 @@ const officialProfilesStorageKey = 'bb1-official-profiles'
 const officialPhotosStorageKey = 'bb1-official-photos'
 const documentFeesDefaultsVersionStorageKey = 'bb1-document-fees-defaults-version'
 const documentFeesDefaultsVersion = 1
+const registrationCacheDatabaseName = 'bb1-registration-cache'
+const registrationCacheObjectStoreName = 'records'
+const registrationCacheRecordKey = 'registration-requests'
+const residentLocalRecordKeys = [
+  residentRequestsStorageKey,
+  residentPaymentDraftsStorageKey,
+  residentHistoryStorageKey,
+  residentDraftsStorageKey,
+]
+const serverBackedStorageKeys = [
+  communityUpdatesStorageKey,
+  barangayContactInformationStorageKey,
+  residentRequestsStorageKey,
+  residentRequestDeletionsStorageKey,
+  residentPaymentDraftsStorageKey,
+  gcashRecipientsStorageKey,
+  residentRecordsStorageKey,
+  registrationRequestsStorageKey,
+  residentCodeRecoveryRequestsStorageKey,
+  residentProfileUpdateRequestsStorageKey,
+  documentFeesStorageKey,
+  documentFeesDefaultsVersionStorageKey,
+  adminPreferencesStorageKey,
+  residentHistoryStorageKey,
+  archivedResidentsStorageKey,
+  issuedDocumentsStorageKey,
+  residentDraftsStorageKey,
+  officialAvailabilityStorageKey,
+  certificateTemplatesStorageKey,
+  enabledCertificateTypesStorageKey,
+  officialProfilesStorageKey,
+  officialPhotosStorageKey,
+]
+
+const openRegistrationCacheDatabase = () => new Promise((resolve, reject) => {
+  if (!window.indexedDB) {
+    reject(new Error('This browser does not support local registration storage.'))
+    return
+  }
+  const request = window.indexedDB.open(registrationCacheDatabaseName, 1)
+  request.onupgradeneeded = () => {
+    if (!request.result.objectStoreNames.contains(registrationCacheObjectStoreName)) {
+      request.result.createObjectStore(registrationCacheObjectStoreName)
+    }
+  }
+  request.onsuccess = () => resolve(request.result)
+  request.onerror = () => reject(request.error || new Error('Unable to open local registration storage.'))
+  request.onblocked = () => reject(new Error('Local registration storage is busy in another browser tab.'))
+})
+
+const loadLocalRegistrationRequests = async () => {
+  let indexedRequests = []
+  const database = window.indexedDB ? await openRegistrationCacheDatabase() : null
+  if (database) {
+    try {
+      const storedRequests = await new Promise((resolve, reject) => {
+        const request = database
+          .transaction(registrationCacheObjectStoreName, 'readonly')
+          .objectStore(registrationCacheObjectStoreName)
+          .get(registrationCacheRecordKey)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error || new Error('Unable to read local registration storage.'))
+      })
+      if (storedRequests !== undefined) {
+        if (!Array.isArray(storedRequests) || !storedRequests.every((request) => request && typeof request.id === 'string')) {
+          throw new Error('Saved local registration requests use an invalid format.')
+        }
+        indexedRequests = storedRequests
+      }
+    } finally {
+      database.close()
+    }
+  }
+  const savedRequests = window.localStorage.getItem(registrationRequestsStorageKey)
+  let browserRequests = []
+  if (savedRequests !== null) {
+    browserRequests = JSON.parse(savedRequests)
+    if (!Array.isArray(browserRequests) || !browserRequests.every((request) => request && typeof request.id === 'string')) {
+      throw new Error('Saved local registration requests use an invalid format.')
+    }
+  }
+  return mergePersistedRecordLists(indexedRequests, browserRequests, 'legacy registration requests')
+}
+
+const readIndexedResidentRecord = async (key) => {
+  const database = await openRegistrationCacheDatabase()
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = database
+        .transaction(registrationCacheObjectStoreName, 'readonly')
+        .objectStore(registrationCacheObjectStoreName)
+        .get(key)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error || new Error('Unable to read resident browser storage.'))
+    })
+  } finally {
+    database.close()
+  }
+}
+
+const loadLocalResidentRecord = async (key, fallback) => {
+  let indexedRecord
+  try {
+    indexedRecord = await readIndexedResidentRecord(key)
+  } catch (error) {
+    console.warn(`Unable to read ${key} from IndexedDB; trying browser storage.`, error)
+  }
+
+  const serializedRecord = window.localStorage.getItem(key)
+  let parsedRecord = fallback
+  if (serializedRecord !== null) {
+    try {
+      parsedRecord = JSON.parse(serializedRecord)
+    } catch (error) {
+      throw new Error(`Saved ${key} in browser storage is invalid. ${error.message}`, { cause: error })
+    }
+  }
+  if (indexedRecord === undefined) return parsedRecord
+  if (!Array.isArray(indexedRecord) || !Array.isArray(parsedRecord)) {
+    throw new Error(`Saved ${key} in browser storage is not a list.`)
+  }
+  return mergePersistedRecordLists(indexedRecord, parsedRecord, `legacy ${key}`)
+}
 
 const createResidentDraftId = () => `DRAFT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const createResidentPaymentGroupId = () => `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -3135,13 +3258,6 @@ const initialCommunityUpdates = [
   { id: 'announcement-report-deadline', type: 'announcement', date: '2026-09-20', title: 'Monthly report deadline', detail: 'Submit all office reports' },
   { id: 'event-cleanup-drive', type: 'event', date: '2026-09-27', title: 'Community clean-up drive', detail: 'Assembly area · 7:00 AM' },
 ]
-const initialResidentRecords = [
-  { id: 'BB1-JDC-001', name: 'Francis Harvey P. Linga', address: 'Purok 5, Barangay Bagong Bayan 1', code: 'BB1-JDC-001' },
-  { id: 'BB1-MS-002', name: 'Lorelie G. Fajilan', address: 'Purok 2, Barangay Bagong Bayan 1', code: 'BB1-MS-002' },
-  { id: 'BB1-PR-003', name: 'Levy James Jalos', address: 'Purok 4, Barangay Bagong Bayan 1', code: 'BB1-PR-003' },
-  { id: 'BB1-JG-004', name: 'Xyrell P. Guerra', address: 'Purok 3, Barangay Bagong Bayan 1', code: 'BB1-JG-004' },
-  { id: 'BB1-SD-005', name: 'Percimhe V. Masuba', address: 'Purok 1, Barangay Bagong Bayan 1', code: 'BB1-SD-005' },
-]
 const initialOfficialProfiles = [
   { name: 'Name to be updated', role: 'Punong Barangay', description: 'Leads barangay programs, presides over council meetings, and oversees local services.' },
   { name: 'Name to be updated', role: 'Barangay Kagawad', description: 'Supports community programs and helps address resident concerns.' },
@@ -3173,6 +3289,19 @@ const getResidentCommunityUpdateId = (update) => (
   `community-update-${getAdminNavigationItemId(update)}`
 )
 
+const readStoredImageMap = (key) => {
+  const saved = window.localStorage.getItem(key)
+  if (!saved) return {}
+  const parsed = JSON.parse(saved)
+  const normalized = normalizeOfficialPhotoMap(parsed)
+  if (!normalized) {
+    throw new Error(`Saved data for ${key} must be an image map.`)
+  }
+  return normalized
+}
+
+const officialPhotosCacheRecordKey = 'official-photos'
+
 const isOfficialPhotoMap = (photos) => Boolean(
   photos && typeof photos === 'object' && !Array.isArray(photos)
   && Object.values(photos).every((photo) => typeof photo === 'string'),
@@ -3184,6 +3313,50 @@ const normalizeOfficialPhotoMap = (photos) => {
   return Object.fromEntries(photos.flatMap((photo, index) => (
     typeof photo === 'string' && photo ? [[String(index), photo]] : []
   )))
+}
+
+const loadLocalOfficialPhotos = async () => {
+  const database = window.indexedDB ? await openRegistrationCacheDatabase() : null
+  if (!database) return readStoredImageMap(officialPhotosStorageKey)
+  let indexedPhotos = {}
+  try {
+    const photos = await new Promise((resolve, reject) => {
+      const request = database
+        .transaction(registrationCacheObjectStoreName, 'readonly')
+        .objectStore(registrationCacheObjectStoreName)
+        .get(officialPhotosCacheRecordKey)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error || new Error('Unable to read saved official photos.'))
+    })
+    if (photos !== undefined) {
+      indexedPhotos = normalizeOfficialPhotoMap(photos)
+      if (!indexedPhotos) throw new Error('Saved official photos use an invalid format.')
+    }
+  } finally {
+    database.close()
+  }
+  return { ...readStoredImageMap(officialPhotosStorageKey), ...indexedPhotos }
+}
+
+const loadLegacyBrowserRecordSnapshot = async () => {
+  const records = {}
+  serverBackedStorageKeys.forEach((key) => {
+    const saved = window.localStorage.getItem(key)
+    if (saved === null) return
+    try {
+      records[key] = JSON.parse(saved)
+    } catch (error) {
+      throw new Error(`Saved browser data for ${key} is invalid and was not changed. ${error.message}`, { cause: error })
+    }
+  })
+
+  await Promise.all(residentLocalRecordKeys.map(async (key) => {
+    records[key] = await loadLocalResidentRecord(key, records[key] ?? [])
+  }))
+  records[registrationRequestsStorageKey] = await loadLocalRegistrationRequests()
+  records[officialPhotosStorageKey] = await loadLocalOfficialPhotos()
+
+  return records
 }
 
 const normalizeBarangayContactInformation = (value) => {
@@ -3527,6 +3700,43 @@ const mergePersistedRecordLists = (databaseRecords, browserRecords, label) => {
   return [...records.values(), ...unkeyedRecords]
 }
 
+const mergeMissingRecordLists = (databaseRecords, browserRecords, label) => {
+  if (!Array.isArray(databaseRecords) || !Array.isArray(browserRecords)) {
+    throw new Error(`Saved ${label} must be a list.`)
+  }
+  const identityOf = (record) => {
+    if (!record || typeof record !== 'object') return ''
+    const identity = record.id ?? record.code ?? record.residentCode ?? record.resident_code
+      ?? record.submissionId
+    return identity === undefined || identity === null || String(identity).trim() === ''
+      ? ''
+      : String(identity).trim().toLowerCase()
+  }
+  const serverIds = new Set(databaseRecords.flatMap((record) => (
+    identityOf(record) ? [identityOf(record)] : []
+  )))
+  const records = [...databaseRecords]
+  const unkeyedRecords = new Set(
+    databaseRecords
+      .filter((record) => !identityOf(record))
+      .map((record) => JSON.stringify(record)),
+  )
+  browserRecords.forEach((record) => {
+    const identity = identityOf(record)
+    if (identity) {
+      if (serverIds.has(identity)) return
+      serverIds.add(identity)
+      records.push(record)
+      return
+    }
+    const serialized = JSON.stringify(record)
+    if (unkeyedRecords.has(serialized)) return
+    unkeyedRecords.add(serialized)
+    records.push(record)
+  })
+  return records
+}
+
 const getResidentRecordNameKey = (resident) => normalizeRecoveryIdentity(
   resident?.name
     || resident?.fullName
@@ -3666,43 +3876,6 @@ const getResidentRecordAddressLabel = (resident, registrations) => {
     data.streetPurok || data.purok,
     data.municipalityCity || data.city_municipality,
   ].filter(Boolean).join(', ') || fullAddress
-}
-
-const migrateInitialResidentsToRegistrationHistory = (requests, residents) => {
-  if (!Array.isArray(requests) || !Array.isArray(residents)) return requests
-  const missingHistory = initialResidentRecords.flatMap((initialResident) => {
-    const resident = residents.find((candidate) => (
-      candidate.code?.toLowerCase() === initialResident.code.toLowerCase()
-      || normalizeRecoveryIdentity(candidate.name) === normalizeRecoveryIdentity(initialResident.name)
-    ))
-    if (!resident) return []
-    const normalizedName = normalizeRecoveryIdentity(resident.name)
-    const alreadyRecorded = requests.some((request) => (
-      request.assignedResidentCode?.toLowerCase() === resident.code?.toLowerCase()
-      || normalizeRecoveryIdentity(request.name) === normalizedName
-    ))
-    if (alreadyRecorded) return []
-
-    return [{
-      id: `REG-EXISTING-${resident.code}`,
-      name: resident.name,
-      address: resident.address || '',
-      submittedAt: '',
-      reviewedAt: '',
-      status: 'Approved',
-      data: {
-        fullName: resident.name,
-        address: resident.address || '',
-        birthDate: resident.birthDate || resident.dateOfBirth || '',
-        mobileNumber: resident.contactNumber || resident.mobileNumber || '',
-        emailAddress: resident.emailAddress || '',
-      },
-      files: {},
-      assignedResidentCode: resident.code,
-      importedFromResidentRecords: true,
-    }]
-  })
-  return [...requests, ...missingHistory]
 }
 
 const generateResidentCode = (name, residents) => {
@@ -4802,6 +4975,8 @@ function App() {
   const skipNextDatabaseSaveRef = useRef(false)
   const databaseSaveQueueRef = useRef(Promise.resolve())
   const databaseRecordsRef = useRef(null)
+  const legacyBrowserRecordsRef = useRef(null)
+  const legacyBrowserRecoveryAppliedRef = useRef(false)
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
   const [selectedRole, setSelectedRole] = useState('')
@@ -4896,10 +5071,15 @@ function App() {
   const [showRequestForm, setShowRequestForm] = useState(false)
   const [showOfficialLogin, setShowOfficialLogin] = useState(false)
   const [showOfficialDashboard, setShowOfficialDashboard] = useState(false)
-  const [isPreparingOfficialDashboard, setIsPreparingOfficialDashboard] = useState(false)
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [hasLoadedPrivateDatabaseData, setHasLoadedPrivateDatabaseData] = useState(false)
+  const [hasLocalResidentCache, setHasLocalResidentCache] = useState(false)
+  const [hasLocalRequestCache, setHasLocalRequestCache] = useState(false)
+  const [hasLocalRegistrationCache, setHasLocalRegistrationCache] = useState(false)
+  const [isUsingLocalPrivateSnapshot, setIsUsingLocalPrivateSnapshot] = useState(false)
+  const [hasResolvedLegacyBrowserSnapshot, setHasResolvedLegacyBrowserSnapshot] = useState(false)
+  const [legacyBrowserRecoveryError, setLegacyBrowserRecoveryError] = useState('')
   const [isPublicCommunityConnected, setIsPublicCommunityConnected] = useState(false)
   const [isResidentDatabaseConnected, setIsResidentDatabaseConnected] = useState(false)
   const [residentDatabaseSyncError, setResidentDatabaseSyncError] = useState('')
@@ -5588,6 +5768,61 @@ function App() {
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
+    const applyBrowserPrivateSnapshot = (browserRecords) => {
+      const hasResidents = Array.isArray(browserRecords[residentRecordsStorageKey])
+      const hasRequests = Array.isArray(browserRecords[residentRequestsStorageKey])
+      const hasRegistrations = Array.isArray(browserRecords[registrationRequestsStorageKey])
+      const hasRecordId = (record) => record
+        && typeof record === 'object'
+        && !Array.isArray(record)
+        && record.id !== undefined
+        && record.id !== null
+        && String(record.id).trim() !== ''
+      if (hasResidents && !browserRecords[residentRecordsStorageKey].every(hasRecordId)) {
+        throw new Error('Saved browser resident records contain an invalid record.')
+      }
+      if (hasRequests && !browserRecords[residentRequestsStorageKey].every(hasRecordId)) {
+        throw new Error('Saved browser document requests contain an invalid record.')
+      }
+      if (hasRegistrations && !browserRecords[registrationRequestsStorageKey].every(hasRecordId)) {
+        throw new Error('Saved browser registration requests contain an invalid record.')
+      }
+      if (hasResidents) {
+        setAdminResidents(reconcileResidentCodeRotationRecords(
+          browserRecords[residentRecordsStorageKey],
+          Array.isArray(browserRecords[residentCodeRecoveryRequestsStorageKey])
+            ? browserRecords[residentCodeRecoveryRequestsStorageKey]
+            : [],
+        ))
+      }
+      if (hasRequests) {
+        const deletedRequestIds = new Set(
+          Array.isArray(browserRecords[residentRequestDeletionsStorageKey])
+            ? browserRecords[residentRequestDeletionsStorageKey]
+            : [],
+        )
+        const browserHistory = Array.isArray(browserRecords[residentHistoryStorageKey])
+          ? browserRecords[residentHistoryStorageKey]
+          : []
+        const templates = Array.isArray(browserRecords[certificateTemplatesStorageKey])
+          ? browserRecords[certificateTemplatesStorageKey]
+          : []
+        const cachedRequests = splitMultiDocumentRequests(
+          browserRecords[residentRequestsStorageKey]
+            .filter((request) => !deletedRequestIds.has(request.id))
+            .map(withRequestStatusHistory),
+          templates,
+        )
+        const restoredRequests = restoreUnprintedApprovedRequests(cachedRequests, browserHistory)
+        setResidentRequests(restoredRequests.requests)
+        setResidentHistory(restoredRequests.history)
+      }
+      if (hasRegistrations) setRegistrationRequests(browserRecords[registrationRequestsStorageKey])
+      setHasLocalResidentCache(hasResidents)
+      setHasLocalRequestCache(hasRequests)
+      setHasLocalRegistrationCache(hasRegistrations)
+      setIsUsingLocalPrivateSnapshot(hasResidents || hasRequests || hasRegistrations)
+    }
     const loadDatabaseData = async () => {
       if (!officialBackendToken) setHasLoadedPrivateDatabaseData(false)
       if (officialBackendToken) {
@@ -5595,19 +5830,54 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const { response, result } = await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+        const databaseRequest = fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
           signal: controller.signal,
         }, 'Database request', officialBackendToken ? DATABASE_REQUEST_TIMEOUT_MS : undefined)
+        const browserRecordsRequest = officialBackendToken
+          ? legacyBrowserRecordsRef.current === null
+            ? loadLegacyBrowserRecordSnapshot().then((records) => {
+              legacyBrowserRecordsRef.current = records
+              setHasResolvedLegacyBrowserSnapshot(true)
+              setLegacyBrowserRecoveryError('')
+            if (!cancelled && !databaseRecordsRef.current) applyBrowserPrivateSnapshot(records)
+              return records
+            }).catch((error) => {
+              console.error('Unable to read legacy browser recovery records.', error)
+              legacyBrowserRecordsRef.current = {}
+              legacyBrowserRecoveryAppliedRef.current = true
+              setHasResolvedLegacyBrowserSnapshot(true)
+              setLegacyBrowserRecoveryError(error.message || 'Saved browser recovery data could not be read.')
+              return {}
+            })
+            : Promise.resolve(legacyBrowserRecordsRef.current).then((records) => {
+              if (!cancelled && !databaseRecordsRef.current) applyBrowserPrivateSnapshot(records)
+              return records
+            })
+          : Promise.resolve({})
+        let browserSnapshotTimeoutId
+        const browserSnapshotTimeout = new Promise((resolve) => {
+          browserSnapshotTimeoutId = window.setTimeout(() => resolve(null), 1200)
+        })
+        const [{ response, result }, initialBrowserRecords] = await Promise.all([
+          databaseRequest,
+          officialBackendToken
+            ? Promise.race([browserRecordsRequest, browserSnapshotTimeout])
+            : Promise.resolve({}),
+        ])
+        window.clearTimeout(browserSnapshotTimeoutId)
+        const browserSnapshotIncluded = initialBrowserRecords !== null
+        const browserResidentRecords = initialBrowserRecords || {}
+        if (officialBackendToken && browserSnapshotIncluded) {
+          legacyBrowserRecoveryAppliedRef.current = true
+        }
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
-            setIsPreparingOfficialDashboard(false)
             setOfficialBackendToken('')
             setIsDatabaseConnected(false)
-            setHasLoadedPrivateDatabaseData(false)
             setShowOfficialDashboard(false)
             setShowOfficialLogin(true)
             setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
@@ -5624,12 +5894,25 @@ function App() {
 
         const loadValue = (key, fallback) => {
           if (Object.prototype.hasOwnProperty.call(data, key)) {
-            return data[key]
+            const serverValue = data[key]
+            const browserValue = browserResidentRecords[key]
+            return Array.isArray(serverValue) && Array.isArray(browserValue)
+              ? mergeMissingRecordLists(serverValue, browserValue, key)
+              : serverValue
           }
-          return fallback
+
+          return Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
+            ? browserResidentRecords[key]
+            : fallback
         }
         const loadMergedList = (key, fallback, label) => {
-          return mergePersistedRecordLists(loadValue(key, fallback), [], label)
+          const databaseRecords = Object.prototype.hasOwnProperty.call(data, key)
+            ? data[key]
+            : loadValue(key, fallback)
+          const browserRecords = Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
+            ? browserResidentRecords[key]
+            : []
+          return mergeMissingRecordLists(databaseRecords, browserRecords, label)
         }
 
         const updates = loadValue(communityUpdatesStorageKey, initialCommunityUpdates)
@@ -5708,17 +5991,21 @@ function App() {
         if (!Array.isArray(remoteRegistrations)) {
           throw new Error('Saved registration requests must be a list.')
         }
-        const registrations = migrateInitialResidentsToRegistrationHistory(
-          mergeRegistrationRequestLists(remoteRegistrations, []),
-          residents,
+        const registrations = mergeMissingRecordLists(
+          remoteRegistrations,
+          browserResidentRecords[registrationRequestsStorageKey] || [],
+          'registration requests',
         )
         const profileUpdates = loadMergedList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
         const profiles = loadValue(officialProfilesStorageKey, initialOfficialProfiles)
-        const photos = normalizeOfficialPhotoMap(
-          Object.prototype.hasOwnProperty.call(data, officialPhotosStorageKey)
-            ? data[officialPhotosStorageKey]
-            : {},
-        )
+        const serverPhotos = Object.prototype.hasOwnProperty.call(data, officialPhotosStorageKey)
+          ? normalizeOfficialPhotoMap(data[officialPhotosStorageKey])
+          : {}
+        const browserPhotos = normalizeOfficialPhotoMap(browserResidentRecords[officialPhotosStorageKey] || {})
+        if (!serverPhotos || !browserPhotos) {
+          throw new Error('Saved official photos must be an image map or a legacy list of photo strings.')
+        }
+        const photos = { ...browserPhotos, ...serverPhotos }
         if (!photos) throw new Error('Saved official photos must be an image map or a legacy list of photo strings.')
         const recipients = loadValue(gcashRecipientsStorageKey, initialGcashRecipients)
         if (!isValidGcashRecipientList(recipients)) {
@@ -5746,13 +6033,12 @@ function App() {
         setResidentPaymentDrafts(paymentDrafts)
         setResidentDrafts(savedResidentDrafts)
         setAdminResidents(residents)
-        if (officialBackendToken) setHasLoadedPrivateDatabaseData(true)
         setResidentHistory(restoredRequests.history)
         setArchivedResidents(archived)
         setIssuedDocuments(issued)
         setCustomCertificateTemplates(customTemplates)
         setEnabledCertificateTypes(enabledTemplates)
-        setRegistrationRequests((currentRequests) => mergeRegistrationRequestLists(registrations, currentRequests))
+        setRegistrationRequests(registrations)
         setResidentCodeRecoveryRequests(codeRecoveryRequests)
         setResidentProfileUpdateRequests(profileUpdates)
         setOfficialProfiles(profiles)
@@ -5792,23 +6078,37 @@ function App() {
           [gcashRecipientsStorageKey]: recipients,
         }
 
-        // A startup snapshot may be stale, so recovery must never delete server records.
+        const savedRequestIds = new Set(
+          (Array.isArray(data[residentRequestsStorageKey]) ? data[residentRequestsStorageKey] : [])
+            .map((request) => String(request.id)),
+        )
+        const requestUpserts = getResidentRequestChanges(
+          data[residentRequestsStorageKey],
+          records[residentRequestsStorageKey],
+        ).upserts.filter((request) => !savedRequestIds.has(String(request.id)))
         const requestRecoveryChanges = {
-          ...getResidentRequestChanges(
-            data[residentRequestsStorageKey],
-            records[residentRequestsStorageKey],
-          ),
+          upserts: requestUpserts,
           deletes: [],
         }
-        const recoveredRecords = Object.fromEntries(
-          Object.entries(records).filter(([key, value]) => (
-            key !== residentRequestsStorageKey
-            && Object.prototype.hasOwnProperty.call(data, key)
-            && JSON.stringify(data[key]) !== JSON.stringify(value)
-          )),
-        )
+        const recoveredRecords = Object.fromEntries(Object.keys(records).flatMap((key) => {
+          if (key === residentRequestsStorageKey
+            || !Object.prototype.hasOwnProperty.call(browserResidentRecords, key)) return []
+          if (!Object.prototype.hasOwnProperty.call(data, key)) return [[key, records[key]]]
+          const serverValue = data[key]
+          const browserValue = browserResidentRecords[key]
+          if (Array.isArray(serverValue) && Array.isArray(browserValue)) {
+            const merged = mergeMissingRecordLists(serverValue, browserValue, key)
+            return merged.length > serverValue.length ? [[key, merged]] : []
+          }
+          if (key === officialPhotosStorageKey
+            && serverValue && typeof serverValue === 'object' && !Array.isArray(serverValue)
+            && browserValue && typeof browserValue === 'object' && !Array.isArray(browserValue)) {
+            const merged = { ...browserValue, ...serverValue }
+            return Object.keys(merged).length > Object.keys(serverValue).length ? [[key, merged]] : []
+          }
+          return []
+        }))
         const hasRequestRecoveryChanges = requestRecoveryChanges.upserts.length > 0
-          || requestRecoveryChanges.deletes.length > 0
         const hasRecoveryChanges = Object.keys(recoveredRecords).length > 0 || hasRequestRecoveryChanges
         if (officialBackendToken && hasRecoveryChanges) {
           await saveDatabaseRecords(recoveredRecords, officialBackendToken, requestRecoveryChanges)
@@ -5824,7 +6124,7 @@ function App() {
           const verifiedData = verificationResult.data
           const recordsToVerify = { ...recoveredRecords }
           if (hasRequestRecoveryChanges) {
-            recordsToVerify[residentRequestsStorageKey] = records[residentRequestsStorageKey]
+            recordsToVerify[residentRequestsStorageKey] = requestRecoveryChanges.upserts
           }
           Object.entries(recordsToVerify).forEach(([key, expected]) => {
             if (!Object.prototype.hasOwnProperty.call(verifiedData, key)) {
@@ -5847,23 +6147,30 @@ function App() {
           })
         }
         databaseRecordsRef.current = records
+        if (officialBackendToken) setHasLoadedPrivateDatabaseData(true)
+        setHasLocalResidentCache(false)
+        setHasLocalRequestCache(false)
+        setHasLocalRegistrationCache(false)
+        setIsUsingLocalPrivateSnapshot(false)
 
         setDatabaseSaveError('')
         setDatabaseSaveStatus(officialBackendToken ? 'saved' : 'offline')
         setIsDatabaseConnected(Boolean(officialBackendToken))
         setIsPublicCommunityConnected(true)
-        if (officialBackendToken) setIsPreparingOfficialDashboard(false)
+        if (officialBackendToken && browserSnapshotIncluded) {
+          legacyBrowserRecoveryAppliedRef.current = true
+        }
         console.log(officialBackendToken
           ? 'Barangay records loaded from database.'
           : 'Public community records loaded from database.')
       } catch (error) {
         if (cancelled) return
         console.error('Database loading error:', error)
+        if (officialBackendToken && !databaseRecordsRef.current) setHasLoadedPrivateDatabaseData(false)
         setIsPublicCommunityConnected(false)
         setDatabaseSaveError(error.message || 'The database could not be loaded.')
         setDatabaseSaveStatus('offline')
         setIsDatabaseConnected(false)
-        if (officialBackendToken) setIsPreparingOfficialDashboard(false)
       } finally {
         if (!cancelled) setIsStorageLoaded(true)
       }
@@ -5877,7 +6184,14 @@ function App() {
   }, [databaseLoadVersion, officialBackendToken])
 
   useEffect(() => {
-    if (!showOfficialDashboard || !officialBackendToken) return undefined
+    if (!officialBackendToken || !isDatabaseConnected || !hasResolvedLegacyBrowserSnapshot
+      || legacyBrowserRecoveryAppliedRef.current) return
+    legacyBrowserRecoveryAppliedRef.current = true
+    setDatabaseLoadVersion((version) => version + 1)
+  }, [hasResolvedLegacyBrowserSnapshot, isDatabaseConnected, officialBackendToken])
+
+  useEffect(() => {
+    if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshBackendRegistrations = async () => {
@@ -5902,6 +6216,7 @@ function App() {
       } catch (error) {
         if (error.name !== 'AbortError') {
           console.error('Unable to load pending registrations from the resident database.', error)
+          setHasLoadedPendingRegistrations(false)
           const isConnectionError = /failed to fetch/i.test(error.message || '')
           setRegistrationSyncError(isConnectionError
             ? 'The registration service is unavailable. Saved applications remain visible; try again when the connection is restored.'
@@ -5927,10 +6242,10 @@ function App() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [officialBackendToken, showOfficialDashboard])
+  }, [isStorageLoaded, officialBackendToken, showOfficialDashboard])
 
   useEffect(() => {
-    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken || isPreparingOfficialDashboard) return undefined
+    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const retryDatabaseConnection = async () => {
@@ -6001,7 +6316,7 @@ function App() {
       document.removeEventListener('visibilitychange', retryWhenVisible)
       controller.abort()
     }
-  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, isPreparingOfficialDashboard, officialBackendToken])
+  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, officialBackendToken])
 
   const archivedDocumentRequests = residentHistory
     .filter((entry) => entry.type === 'documentRequest' && entry.request)
@@ -6392,13 +6707,13 @@ function App() {
   const isLoadingPrivateDatabaseData = Boolean(officialBackendToken)
     && !hasLoadedPrivateDatabaseData
     && databaseSaveStatus === 'checking'
-  const getPrivateDatabaseCount = (count) => (
-    officialBackendToken && !hasLoadedPrivateDatabaseData
+  const getPrivateDatabaseCount = (count, hasLocalCache = false) => (
+    officialBackendToken && !hasLoadedPrivateDatabaseData && !hasLocalCache
       ? isLoadingPrivateDatabaseData ? '…' : '—'
       : count
   )
-  const getPrivateDatabaseEmptyMessage = (label, emptyMessage) => {
-    if (hasLoadedPrivateDatabaseData || !officialBackendToken) return emptyMessage
+  const getPrivateDatabaseEmptyMessage = (label, emptyMessage, hasLocalCache = false) => {
+    if (hasLoadedPrivateDatabaseData || hasLocalCache || !officialBackendToken) return emptyMessage
     return isLoadingPrivateDatabaseData
       ? `Loading ${label} from the shared database…`
       : `${label} are unavailable while the shared database is disconnected.`
@@ -10487,11 +10802,13 @@ function App() {
       return
     }
 
-    setIsPreparingOfficialDashboard(true)
-    setLoginStatus('Signing in…')
     setOfficialBackendToken('')
     setIsDatabaseConnected(false)
     setHasLoadedPrivateDatabaseData(false)
+    setHasLocalResidentCache(false)
+    setHasLocalRequestCache(false)
+    setHasLocalRegistrationCache(false)
+    setIsUsingLocalPrivateSnapshot(false)
     setHasLoadedPendingRegistrations(false)
     setResidentRequests([])
     setResidentPaymentDrafts([])
@@ -10525,7 +10842,6 @@ function App() {
       })
       const result = await response.json()
       if (!response.ok || !result.success || !result.token || !['admin', 'official'].includes(result.data?.role)) {
-        setIsPreparingOfficialDashboard(false)
         setLoginStatus(result.message || 'Sign-in failed. Use an active backend admin or official account.')
         setOfficialCredentials({ username: '', password: '' })
         return
@@ -10533,7 +10849,6 @@ function App() {
       setOfficialBackendToken(result.token)
     } catch (error) {
       console.error('Unable to authenticate admin with the resident database service.', error)
-      setIsPreparingOfficialDashboard(false)
       setLoginStatus('Unable to reach the resident database service. Check that the backend is running, then try again.')
       setOfficialCredentials({ username: '', password: '' })
       return
@@ -10546,9 +10861,12 @@ function App() {
   }
 
   const logoutOfficial = () => {
-    setIsPreparingOfficialDashboard(false)
     setOfficialBackendToken('')
     setHasLoadedPrivateDatabaseData(false)
+    setHasLocalResidentCache(false)
+    setHasLocalRequestCache(false)
+    setHasLocalRegistrationCache(false)
+    setIsUsingLocalPrivateSnapshot(false)
     setHasLoadedPendingRegistrations(false)
     setShowOfficialDashboard(false)
     setShowOfficialLogin(false)
@@ -12089,24 +12407,32 @@ function App() {
               </section>)}
             </aside>}
             <div className="admin-content" ref={adminContentRef}>
-          {!isDatabaseConnected
+          {!isDatabaseConnected && isUsingLocalPrivateSnapshot
+            ? <div className="database-save-indicator is-offline" role="status">
+              <span className="database-sync-indicator" aria-hidden="true" />
+              <span>{databaseSaveError
+                ? `Showing browser-saved records. Shared database is unavailable: ${databaseSaveError}`
+                : 'Showing browser-saved residents and requests while reconnecting to the shared database.'}</span>
+            </div>
+            : !isDatabaseConnected
             ? databaseSaveStatus === 'checking' ? null : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
               <span>{`Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
             </div>
             : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{databaseSaveStatus === 'saving' ? 'Saving changes to shared database…' : databaseSaveStatus === 'error' ? `Database save failed. ${databaseSaveError}` : 'Changes saved to shared database'}</span></div>}
+          {legacyBrowserRecoveryError && <div className="database-save-indicator is-error" role="alert">Legacy browser recovery data could not be read. {legacyBrowserRecoveryError}</div>}
           {adminView === 'overview' && <div className="dashboard-heading admin-overview-heading">
             <h1>Overview</h1>
             <span className="dashboard-date">{new Date().toLocaleDateString('en-US', { dateStyle: 'full' })}</span>
           </div>}
           {adminView === 'overview' && <>
             <div className="overview-stats">
-              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length)}</strong></article>
-              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length)}</strong></article>
+              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length, hasLocalResidentCache)}</strong></article>
+              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length, hasLocalRequestCache)}</strong></article>
               <article className="overview-completion-stat">
                 <span>Completion rate</span>
-                <strong>{dashboardCompletionRate}%</strong>
-                <small>{isLoadingPrivateDatabaseData ? 'Loading request metrics…' : `${dashboardCompletedRequestCount} of ${allDocumentRequests.length} requests`}</small>
+                <strong>{getPrivateDatabaseCount(`${dashboardCompletionRate}%`, hasLocalRequestCache)}</strong>
+                <small>{getPrivateDatabaseCount(`${dashboardCompletedRequestCount} of ${allDocumentRequests.length} requests`, hasLocalRequestCache)}</small>
                 <div role="meter" aria-label="Document request completion rate" aria-valuemin={0} aria-valuemax={100} aria-valuenow={dashboardCompletionRate}>
                   <span style={{ width: `${dashboardCompletionRate}%` }} />
                 </div>
@@ -12144,7 +12470,7 @@ function App() {
             <section className="admin-performance-panel" aria-labelledby="admin-performance-title">
               <header>
                 <div><span className="section-number">SERVICE WORKFLOW</span><h2 id="admin-performance-title">Request performance</h2><p>Current request counts and percentage of all document requests by status.</p></div>
-                <span className="admin-performance-total">{getPrivateDatabaseCount(`${allDocumentRequests.length} total`)}</span>
+                <span className="admin-performance-total">{getPrivateDatabaseCount(`${allDocumentRequests.length} total`, hasLocalRequestCache)}</span>
               </header>
               <div className="admin-performance-chart" role="list" aria-label="Document request counts by status">
                 {dashboardPerformanceStagesWithShare.map((stage) => <div className="admin-performance-stage" role="listitem" key={stage.label}>
@@ -12773,9 +13099,7 @@ function App() {
                 </article>
                 )
               })}
-              {filteredResidentRequests.length === 0 && <p className="request-search-empty">{activeQueueRequests.length === 0
-                ? getPrivateDatabaseEmptyMessage('Resident document requests', 'No active resident document requests yet.')
-                : 'No active requests match this category, search, or document filter.'}</p>}
+              {filteredResidentRequests.length === 0 && <p className="request-search-empty">{activeQueueRequests.length === 0 ? getPrivateDatabaseEmptyMessage('Resident document requests', 'No active resident document requests yet.', hasLocalRequestCache) : 'No active requests match this category, search, or document filter.'}</p>}
             </div>
             </section>
           </div>}
@@ -12827,7 +13151,7 @@ function App() {
           {adminView === 'registrations' && <div className="registration-requests-workspace registration-review-v2">
             <header className="registration-requests-heading">
               <div><span className="section-number">RESIDENT SERVICES / INTAKE</span><h2>Registration requests</h2><p>Review applicant details and supporting documents before recording a decision.{!officialBackendToken && <span className="registration-auth-note"> Backend account requests require authorized admin sign-in.</span>}</p></div>
-              <div className="registration-requests-counts"><span><strong>{pendingRegistrationCountLabel}</strong> awaiting review</span><span><strong>{getPrivateDatabaseCount(registrationHistoryRequests.length)}</strong> processed</span></div>
+              <div className="registration-requests-counts"><span><strong>{pendingRegistrationCountLabel}</strong> awaiting review</span><span><strong>{getPrivateDatabaseCount(registrationHistoryRequests.length, hasLocalRegistrationCache)}</strong> processed</span></div>
             </header>
             {registrationSyncError && <p className={`registration-sync-message${registrationSyncError.startsWith('The registration service is unavailable') ? ' is-info' : ''}`} role={registrationSyncError.startsWith('The registration service is unavailable') ? 'status' : 'alert'}>{registrationSyncError}</p>}
             <section className="registration-list-panel" aria-labelledby="registration-pending-title">
@@ -12866,15 +13190,9 @@ function App() {
                     openRegistrationReview(request, getRegistrationReviewSteps()[0].key)
                   }}>{expandedRegistrationId === request.id ? 'Close review' : request.referenceAccessStatus === 'Paused' ? 'Resume review' : 'Review application'} <span aria-hidden="true">{expandedRegistrationId === request.id ? '−' : '→'}</span></button>
                 </article>)}</div>
-                : <div className="registration-list-empty"><strong>{pendingRegistrationCount
-                  ? 'No matching applications'
-                  : officialBackendToken && !hasLoadedPendingRegistrations
-                    ? registrationSyncError ? 'Applications could not be loaded' : 'Loading applications…'
-                    : 'No pending applications'}</strong><span>{pendingRegistrationCount
-                    ? 'Try another name or request ID.'
-                    : officialBackendToken && !hasLoadedPendingRegistrations
-                      ? registrationSyncError || 'Checking the online registration database.'
-                      : 'New submissions will appear here.'}</span></div>}
+                : !hasLoadedPendingRegistrations && officialBackendToken
+                  ? <div className="registration-list-empty"><strong>{registrationSyncError ? 'Applications unavailable' : 'Loading applications'}</strong><span>{registrationSyncError || 'Waiting for the shared registration service.'}</span></div>
+                  : <div className="registration-list-empty"><strong>{pendingRegistrationCount ? 'No matching applications' : 'No pending applications'}</strong><span>{pendingRegistrationCount ? 'Try another name or request ID.' : 'New submissions will appear here.'}</span></div>}
             </section>
             {expandedRegistrationId && activeRegistrationReviewRequest && (() => {
                 const request = activeRegistrationReviewRequest
@@ -12989,13 +13307,13 @@ function App() {
               </div>
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
-              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
+              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length, hasLocalResidentCache)}</span></div>
               <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                 <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
               </tr>)}
-              {!adminResidents.length && <tr><td colSpan="5">{getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet. Approved applications will be added here.')}</td></tr>}
+              {!adminResidents.length && <tr><td colSpan="5">{getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet. Approved applications will be added here.', hasLocalResidentCache)}</td></tr>}
               </tbody></table></div></TableSearch>
             </section>
             {registrationResidentViewCode && (() => {
@@ -13270,10 +13588,10 @@ function App() {
             </section>
           </section>}
           {(adminView === 'residents' || adminView === 'archivedResidents') && <section className="requests-panel resident-records-panel green-startup-workspace">
-            <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Manage current residents and review rejected registration applications.</p></div><span className="request-notification">{getPrivateDatabaseCount(`${adminResidents.length} current`)}</span></div>
+            <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Manage current residents and review rejected registration applications.</p></div><span className="request-notification">{getPrivateDatabaseCount(`${adminResidents.length} current`, hasLocalResidentCache)}</span></div>
             {residentAccountMessage && !residentProfileUpdateResidentCode && <p className="resident-account-message" role="status">{residentAccountMessage}</p>}
             <div className="resident-record-tabs" role="group" aria-label="Resident record categories">
-              <button type="button" aria-pressed={residentRecordsTab === 'active'} className={residentRecordsTab === 'active' ? 'active' : ''} onClick={() => setResidentRecordsTab('active')}>Current residents <span>{getPrivateDatabaseCount(adminResidents.length)}</span></button>
+              <button type="button" aria-pressed={residentRecordsTab === 'active'} className={residentRecordsTab === 'active' ? 'active' : ''} onClick={() => setResidentRecordsTab('active')}>Current residents <span>{adminResidents.length}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'recovery'} className={residentRecordsTab === 'recovery' ? 'active' : ''} onClick={() => { setResidentRecordsTab('recovery'); setAdminRecoveryMessage('') }}>Resident code recovery <span>{pendingRecoveryRequestCount}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'rejected'} className={residentRecordsTab === 'rejected' ? 'active' : ''} onClick={() => setResidentRecordsTab('rejected')}>Rejected registrations <span>{declinedRegistrationRequests.length}</span></button>
             </div>
@@ -13306,7 +13624,7 @@ function App() {
               </form>}
               {residentFormError && <p className="community-update-error" role="alert">{residentFormError}</p>}
               <p className="resident-record-result-count" aria-live="polite">{!hasLoadedPrivateDatabaseData && officialBackendToken
-                ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')
+                ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.', hasLocalResidentCache)
                 : `Showing ${filteredAdminResidents.length} of ${adminResidents.length} current residents`}</p>
               <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
                 const profileRequests = residentProfileUpdateRequests.filter((request) => request.residentCode?.toLowerCase() === resident.code.toLowerCase())
@@ -13327,7 +13645,7 @@ function App() {
                 </tr>
               })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length
                 ? 'No current residents match your search.'
-                : getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')}</td></tr>}</tbody></table></div>
+                : getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.', hasLocalResidentCache)}</td></tr>}</tbody></table></div>
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
               <div className="requests-heading"><div><span className="section-number">EXISTING RESIDENT ACCESS</span><h3>Resident code recovery requests</h3><p>Verify against an existing resident record. Recovery never creates a new resident account.</p></div><span className="request-notification">{pendingRecoveryRequestCount} pending</span></div>
               {adminRecoveryMessage && <p className="recovery-admin-message" role="status">{adminRecoveryMessage}</p>}
@@ -13750,16 +14068,16 @@ function App() {
       ) : showOfficialLogin ? (
         <section className="official-login-page">
           <div className="official-login-card">
-            <button type="button" className="official-login-back" onClick={returnHome} aria-label="Back to access portal" disabled={isPreparingOfficialDashboard}><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 12H5m7 7-7-7 7-7" /></svg></button>
+            <button type="button" className="official-login-back" onClick={returnHome} aria-label="Back to access portal"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 12H5m7 7-7-7 7-7" /></svg></button>
             <div className="official-login-seal"><img src={barangaySeal} alt="" /></div>
             <h1 className="official-login-title">Official Login</h1>
             <form className="official-login-form" onSubmit={submitOfficialLogin}>
               <label htmlFor="official-username">Admin email</label>
-              <input id="official-username" type="email" value={officialCredentials.username} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, username: event.target.value }); setLoginStatus('') }} placeholder="Enter your admin email" autoComplete="email" disabled={isPreparingOfficialDashboard} required />
+              <input id="official-username" type="email" value={officialCredentials.username} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, username: event.target.value }); setLoginStatus('') }} placeholder="Enter your admin email" autoComplete="email" required />
               <label htmlFor="official-password">Password</label>
-              <input id="official-password" type="password" value={officialCredentials.password} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, password: event.target.value }); setLoginStatus('') }} placeholder="Enter your password" autoComplete="current-password" disabled={isPreparingOfficialDashboard} required />
-              <button type="submit" className="check-button" disabled={isPreparingOfficialDashboard}>{isPreparingOfficialDashboard ? 'Signing in…' : 'Log in'}</button>
-              <button type="button" className="official-password-reset-toggle" onClick={openOfficialPasswordReset} disabled={isPreparingOfficialDashboard}>Forgot password?</button>
+              <input id="official-password" type="password" value={officialCredentials.password} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, password: event.target.value }); setLoginStatus('') }} placeholder="Enter your password" autoComplete="current-password" required />
+              <button type="submit" className="check-button">Log in</button>
+              <button type="button" className="official-password-reset-toggle" onClick={openOfficialPasswordReset}>Forgot password?</button>
               <p className="login-status" aria-live="polite">{loginStatus}</p>
             </form>
           </div>
