@@ -5735,7 +5735,10 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const { response, result } = await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+        const initialDatabaseUrl = officialBackendToken
+          ? `${API_URL}${API_URL.includes('?') ? '&' : '?'}priority=1`
+          : PUBLIC_COMMUNITY_API_URL
+        const { response, result } = await fetchJsonWithTimeout(initialDatabaseUrl, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
@@ -5756,7 +5759,7 @@ function App() {
         if (!result.success) {
           throw new Error('Unable to load database records.')
         }
-        if (officialBackendToken) databaseEtagRef.current = response.headers.get('ETag') || ''
+        if (officialBackendToken) databaseEtagRef.current = ''
 
         const data = result.data || {}
         if (data.requestEvidenceIds !== undefined
