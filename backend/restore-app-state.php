@@ -31,15 +31,37 @@ $allowedKeys = [
     "bb1-archived-residents",
 ];
 
-$input = json_decode(file_get_contents("php://input"), false, 512, JSON_THROW_ON_ERROR);
-if (!($input instanceof stdClass)
-    || !property_exists($input, "restoreKeys")
-    || !is_array($input->restoreKeys)
-    || count($input->restoreKeys) > count($allowedKeys)) {
-    restoreRespond(400, ["success" => false, "message" => "A valid restore key list is required."]);
+$rawInput = file_get_contents("php://input");
+if ($rawInput === false || strlen($rawInput) > 64 * 1024 * 1024) {
+    restoreRespond(413, ["success" => false, "message" => "The restore snapshot is too large."]);
+}
+try {
+    $input = json_decode($rawInput, false, 512, JSON_THROW_ON_ERROR);
+} catch (JsonException $error) {
+    restoreRespond(400, ["success" => false, "message" => "The restore payload must contain valid JSON."]);
+}
+if (!($input instanceof stdClass)) {
+    restoreRespond(400, ["success" => false, "message" => "A valid restore payload is required."]);
 }
 
-$keys = array_values(array_unique($input->restoreKeys));
+$snapshotKey = property_exists($input, "snapshotKey") ? $input->snapshotKey : null;
+$snapshotRecords = property_exists($input, "snapshotRecords") ? $input->snapshotRecords : null;
+$restoreKeys = property_exists($input, "restoreKeys") ? $input->restoreKeys : null;
+
+if ($snapshotKey !== null) {
+    if (!is_string($snapshotKey) || !in_array($snapshotKey, $allowedKeys, true)
+        || !is_array($snapshotRecords)) {
+        restoreRespond(400, ["success" => false, "message" => "A valid snapshot key and record list are required."]);
+    }
+    $keys = [$snapshotKey];
+    $suppliedSnapshots = [$snapshotKey => $snapshotRecords];
+} else {
+    if (!is_array($restoreKeys) || count($restoreKeys) > count($allowedKeys)) {
+        restoreRespond(400, ["success" => false, "message" => "A valid restore key list is required."]);
+    }
+    $keys = array_values(array_unique($restoreKeys));
+    $suppliedSnapshots = [];
+}
 foreach ($keys as $key) {
     if (!is_string($key) || !in_array($key, $allowedKeys, true)) {
         restoreRespond(400, ["success" => false, "message" => "An unsupported restore key was requested."]);
@@ -104,11 +126,15 @@ try {
     ");
 
     foreach ($keys as $key) {
-        $snapshotStmt->execute([$key]);
-        $snapshotJson = $snapshotStmt->fetchColumn();
-        if ($snapshotJson === false) continue;
-        $snapshotRecords = json_decode((string) $snapshotJson, false, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($snapshotRecords)) continue;
+        if (isset($suppliedSnapshots[$key])) {
+            $snapshotRecords = $suppliedSnapshots[$key];
+        } else {
+            $snapshotStmt->execute([$key]);
+            $snapshotJson = $snapshotStmt->fetchColumn();
+            if ($snapshotJson === false) continue;
+            $snapshotRecords = json_decode((string) $snapshotJson, false, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($snapshotRecords)) continue;
+        }
 
         $currentStmt->execute([$key]);
         $currentJson = $currentStmt->fetchColumn();
