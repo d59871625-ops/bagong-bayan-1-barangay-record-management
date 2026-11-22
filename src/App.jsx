@@ -3323,8 +3323,7 @@ const loadLegacyBrowserRecordSnapshot = async () => {
   })
 
   await Promise.all(residentLocalRecordKeys.map(async (key) => {
-    const fallback = key === residentRequestsStorageKey ? initialRequests : []
-    records[key] = await loadLocalResidentRecord(key, records[key] ?? fallback)
+    records[key] = await loadLocalResidentRecord(key, records[key] ?? [])
   }))
   records[registrationRequestsStorageKey] = await loadLocalRegistrationRequests()
   records[officialPhotosStorageKey] = await loadLocalOfficialPhotos()
@@ -4042,12 +4041,6 @@ const weekDaysMondayFirst = [{ label: 'Mon', day: 1 }, { label: 'Tue', day: 2 },
 const initialAvailability = [
   { id: 'captain', name: 'Barangay Captain', role: 'Document approval', days: [1, 3, 5], hours: '9:00 AM - 12:00 PM' },
   { id: 'secretary', name: 'Barangay Secretary', role: 'Document processing & release', days: [1, 2, 3, 4, 5], hours: '1:00 PM - 4:00 PM' },
-]
-
-const initialRequests = [
-  { id: 'BR-2026-001', resident: 'Xyrell P. Guerra', residentCode: 'BB1-JG-004', documents: ['Barangay Clearance', 'Certificate of Residency'], date: 'Sep 13, 2026', status: 'New', details: { address: 'Purok 3, Barangay Bagong Bayan 1', contactNumber: '0917 555 0182', birthDate: '1994-06-18', purpose: 'Employment requirement' }, requirements: ['Valid government ID (front and back)', 'Proof of residency'], activity: [{ action: 'Request submitted', by: 'Resident', time: 'Sep 13, 2026, 9:15 AM' }] },
-  { id: 'BR-2026-002', resident: 'Percimhe V. Masuba', residentCode: 'BB1-SD-005', documents: ['Good Moral'], date: 'Sep 12, 2026', status: 'Under review', details: { address: 'Purok 1, Barangay Bagong Bayan 1', contactNumber: '0918 321 7410', birthDate: '2002-11-04', purpose: 'School scholarship application' }, requirements: ['Valid government ID (front and back)', 'School request letter'], activity: [{ action: 'Request submitted', by: 'Resident', time: 'Sep 12, 2026, 10:02 AM' }, { action: 'Set for review', by: 'Barangay Secretary', time: 'Sep 12, 2026, 2:30 PM' }] },
-  { id: 'BR-2026-003', resident: 'Francis Harvey P. Linga', residentCode: 'BB1-JDC-001', documents: ['Business Clearance', 'Certificate of Business Disclosure'], date: 'Sep 11, 2026', status: 'New', details: { address: 'Purok 5, Barangay Bagong Bayan 1', contactNumber: '0919 888 1024', birthDate: '1987-03-22', purpose: 'Business permit renewal' }, requirements: ['Valid government ID (front and back)', 'Business permit or registration', 'Proof of business address', 'List of business details'], activity: [{ action: 'Request submitted', by: 'Resident', time: 'Sep 11, 2026, 3:48 PM' }] },
 ]
 
 const residentNameMatches = (registeredName, enteredName, registeredData = {}) => {
@@ -5051,13 +5044,14 @@ function App() {
   const [showOfficialDashboard, setShowOfficialDashboard] = useState(false)
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
+  const [hasLoadedPrivateDatabaseData, setHasLoadedPrivateDatabaseData] = useState(false)
   const [isPublicCommunityConnected, setIsPublicCommunityConnected] = useState(false)
   const [isResidentDatabaseConnected, setIsResidentDatabaseConnected] = useState(false)
   const [residentDatabaseSyncError, setResidentDatabaseSyncError] = useState('')
   const [databaseSaveStatus, setDatabaseSaveStatus] = useState('checking')
   const [databaseSaveError, setDatabaseSaveError] = useState('')
   const [databaseLoadVersion, setDatabaseLoadVersion] = useState(0)
-  const [residentRequests, setResidentRequests] = useState(initialRequests)
+  const [residentRequests, setResidentRequests] = useState([])
   const [residentNotificationReadState, setResidentNotificationReadState] = useState({})
   const [adminNavigationReadState, setAdminNavigationReadState] = useState({})
   const [documentWorkflowViewedState, setDocumentWorkflowViewedState] = useState({})
@@ -5068,7 +5062,7 @@ function App() {
   useEffect(() => {
     residentPaymentDraftsRef.current = residentPaymentDrafts
   }, [residentPaymentDrafts])
-  const [adminResidents, setAdminResidents] = useState(initialResidentRecords)
+  const [adminResidents, setAdminResidents] = useState([])
   const [residentCodeRecoveryRequests, setResidentCodeRecoveryRequests] = useState([])
   const [residentProfileUpdateRequests, setResidentProfileUpdateRequests] = useState([])
   const [documentFees, setDocumentFees] = useState(initialDocumentFees)
@@ -5108,6 +5102,7 @@ function App() {
     certificateCatalogRef.current = { customCertificateTemplates, enabledCertificateTypes, documentFees }
   }, [customCertificateTemplates, enabledCertificateTypes, documentFees])
   const [registrationRequests, setRegistrationRequests] = useState([])
+  const [hasLoadedPendingRegistrations, setHasLoadedPendingRegistrations] = useState(false)
   const [expandedRegistrationId, setExpandedRegistrationId] = useState(null)
   const [registrationReviewStage, setRegistrationReviewStage] = useState('details')
   const [registrationResidentViewCode, setRegistrationResidentViewCode] = useState('')
@@ -5739,31 +5734,40 @@ function App() {
     let cancelled = false
     const controller = new AbortController()
     const loadDatabaseData = async () => {
+      if (!officialBackendToken) setHasLoadedPrivateDatabaseData(false)
       if (officialBackendToken) {
         setDatabaseSaveStatus('checking')
         setDatabaseSaveError('')
       }
-      let browserResidentRecords = {}
       try {
-        if (officialBackendToken) {
-          if (legacyBrowserRecordsRef.current === null) {
-            legacyBrowserRecordsRef.current = await loadLegacyBrowserRecordSnapshot()
-          }
-          browserResidentRecords = legacyBrowserRecordsRef.current
-        }
-        if (cancelled) return
-        const response = await fetchWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+        const databaseRequest = fetchWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
           signal: controller.signal,
         }, officialBackendToken ? DATABASE_REQUEST_TIMEOUT_MS : undefined)
+          .then(async (response) => ({
+            response,
+            result: await readJsonResponse(response, 'Database request'),
+          }))
+        const browserRecordsRequest = officialBackendToken
+          ? legacyBrowserRecordsRef.current === null
+            ? loadLegacyBrowserRecordSnapshot().then((records) => {
+              legacyBrowserRecordsRef.current = records
+              return records
+            })
+            : Promise.resolve(legacyBrowserRecordsRef.current)
+          : Promise.resolve({})
+        const [{ response, result }, browserResidentRecords] = await Promise.all([
+          databaseRequest,
+          browserRecordsRequest,
+        ])
         if (cancelled) return
-        const result = await readJsonResponse(response, 'Database request')
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
             setOfficialBackendToken('')
             setIsDatabaseConnected(false)
+            setHasLoadedPrivateDatabaseData(false)
             setShowOfficialDashboard(false)
             setShowOfficialLogin(true)
             setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
@@ -5815,7 +5819,7 @@ function App() {
         )
         const codeRecoveryRequests = loadMergedList(residentCodeRecoveryRequestsStorageKey, [], 'resident code recovery requests')
         const reconciledResidents = reconcileResidentCodeRotationRecords(
-          loadMergedList(residentRecordsStorageKey, initialResidentRecords, 'resident records'),
+          loadMergedList(residentRecordsStorageKey, [], 'resident records'),
           codeRecoveryRequests,
         )
         const residents = reconciledResidents
@@ -5857,7 +5861,7 @@ function App() {
           throw new Error('Saved custom certificate templates exceed the 5 MB shared-storage limit.')
         }
         const requests = splitMultiDocumentRequests(
-          loadMergedList(residentRequestsStorageKey, initialRequests, 'resident requests')
+          loadMergedList(residentRequestsStorageKey, [], 'resident requests')
             .filter((request) => !deletedRequestIdSet.has(request.id))
             .map(withRequestStatusHistory),
           customTemplates,
@@ -5912,12 +5916,13 @@ function App() {
         setResidentPaymentDrafts(paymentDrafts)
         setResidentDrafts(savedResidentDrafts)
         setAdminResidents(residents)
+        if (officialBackendToken) setHasLoadedPrivateDatabaseData(true)
         setResidentHistory(restoredRequests.history)
         setArchivedResidents(archived)
         setIssuedDocuments(issued)
         setCustomCertificateTemplates(customTemplates)
         setEnabledCertificateTypes(enabledTemplates)
-        setRegistrationRequests(registrations)
+        setRegistrationRequests((currentRequests) => mergeRegistrationRequestLists(registrations, currentRequests))
         setResidentCodeRecoveryRequests(codeRecoveryRequests)
         setResidentProfileUpdateRequests(profileUpdates)
         setOfficialProfiles(profiles)
@@ -6040,7 +6045,7 @@ function App() {
   }, [databaseLoadVersion, officialBackendToken])
 
   useEffect(() => {
-    if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken) return undefined
+    if (!showOfficialDashboard || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshBackendRegistrations = async () => {
@@ -6061,6 +6066,7 @@ function App() {
         const pendingRequests = result.data.map(mapBackendRegistrationRequest)
         setRegistrationRequests((requests) => mergeRegistrationRequestLists(pendingRequests, requests))
         setRegistrationSyncError('')
+        setHasLoadedPendingRegistrations(true)
       } catch (error) {
         if (error.name !== 'AbortError') {
           console.error('Unable to load pending registrations from the resident database.', error)
@@ -6089,7 +6095,7 @@ function App() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [isStorageLoaded, officialBackendToken, showOfficialDashboard])
+  }, [officialBackendToken, showOfficialDashboard])
 
   useEffect(() => {
     if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken) return undefined
@@ -6552,6 +6558,20 @@ function App() {
     + registrationInboxRequests.filter((request) => request.reviewedAt).length
   const documentProcessingRequests = residentRequests.filter(isRequestReadyForDocumentProcessing)
   const documentInboxRequests = residentRequests.filter(isRequestSubmittedToAdmin)
+  const isLoadingPrivateDatabaseData = Boolean(officialBackendToken)
+    && !hasLoadedPrivateDatabaseData
+    && databaseSaveStatus === 'checking'
+  const getPrivateDatabaseCount = (count) => (
+    officialBackendToken && !hasLoadedPrivateDatabaseData
+      ? isLoadingPrivateDatabaseData ? '…' : '—'
+      : count
+  )
+  const getPrivateDatabaseEmptyMessage = (label, emptyMessage) => {
+    if (hasLoadedPrivateDatabaseData || !officialBackendToken) return emptyMessage
+    return isLoadingPrivateDatabaseData
+      ? `Loading ${label} from the shared database…`
+      : `${label} are unavailable while the shared database is disconnected.`
+  }
   const pendingRegistrationRequests = registrationRequests.filter((request) => request.status === 'Pending')
   const registrationHistoryRequests = registrationRequests.filter((request) => request.status !== 'Pending')
   const registrationSearchQuery = registrationQueueSearch.trim().toLowerCase()
@@ -6568,6 +6588,9 @@ function App() {
     request.data?.residentCode,
   ].some((value) => String(value || '').toLowerCase().includes(registrationSearchQuery)))
   const pendingRegistrationCount = pendingRegistrationRequests.length
+  const pendingRegistrationCountLabel = officialBackendToken && !hasLoadedPendingRegistrations
+    ? registrationSyncError ? '—' : '…'
+    : pendingRegistrationCount
   const activeRegistrationReviewRequest = pendingRegistrationRequests.find((request) => request.id === expandedRegistrationId) || null
   const pendingRecoveryRequestCount = residentCodeRecoveryRequests.filter((request) => request.status === 'Pending').length
   const adminPaymentRecords = groupPaymentRequests(residentRequests.filter((request) => Number(request.feeAmount || 0) > 0))
@@ -10634,6 +10657,8 @@ function App() {
     }
 
     setOfficialBackendToken('')
+    setHasLoadedPrivateDatabaseData(false)
+    setHasLoadedPendingRegistrations(false)
     databaseRecordsRef.current = null
     setDatabaseSaveStatus('checking')
     setDatabaseSaveError('')
@@ -10666,6 +10691,8 @@ function App() {
 
   const logoutOfficial = () => {
     setOfficialBackendToken('')
+    setHasLoadedPrivateDatabaseData(false)
+    setHasLoadedPendingRegistrations(false)
     setShowOfficialDashboard(false)
     setShowOfficialLogin(false)
     returnHome()
@@ -12219,12 +12246,12 @@ function App() {
           </div>}
           {adminView === 'overview' && <>
             <div className="overview-stats">
-              <article><span>Current residents</span><strong>{adminResidents.length}</strong></article>
-              <article><span>Document requests</span><strong>{allDocumentRequests.length}</strong></article>
+              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length)}</strong></article>
+              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length)}</strong></article>
               <article className="overview-completion-stat">
                 <span>Completion rate</span>
                 <strong>{dashboardCompletionRate}%</strong>
-                <small>{dashboardCompletedRequestCount} of {allDocumentRequests.length} requests</small>
+                <small>{isLoadingPrivateDatabaseData ? 'Loading request metrics…' : `${dashboardCompletedRequestCount} of ${allDocumentRequests.length} requests`}</small>
                 <div role="meter" aria-label="Document request completion rate" aria-valuemin={0} aria-valuemax={100} aria-valuenow={dashboardCompletionRate}>
                   <span style={{ width: `${dashboardCompletionRate}%` }} />
                 </div>
@@ -12262,7 +12289,7 @@ function App() {
             <section className="admin-performance-panel" aria-labelledby="admin-performance-title">
               <header>
                 <div><span className="section-number">SERVICE WORKFLOW</span><h2 id="admin-performance-title">Request performance</h2><p>Current request counts and percentage of all document requests by status.</p></div>
-                <span className="admin-performance-total">{allDocumentRequests.length} total</span>
+                <span className="admin-performance-total">{getPrivateDatabaseCount(`${allDocumentRequests.length} total`)}</span>
               </header>
               <div className="admin-performance-chart" role="list" aria-label="Document request counts by status">
                 {dashboardPerformanceStagesWithShare.map((stage) => <div className="admin-performance-stage" role="listitem" key={stage.label}>
@@ -12891,7 +12918,9 @@ function App() {
                 </article>
                 )
               })}
-              {filteredResidentRequests.length === 0 && <p className="request-search-empty">{activeQueueRequests.length === 0 ? 'No active resident document requests yet.' : 'No active requests match this category, search, or document filter.'}</p>}
+              {filteredResidentRequests.length === 0 && <p className="request-search-empty">{activeQueueRequests.length === 0
+                ? getPrivateDatabaseEmptyMessage('Resident document requests', 'No active resident document requests yet.')
+                : 'No active requests match this category, search, or document filter.'}</p>}
             </div>
             </section>
           </div>}
@@ -12943,12 +12972,12 @@ function App() {
           {adminView === 'registrations' && <div className="registration-requests-workspace registration-review-v2">
             <header className="registration-requests-heading">
               <div><span className="section-number">RESIDENT SERVICES / INTAKE</span><h2>Registration requests</h2><p>Review applicant details and supporting documents before recording a decision.{!officialBackendToken && <span className="registration-auth-note"> Backend account requests require authorized admin sign-in.</span>}</p></div>
-              <div className="registration-requests-counts"><span><strong>{pendingRegistrationCount}</strong> awaiting review</span><span><strong>{registrationHistoryRequests.length}</strong> processed</span></div>
+              <div className="registration-requests-counts"><span><strong>{pendingRegistrationCountLabel}</strong> awaiting review</span><span><strong>{getPrivateDatabaseCount(registrationHistoryRequests.length)}</strong> processed</span></div>
             </header>
             {registrationSyncError && <p className={`registration-sync-message${registrationSyncError.startsWith('The registration service is unavailable') ? ' is-info' : ''}`} role={registrationSyncError.startsWith('The registration service is unavailable') ? 'status' : 'alert'}>{registrationSyncError}</p>}
             <section className="registration-list-panel" aria-labelledby="registration-pending-title">
               <header className="registration-list-heading">
-                <div><span className="section-number">INCOMING</span><h3 id="registration-pending-title">Pending applications <span>{pendingRegistrationCount}</span></h3><p>Open an application to review it step by step.</p></div>
+                <div><span className="section-number">INCOMING</span><h3 id="registration-pending-title">Pending applications <span>{pendingRegistrationCountLabel}</span></h3><p>Open an application to review it step by step.</p></div>
                 <label className="registration-page-search"><span aria-hidden="true">⌕</span><span className="sr-only">Search applications</span><input value={registrationQueueSearch} onChange={(event) => setRegistrationQueueSearch(event.target.value)} placeholder="Search name or request ID" /></label>
               </header>
               {filteredPendingRegistrationRequests.length
@@ -12982,7 +13011,15 @@ function App() {
                     openRegistrationReview(request, getRegistrationReviewSteps()[0].key)
                   }}>{expandedRegistrationId === request.id ? 'Close review' : request.referenceAccessStatus === 'Paused' ? 'Resume review' : 'Review application'} <span aria-hidden="true">{expandedRegistrationId === request.id ? '−' : '→'}</span></button>
                 </article>)}</div>
-                : <div className="registration-list-empty"><strong>{pendingRegistrationCount ? 'No matching applications' : 'No pending applications'}</strong><span>{pendingRegistrationCount ? 'Try another name or request ID.' : 'New submissions will appear here.'}</span></div>}
+                : <div className="registration-list-empty"><strong>{pendingRegistrationCount
+                  ? 'No matching applications'
+                  : officialBackendToken && !hasLoadedPendingRegistrations
+                    ? registrationSyncError ? 'Applications could not be loaded' : 'Loading applications…'
+                    : 'No pending applications'}</strong><span>{pendingRegistrationCount
+                    ? 'Try another name or request ID.'
+                    : officialBackendToken && !hasLoadedPendingRegistrations
+                      ? registrationSyncError || 'Checking the online registration database.'
+                      : 'New submissions will appear here.'}</span></div>}
             </section>
             {expandedRegistrationId && activeRegistrationReviewRequest && (() => {
                 const request = activeRegistrationReviewRequest
@@ -13097,13 +13134,13 @@ function App() {
               </div>
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
-              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{adminResidents.length}</span></div>
+              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
               <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                 <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
               </tr>)}
-              {!adminResidents.length && <tr><td colSpan="5">No resident records yet. Approved applications will be added here.</td></tr>}
+              {!adminResidents.length && <tr><td colSpan="5">{getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet. Approved applications will be added here.')}</td></tr>}
               </tbody></table></div></TableSearch>
             </section>
             {registrationResidentViewCode && (() => {
@@ -13378,10 +13415,10 @@ function App() {
             </section>
           </section>}
           {(adminView === 'residents' || adminView === 'archivedResidents') && <section className="requests-panel resident-records-panel green-startup-workspace">
-            <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Manage current residents and review rejected registration applications.</p></div><span className="request-notification">{adminResidents.length} current</span></div>
+            <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Manage current residents and review rejected registration applications.</p></div><span className="request-notification">{getPrivateDatabaseCount(`${adminResidents.length} current`)}</span></div>
             {residentAccountMessage && !residentProfileUpdateResidentCode && <p className="resident-account-message" role="status">{residentAccountMessage}</p>}
             <div className="resident-record-tabs" role="group" aria-label="Resident record categories">
-              <button type="button" aria-pressed={residentRecordsTab === 'active'} className={residentRecordsTab === 'active' ? 'active' : ''} onClick={() => setResidentRecordsTab('active')}>Current residents <span>{adminResidents.length}</span></button>
+              <button type="button" aria-pressed={residentRecordsTab === 'active'} className={residentRecordsTab === 'active' ? 'active' : ''} onClick={() => setResidentRecordsTab('active')}>Current residents <span>{getPrivateDatabaseCount(adminResidents.length)}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'recovery'} className={residentRecordsTab === 'recovery' ? 'active' : ''} onClick={() => { setResidentRecordsTab('recovery'); setAdminRecoveryMessage('') }}>Resident code recovery <span>{pendingRecoveryRequestCount}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'rejected'} className={residentRecordsTab === 'rejected' ? 'active' : ''} onClick={() => setResidentRecordsTab('rejected')}>Rejected registrations <span>{declinedRegistrationRequests.length}</span></button>
             </div>
@@ -13413,7 +13450,9 @@ function App() {
                 </div>
               </form>}
               {residentFormError && <p className="community-update-error" role="alert">{residentFormError}</p>}
-              <p className="resident-record-result-count" aria-live="polite">Showing {filteredAdminResidents.length} of {adminResidents.length} current residents</p>
+              <p className="resident-record-result-count" aria-live="polite">{!hasLoadedPrivateDatabaseData && officialBackendToken
+                ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')
+                : `Showing ${filteredAdminResidents.length} of ${adminResidents.length} current residents`}</p>
               <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
                 const profileRequests = residentProfileUpdateRequests.filter((request) => request.residentCode?.toLowerCase() === resident.code.toLowerCase())
                 const pendingProfileRequests = profileRequests.filter((request) => request.status === 'Pending').length
@@ -13431,7 +13470,9 @@ function App() {
                     {profileRequests.length > 0 && <button type="button" className="resident-profile-update-icon" aria-label={`Open ${profileRequests.length} profile update request${profileRequests.length === 1 ? '' : 's'} for ${resident.name}`} title="Review profile update requests" onClick={() => { setResidentProfileUpdateResidentCode(resident.code); setProfileUpdateError(''); setResidentAccountMessage('') }}><span aria-hidden="true">✎</span>{pendingProfileRequests > 0 && <small>{pendingProfileRequests}</small>}</button>}
                   </div></td>
                 </tr>
-              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length ? 'No current residents match your search.' : 'No resident records yet.'}</td></tr>}</tbody></table></div>
+              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length
+                ? 'No current residents match your search.'
+                : getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')}</td></tr>}</tbody></table></div>
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
               <div className="requests-heading"><div><span className="section-number">EXISTING RESIDENT ACCESS</span><h3>Resident code recovery requests</h3><p>Verify against an existing resident record. Recovery never creates a new resident account.</p></div><span className="request-notification">{pendingRecoveryRequestCount} pending</span></div>
               {adminRecoveryMessage && <p className="recovery-admin-message" role="status">{adminRecoveryMessage}</p>}
