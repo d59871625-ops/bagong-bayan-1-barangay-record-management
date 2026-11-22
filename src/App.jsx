@@ -36,6 +36,53 @@ const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
 const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 5000
 const RESIDENT_REQUEST_READ_TIMEOUT_MS = 8000
 const DATABASE_REQUEST_TIMEOUT_MS = 30000
+const ADMIN_RECORD_CACHE_DB = 'bb1-admin-record-cache'
+const ADMIN_RECORD_CACHE_STORE = 'snapshots'
+let adminRecordCacheDbPromise
+const openAdminRecordCache = () => {
+  if (typeof indexedDB === 'undefined') return Promise.reject(new Error('IndexedDB is unavailable.'))
+  if (!adminRecordCacheDbPromise) {
+    adminRecordCacheDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(ADMIN_RECORD_CACHE_DB, 1)
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(ADMIN_RECORD_CACHE_STORE)) {
+          request.result.createObjectStore(ADMIN_RECORD_CACHE_STORE)
+        }
+      }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error || new Error('Could not open the admin data cache.'))
+    })
+  }
+  return adminRecordCacheDbPromise
+}
+const readAdminRecordCache = async () => {
+  const database = await openAdminRecordCache()
+  return new Promise((resolve, reject) => {
+    const request = database.transaction(ADMIN_RECORD_CACHE_STORE, 'readonly')
+      .objectStore(ADMIN_RECORD_CACHE_STORE).get('latest')
+    request.onsuccess = () => resolve(request.result || null)
+    request.onerror = () => reject(request.error || new Error('Could not read cached admin data.'))
+  })
+}
+const writeAdminRecordCache = async (records) => {
+  const database = await openAdminRecordCache()
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(ADMIN_RECORD_CACHE_STORE, 'readwrite')
+    transaction.objectStore(ADMIN_RECORD_CACHE_STORE).put(records, 'latest')
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error || new Error('Could not save cached admin data.'))
+    transaction.onabort = () => reject(transaction.error || new Error('Could not save cached admin data.'))
+  })
+}
+const clearAdminRecordCache = async () => {
+  const database = await openAdminRecordCache()
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(ADMIN_RECORD_CACHE_STORE, 'readwrite')
+    transaction.objectStore(ADMIN_RECORD_CACHE_STORE).clear()
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error || new Error('Could not clear cached admin data.'))
+  })
+}
 const productionBackendApiUrl = `${window.location.origin}/backend`
 const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredBackendApiUrl))
   ? configuredBackendApiUrl
@@ -4979,6 +5026,7 @@ function App() {
   const [adminDatabaseHealth, setAdminDatabaseHealth] = useState('checking')
   const setOfficialBackendToken = useCallback((token) => {
     setOfficialBackendTokenState(token)
+    if (!token) void clearAdminRecordCache().catch(() => {})
     setAdminDatabaseHealth('checking')
     databaseEtagRef.current = ''
     pendingRegistrationEtagRef.current = ''
@@ -5734,12 +5782,31 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const { response, result } = await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
-          method: 'GET',
-          cache: 'no-store',
-          ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
-          signal: controller.signal,
-        }, 'Database request', officialBackendToken ? DATABASE_ADMIN_READ_TIMEOUT_MS : undefined)
+        let cachedData = null
+        if (officialBackendToken && !databaseRecordsRef.current) {
+          try {
+            cachedData = await readAdminRecordCache()
+          } catch {
+            cachedData = null
+          }
+        }
+        if (cancelled) return
+        const usingCachedRecords = Boolean(cachedData
+          && typeof cachedData === 'object'
+          && !Array.isArray(cachedData)
+          && Array.isArray(cachedData[residentRequestsStorageKey])
+          && Array.isArray(cachedData[residentRecordsStorageKey]))
+        const { response, result } = usingCachedRecords
+          ? {
+            response: { ok: true, headers: new Headers() },
+            result: { success: true, data: cachedData },
+          }
+          : await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+            method: 'GET',
+            cache: 'no-store',
+            ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
+            signal: controller.signal,
+          }, 'Database request', officialBackendToken ? DATABASE_ADMIN_READ_TIMEOUT_MS : undefined)
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
@@ -5755,7 +5822,7 @@ function App() {
         if (!result.success) {
           throw new Error('Unable to load database records.')
         }
-        if (officialBackendToken) databaseEtagRef.current = response.headers.get('ETag') || ''
+        if (officialBackendToken) databaseEtagRef.current = usingCachedRecords ? '' : response.headers.get('ETag') || ''
 
         const data = result.data || {}
         if (data.requestEvidenceIds !== undefined
@@ -5938,11 +6005,17 @@ function App() {
         }
 
         databaseRecordsRef.current = records
+        if (officialBackendToken) void writeAdminRecordCache(data).catch((error) => {
+          console.warn('Could not refresh the local admin data cache.', error)
+        })
         if (officialBackendToken) setHasLoadedPrivateDatabaseData(true)
         setDatabaseSaveError('')
-        setDatabaseSaveStatus(officialBackendToken ? 'saved' : 'offline')
-        setIsDatabaseConnected(Boolean(officialBackendToken))
+        setDatabaseSaveStatus(officialBackendToken && usingCachedRecords ? 'checking' : officialBackendToken ? 'saved' : 'offline')
+        setIsDatabaseConnected(Boolean(officialBackendToken && !usingCachedRecords))
         setIsPublicCommunityConnected(true)
+        if (officialBackendToken && usingCachedRecords) {
+          setDatabaseLoadVersion((version) => version + 1)
+        }
         console.log(officialBackendToken
           ? 'Barangay records loaded from database.'
           : 'Public community records loaded from database.')
@@ -7304,7 +7377,12 @@ function App() {
       url: API_URL,
       getToken: () => officialBackendToken,
       initialEtag: databaseEtagRef.current,
-      onData: (data) => adminSyncDataHandlerRef.current?.(data),
+      onData: async (data) => {
+        await adminSyncDataHandlerRef.current?.(data)
+        void writeAdminRecordCache(data).catch((error) => {
+          console.warn('Could not refresh the local admin data cache.', error)
+        })
+      },
       onEtag: (etag) => {
         databaseEtagRef.current = etag
       },
@@ -12226,7 +12304,7 @@ function App() {
           {!isDatabaseConnected && adminDatabaseHealth === 'connected'
             ? <div className="database-save-indicator is-saving" role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
-              <span>{`Shared database connected. Waiting for private admin records to load.${databaseSaveError ? ` ${databaseSaveError}` : ''}`}</span>
+              <span>{`${hasLoadedPrivateDatabaseData ? 'Showing saved admin records while refreshing the shared database.' : 'Shared database connected. Waiting for private admin records to load.'}${databaseSaveError ? ` ${databaseSaveError}` : ''}`}</span>
             </div>
             : !isDatabaseConnected
             ? adminDatabaseHealth === 'offline'
