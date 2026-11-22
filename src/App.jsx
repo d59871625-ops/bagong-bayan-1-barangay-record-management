@@ -5150,6 +5150,14 @@ function App() {
   }, [isCustomTemplateFormOpen])
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 720)
   useEffect(() => {
+    const keepDesktopNavigationVisible = () => {
+      if (window.innerWidth > 720) setSidebarOpen(true)
+    }
+    keepDesktopNavigationVisible()
+    window.addEventListener('resize', keepDesktopNavigationVisible)
+    return () => window.removeEventListener('resize', keepDesktopNavigationVisible)
+  }, [])
+  useEffect(() => {
     const mobileNavigationQuery = window.matchMedia('(max-width: 720px)')
     const updateSidebarForViewport = (event) => setSidebarOpen(!event.matches)
     if (mobileNavigationQuery.addEventListener) {
@@ -6739,10 +6747,15 @@ function App() {
     const groups = new Map()
     filteredResidentRequests.forEach((request) => {
       const residentCode = String(request.residentCode || '').trim().toLowerCase()
-      const residentName = String(request.resident || '').replace(/\s+/g, ' ').trim().toLowerCase()
-      const key = residentCode
-        ? `code:${residentCode}:name:${residentName || request.id}`
-        : `name:${residentName || request.id}`
+        const residentName = String(request.resident || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^\p{L}\p{N}]+/gu, ' ')
+          .trim()
+          .toLowerCase()
+        const key = residentName
+          ? `name:${residentName}`
+          : residentCode ? `code:${residentCode}` : `request:${request.id}`
       groups.set(key, [...(groups.get(key) || []), request])
     })
     return [...groups.entries()].flatMap(([key, requests]) => {
