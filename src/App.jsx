@@ -2130,7 +2130,8 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       if (!pageWidth || !pageHeight) return
       const availableWidth = Math.max(0, paperArea.clientWidth - 32)
       const availableHeight = Math.max(0, paperArea.clientHeight - 32)
-      const nextZoom = Math.min(1, availableWidth / pageWidth, availableHeight / pageHeight)
+      const zoomAllowance = isEditorToolsOpen ? 1.06 : 1
+      const nextZoom = Math.min(1, (availableWidth / pageWidth) * zoomAllowance, (availableHeight / pageHeight) * zoomAllowance)
       if (!Number.isFinite(nextZoom) || nextZoom <= 0 || Math.abs(nextZoom - currentZoom) < 0.003) return
       editorPageZoomRef.current = nextZoom
       setEditorPageZoom(nextZoom)
@@ -2147,7 +2148,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       mutationObserver.disconnect()
       window.removeEventListener('resize', fitPageToView)
     }
-  }, [isRendered, pageOrientation, pageSizeId])
+  }, [isEditorToolsOpen, isRendered, pageOrientation, pageSizeId])
 
   useEffect(() => {
     const closeOnEscape = (event) => {
