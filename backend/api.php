@@ -199,7 +199,12 @@ try {
             }
         }
 
-        $requestChanges = bb1LoadResidentRequestChangesForAdmin($pdo);
+        try {
+            $requestChanges = bb1LoadResidentRequestChangesForAdmin($pdo);
+        } catch (Throwable $error) {
+            error_log("Unable to strip resident request evidence in SQL; using the compatible loader: " . $error->getMessage());
+            $requestChanges = bb1LoadResidentRequestChanges($pdo);
+        }
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
@@ -226,7 +231,10 @@ try {
             if ($requestId === "") {
                 continue;
             }
-            if ((int) ($change["is_deleted"] ?? 0) === 1 || (int) ($change["has_evidence"] ?? 0) !== 1) {
+            $hasEvidence = array_key_exists("has_evidence", $change)
+                ? (int) $change["has_evidence"] === 1
+                : bb1RequestHasEvidence(json_decode((string) ($change["data_value"] ?? ""), false, 512, JSON_THROW_ON_ERROR));
+            if ((int) ($change["is_deleted"] ?? 0) === 1 || !$hasEvidence) {
                 unset($evidenceRequestIds[$requestId]);
             } else {
                 $evidenceRequestIds[$requestId] = true;

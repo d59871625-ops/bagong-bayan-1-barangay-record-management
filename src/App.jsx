@@ -5732,7 +5732,6 @@ function App() {
       if (!officialBackendToken) setHasLoadedPrivateDatabaseData(false)
       if (officialBackendToken) {
         setDatabaseSaveStatus('checking')
-        setDatabaseSaveError('')
       }
       try {
         const initialDatabaseUrl = officialBackendToken
@@ -6057,8 +6056,8 @@ function App() {
         if (!result?.success || result.database !== 'connected') {
           throw new Error('The shared database is not ready during reconnection.')
         }
-        setDatabaseSaveError('')
         if (databaseRecordsRef.current) {
+          setDatabaseSaveError('')
           setDatabaseSaveStatus('saved')
           setIsDatabaseConnected(true)
           return
