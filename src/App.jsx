@@ -27,16 +27,16 @@ const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3
 const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const DATABASE_REFRESH_INTERVAL_MS = 15000
-const DATABASE_HEALTH_TIMEOUT_MS = 8000
+const DATABASE_HEALTH_TIMEOUT_MS = 2000
 const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
-const ADMIN_INBOX_REFRESH_INTERVAL_MS = 5000
-const DATABASE_ADMIN_READ_TIMEOUT_MS = 8000
-const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 60000
+const ADMIN_INBOX_REFRESH_INTERVAL_MS = 2000
+const DATABASE_ADMIN_READ_TIMEOUT_MS = 5000
+const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 5000
 const DATABASE_RECONNECT_INTERVAL_MS = 2000
 const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
-const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 5000
-const RESIDENT_REQUEST_READ_TIMEOUT_MS = 8000
-const DATABASE_REQUEST_TIMEOUT_MS = 30000
+const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 2000
+const RESIDENT_REQUEST_READ_TIMEOUT_MS = 5000
+const DATABASE_REQUEST_TIMEOUT_MS = 20000
 const ADMIN_RECORD_CACHE_DB = 'bb1-admin-record-cache'
 const ADMIN_RECORD_CACHE_STORE = 'snapshots'
 let adminRecordCacheDbPromise
@@ -143,7 +143,7 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   }
 }
 
-const fetchJsonWithTimeout = async (url, options = {}, endpointName, timeoutMs = 8000) => {
+const fetchJsonWithTimeout = async (url, options = {}, endpointName, timeoutMs = 5000) => {
   const { signal: externalSignal, ...requestOptions } = options
   const controller = new AbortController()
   let timedOut = false
@@ -6041,7 +6041,7 @@ function App() {
   }, [databaseLoadVersion, officialBackendToken, setOfficialBackendToken])
 
   useEffect(() => {
-    if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken) return undefined
+    if (!isStorageLoaded || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
     const refreshBackendRegistrations = async () => {
@@ -6096,7 +6096,7 @@ function App() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [isStorageLoaded, officialBackendToken, showOfficialDashboard])
+  }, [isStorageLoaded, officialBackendToken])
 
   useEffect(() => {
     if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken
@@ -7369,7 +7369,7 @@ function App() {
   }, [applyAdminSyncData])
 
   useEffect(() => {
-    if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken
+    if (!isStorageLoaded || !officialBackendToken
       || !hasLoadedPrivateDatabaseData || !isDatabaseConnected) return undefined
 
     const fastSync = createFastSync()
@@ -7414,7 +7414,7 @@ function App() {
         setIsDatabaseConnected(true)
       },
       visibleMs: ADMIN_INBOX_REFRESH_INTERVAL_MS,
-      hiddenMs: 30000,
+      hiddenMs: 40000,
       pullTimeoutMs: DATABASE_ADMIN_READ_TIMEOUT_MS,
       saveTimeoutMs: DATABASE_REQUEST_TIMEOUT_MS,
     })
@@ -7429,7 +7429,6 @@ function App() {
     isStorageLoaded,
     officialBackendToken,
     setOfficialBackendToken,
-    showOfficialDashboard,
   ])
 
   useEffect(() => {
@@ -9889,7 +9888,7 @@ function App() {
         }
         replaceRequirementPhotos(submittedRequirementPhotos)
       } catch (error) {
-        setRequestSubmissionError(error.message || 'The request photos could not be prepared for upload.')
+        setResidentRequestSubmissionError(error.message || 'The request photos could not be prepared for upload.')
         return
       } finally {
         setIsSubmittingResidentRequest(false)
