@@ -154,11 +154,18 @@ try {
         }
 
         $requestChanges = bb1LoadResidentRequestChanges($pdo);
-        $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
+        $priorityKeys = array_values(array_diff($allowedKeys, [
+            "bb1-registration-requests",
+            "bb1-archived-residents",
+            "bb1-issued-documents",
+            "bb1-official-photos",
+        ]));
+        $responseKeys = ($_GET["priority"] ?? "") === "1" ? $priorityKeys : $allowedKeys;
+        $placeholders = implode(",", array_fill(0, count($responseKeys), "?"));
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
-        $statement->execute($allowedKeys);
+        $statement->execute($responseKeys);
 
         $rows = $statement->fetchAll();
         $etagContext = hash_init("sha256");

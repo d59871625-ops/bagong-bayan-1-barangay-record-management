@@ -75,15 +75,6 @@ const writeAdminRecordCache = async (records) => {
     transaction.onabort = () => reject(transaction.error || new Error('Could not save cached admin data.'))
   })
 }
-const clearAdminRecordCache = async () => {
-  const database = await openAdminRecordCache()
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(ADMIN_RECORD_CACHE_STORE, 'readwrite')
-    transaction.objectStore(ADMIN_RECORD_CACHE_STORE).clear()
-    transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(transaction.error || new Error('Could not clear cached admin data.'))
-  })
-}
 const productionBackendApiUrl = `${window.location.origin}/backend`
 const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredBackendApiUrl))
   ? configuredBackendApiUrl
@@ -5027,7 +5018,6 @@ function App() {
   const [adminDatabaseHealth, setAdminDatabaseHealth] = useState('checking')
   const setOfficialBackendToken = useCallback((token) => {
     setOfficialBackendTokenState(token)
-    if (!token) void clearAdminRecordCache().catch(() => {})
     setAdminDatabaseHealth('checking')
     databaseEtagRef.current = ''
     pendingRegistrationEtagRef.current = ''
