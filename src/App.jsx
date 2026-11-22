@@ -1,6 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { PDFDocument } from 'pdf-lib'
 import createFastSync from './fast-sync.js'
 import barangaySeal from './brgy.png'
 import barangayHall from './bb1.jpeg'
@@ -90,8 +89,6 @@ const DATABASE_HEALTH_URL = `${PUBLIC_COMMUNITY_API_URL}?health=1`
 const ADMIN_DATABASE_HEALTH_URL = `${API_URL}${API_URL.includes('?') ? '&' : '?'}health=1`
 const RESIDENT_REQUEST_SYNC_URL = `${BACKEND_API_URL}/resident-request-sync.php`
 const EMPTY_CERTIFICATE_TEMPLATES = Object.freeze([])
-const CERTIFICATE_PDF_URL = import.meta.env.VITE_CERTIFICATE_PDF_URL?.trim()
-  || API_URL.replace(/\/api\.php$/, '/certificate-to-pdf.php')
 
 const readJsonResponse = async (response, endpointName) => {
   const body = await response.text()
@@ -1632,7 +1629,7 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
         <div><strong>Print at the template’s original size</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Original page dimensions and margins are preserved. Choose Actual size in the print dialog.</span></div>
         <button type="button" onClick={printPreview} disabled={!isRendered || isPrintingPdf}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3.5h10V8M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4.5 9h15a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H18M7 14h10v6.5H7zM17.5 11.5h.01" /></svg>
-          <span>{isPrintingPdf ? 'Preparing PDF…' : 'Print certificate PDF'}</span>
+          <span>{isPrintingPdf ? 'Preparing PDF…' : 'Print / Save as PDF'}</span>
         </button>
       </footer>}
     </section>
@@ -3169,7 +3166,7 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
             const processingFields = getCertificateTemplateFields(document, customTemplates)
             const missingFields = processingFields.filter((field) => !hasCertificateFieldValue(certificateData, field))
             const fieldsComplete = missingFields.length === 0
-            const outputLabel = outputFormat === 'pdf' ? 'Download as PDF' : 'Download Word document'
+            const outputLabel = outputFormat === 'pdf' ? 'Print / Save as PDF' : 'Download Word document'
 
             return (
               <article className="approved-document" key={document}>
@@ -3186,7 +3183,7 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
                   <label className="certificate-output-format">
                     Output format
                     <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)} disabled={isPreparingPreview}>
-                      <option value="pdf">Download as PDF</option>
+                      <option value="pdf">Print / Save as PDF</option>
                       <option value="word">Download as Word (.docx)</option>
                     </select>
                   </label>
@@ -3195,7 +3192,7 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
                     <strong className="certificate-copy-count-display"><span>{copyCount}</span><small>{copyCount === 1 ? 'copy' : 'copies'} · fixed from request</small></strong>
                   </div>
                 </div>
-                <p className="certificate-output-helper">{outputFormat === 'word' ? 'Word downloads one filled template. The requested copy count remains saved with the request.' : `${copyCount} ${copyCount === 1 ? 'copy' : 'copies'} will be used for PDF and print output.`}</p>
+                <p className="certificate-output-helper">{outputFormat === 'word' ? 'Word downloads one filled template. The requested copy count remains saved with the request.' : `${copyCount} ${copyCount === 1 ? 'copy' : 'copies'} will open in the browser print dialog. Choose Save as PDF and Actual size to preserve the template.`}</p>
                 <div className="certificate-output-actions">
                   <button
                     type="button"
@@ -12022,63 +12019,68 @@ function App() {
     }
   }
 
-  const createCertificatePdf = async (request, document) => {
-    const docx = await createFilledCertificateDocx(document, getSubmittedCertificateData(request, document), customCertificateTemplates)
-    const formData = new FormData()
-    const safeRequestId = String(request.id).replace(/[^a-z0-9-]+/gi, '-')
-    const safeDocumentName = document.replace(/[^a-z0-9-]+/gi, '-')
-    formData.append('certificate', docx, `${safeRequestId}-${safeDocumentName}.docx`)
-
-    const response = await fetch(CERTIFICATE_PDF_URL, {
-      method: 'POST',
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${officialBackendToken}` },
-      body: formData,
-    })
-    if (!response.ok) {
-      const responseBody = await response.text()
-      let errorMessage
-      try {
-        errorMessage = JSON.parse(responseBody).message || responseBody
-      } catch {
-        errorMessage = responseBody
-      }
-      throw new Error(errorMessage || `PDF conversion failed with status ${response.status}.`)
-    }
-
-    const convertedPdf = await response.blob()
-    if (convertedPdf.type !== 'application/pdf') throw new Error('The PDF conversion endpoint returned an invalid file.')
-    const copyCount = Number(request.copyCount ?? 1)
-    if (!Number.isSafeInteger(copyCount) || copyCount < 1) {
-      throw new Error('The requested copy count is invalid.')
-    }
-    const sourcePdf = await PDFDocument.load(await convertedPdf.arrayBuffer())
-    const sourcePageIndices = sourcePdf.getPageIndices()
-    if (!sourcePageIndices.length) throw new Error('The converted PDF does not contain any pages.')
-    let outputPdf = sourcePdf
-    if (copyCount > 1) {
-      outputPdf = await PDFDocument.create()
-      for (let copyIndex = 0; copyIndex < copyCount; copyIndex += 1) {
-        const copiedPages = await outputPdf.copyPages(sourcePdf, sourcePageIndices)
-        copiedPages.forEach((page) => outputPdf.addPage(page))
-      }
-    }
-
-    return new Blob([await outputPdf.save()], { type: 'application/pdf' })
-  }
-
   const downloadApprovedCertificatePdf = async (request, document) => {
     try {
-      const downloadPdf = await createCertificatePdf(request, document)
+      return await printApprovedCertificatePdf(request, document)
+    } catch (error) {
+      console.error(`Unable to prepare the ${document} PDF for printing.`, error)
+      setCertificateDownloadError(`The ${document} PDF could not be prepared. ${error.message}`)
+      return false
+    }
+  }
+
+  const printApprovedCertificatePdf = async (request, document) => {
+    const printWindow = window.open('about:blank', '_blank')
+    if (!printWindow) throw new Error('Allow pop-ups to open the certificate for printing.')
+    try {
       const copyCount = Number(request.copyCount ?? 1)
-      const safeRequestId = String(request.id).replace(/[^a-z0-9-]+/gi, '-')
-      const safeDocumentName = document.replace(/[^a-z0-9-]+/gi, '-')
-      const objectUrl = URL.createObjectURL(downloadPdf)
-      const link = window.document.createElement('a')
-      link.href = objectUrl
-      link.download = `${safeRequestId}-${safeDocumentName}${copyCount > 1 ? `-${copyCount}-copies` : ''}.pdf`
-      link.click()
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+      if (!Number.isSafeInteger(copyCount) || copyCount < 1) {
+        throw new Error('The requested copy count is invalid.')
+      }
+      const docx = await createFilledCertificateDocx(document, getSubmittedCertificateData(request, document), customCertificateTemplates)
+      const rendered = window.document.createElement('div')
+      const pages = await renderCertificateDocxPages(rendered, docx, document)
+      if (!pages.length) throw new Error('The certificate template did not render any pages.')
+
+      const sourceWrapper = pages[0].parentElement
+      const printWrapper = sourceWrapper?.cloneNode(false) || printWindow.document.createElement('div')
+      printWrapper.classList.add('docx-wrapper')
+      for (let copyIndex = 0; copyIndex < copyCount; copyIndex += 1) {
+        pages.forEach((page) => printWrapper.appendChild(page.cloneNode(true)))
+      }
+
+      const printDocument = printWindow.document
+      printDocument.title = `${request.id} - ${document}`.replace(/[\\/:*?"<>|]+/g, '-')
+      window.document.querySelectorAll('link[rel="stylesheet"], style').forEach((styleNode) => {
+        const clone = styleNode.cloneNode(true)
+        if (clone instanceof HTMLLinkElement) clone.href = styleNode.href
+        printDocument.head.appendChild(clone)
+      })
+      const printStyles = printDocument.createElement('style')
+      printStyles.textContent = `
+        @page { size: ${Math.round(pages[0].getBoundingClientRect().width)}px ${Math.round(pages[0].getBoundingClientRect().height)}px; margin: 0; }
+        html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+        .docx-wrapper { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+        .docx-wrapper > section.certificate-docx { margin: 0 !important; box-shadow: none !important; break-after: page; page-break-after: always; }
+        .docx-wrapper > section.certificate-docx:last-child { break-after: auto; page-break-after: auto; }
+        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+      `
+      printDocument.head.appendChild(printStyles)
+      printDocument.body.replaceChildren(printWrapper)
+      printWindow.addEventListener('afterprint', () => printWindow.close(), { once: true })
+      await Promise.all(Array.from(printDocument.querySelectorAll('link[rel="stylesheet"]')).map((link) => (
+        link.sheet
+          ? Promise.resolve()
+          : new Promise((resolve) => {
+            link.addEventListener('load', resolve, { once: true })
+            link.addEventListener('error', resolve, { once: true })
+            window.setTimeout(resolve, 3000)
+          })
+      )))
+      await printDocument.fonts?.ready
+      await new Promise((resolve) => window.setTimeout(resolve, 100))
+      printWindow.focus()
+      printWindow.print()
       setCertificateDownloadError('')
       updateStoredRequest(request.id, (currentRequest) => ({
         ...currentRequest,
@@ -12086,38 +12088,7 @@ function App() {
       }))
       return true
     } catch (error) {
-      console.error(`Unable to generate the ${document} PDF.`, error)
-      setCertificateDownloadError(`The ${document} PDF could not be generated. ${error.message}`)
-      return false
-    }
-  }
-
-  const printApprovedCertificatePdf = async (request, document) => {
-    const printWindow = window.open('about:blank', '_blank')
-    if (!printWindow) throw new Error('Allow pop-ups to open the certificate PDF for printing.')
-    let objectUrl = ''
-    try {
-      const pdf = await createCertificatePdf(request, document)
-      objectUrl = URL.createObjectURL(pdf)
-      let printTriggered = false
-      const startPrint = () => {
-        if (printTriggered || printWindow.closed) return
-        printTriggered = true
-        printWindow.focus()
-        try {
-          printWindow.print()
-        } catch (printError) {
-          console.error(`Unable to open the ${document} print dialog.`, printError)
-        }
-      }
-      printWindow.addEventListener('load', () => window.setTimeout(startPrint, 300), { once: true })
-      printWindow.location.replace(objectUrl)
-      window.setTimeout(startPrint, 1500)
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 300000)
-      setCertificateDownloadError('')
-    } catch (error) {
       printWindow.close()
-      setCertificateDownloadError(`The ${document} PDF could not be prepared for printing. ${error.message}`)
       throw error
     }
   }
