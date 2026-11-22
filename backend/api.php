@@ -153,34 +153,48 @@ try {
             respond(200, ["success" => true, "data" => ["request" => $request]]);
         }
 
-        $requestChanges = bb1LoadResidentRequestChanges($pdo);
         $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
-        $statement = $pdo->prepare(
-            "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
+        $metadataStatement = $pdo->prepare(
+            "SELECT data_key, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
-        $statement->execute($allowedKeys);
-
-        $rows = $statement->fetchAll();
+        $metadataStatement->execute($allowedKeys);
+        $metadataRows = $metadataStatement->fetchAll();
+        $changeMetadata = $pdo->query("
+            SELECT request_id, is_deleted, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch
+            FROM bb1_resident_request_changes
+            ORDER BY request_id
+        ")->fetchAll();
         $etagContext = hash_init("sha256");
-        foreach ($rows as $row) {
-            hash_update($etagContext, $row["data_key"] . "\0" . $row["data_value"] . "\0");
+        $metadataIsFresh = false;
+        $now = time();
+        foreach ($metadataRows as $row) {
+            hash_update($etagContext, $row["data_key"] . "\0" . $row["updated_at"] . "\0");
+            $metadataIsFresh = $metadataIsFresh || (int) $row["updated_epoch"] >= $now - 10;
         }
-        foreach ($requestChanges as $change) {
+        foreach ($changeMetadata as $change) {
             hash_update(
                 $etagContext,
                 "resident-request-change\0"
                     . $change["request_id"] . "\0"
                     . (string) $change["is_deleted"] . "\0"
-                    . (string) ($change["data_value"] ?? "") . "\0"
+                    . (string) $change["updated_at"] . "\0"
             );
+            $metadataIsFresh = $metadataIsFresh || (int) $change["updated_epoch"] >= $now - 10;
         }
         $etag = '"' . hash_final($etagContext) . '"';
         header("ETag: " . $etag);
         $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
-        if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+        if ($clientEtag !== "" && hash_equals($etag, $clientEtag) && !$metadataIsFresh) {
             http_response_code(304);
             exit;
         }
+
+        $requestChanges = bb1LoadResidentRequestChanges($pdo);
+        $statement = $pdo->prepare(
+            "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
+        );
+        $statement->execute($allowedKeys);
+        $rows = $statement->fetchAll();
 
         $data = [];
         foreach ($rows as $row) {

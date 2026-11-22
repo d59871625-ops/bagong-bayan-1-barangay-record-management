@@ -6034,25 +6034,13 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const { response, result } = await fetchJsonWithTimeout(API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(ADMIN_DATABASE_HEALTH_URL, {
           cache: 'no-store',
           headers: {
             Authorization: `Bearer ${officialBackendToken}`,
-            ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
           },
           signal: controller.signal,
-        }, 'Database reconnection', DATABASE_ADMIN_READ_TIMEOUT_MS)
-        if (response.status === 304) {
-          if (databaseRecordsRef.current) {
-            setDatabaseSaveError('')
-            setDatabaseSaveStatus('saved')
-            setIsDatabaseConnected(true)
-          } else {
-            setDatabaseSaveStatus('checking')
-            setDatabaseLoadVersion((version) => version + 1)
-          }
-          return
-        }
+        }, 'Database reconnection', DATABASE_HEALTH_TIMEOUT_MS)
         if (response.status === 401) {
           setOfficialBackendToken('')
           setIsDatabaseConnected(false)
@@ -6062,15 +6050,16 @@ function App() {
           return
         }
         if (!response.ok) throw new Error(`Database reconnection failed with status ${response.status}.`)
-        if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
-          throw new Error('The server returned invalid database records during reconnection.')
+        if (!result?.success || result.database !== 'connected') {
+          throw new Error('The shared database is not ready during reconnection.')
         }
-        databaseEtagRef.current = response.headers.get('ETag') || ''
-
         setDatabaseSaveError('')
+        if (databaseRecordsRef.current) {
+          setDatabaseSaveStatus('saved')
+          setIsDatabaseConnected(true)
+          return
+        }
         setDatabaseSaveStatus('checking')
-        setHasLoadedPrivateDatabaseData(false)
-        setIsDatabaseConnected(false)
         setDatabaseLoadVersion((version) => version + 1)
       } catch (error) {
         if (error.name !== 'AbortError') {
