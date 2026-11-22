@@ -22,10 +22,12 @@ if ($_SERVER["REQUEST_METHOD"] !== "GET") {
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/registration-application-storage.php";
 
 $admin = authenticateUser($pdo, ["admin", "official"]);
 
 try {
+    ensureRegistrationApplicationDetailsTable($pdo);
     $stmt = $pdo->query("
         SELECT
             id,
@@ -44,13 +46,26 @@ try {
             city_municipality,
             province,
             status,
-            created_at
+            registration_requests.created_at,
+            details.application_data,
+            details.valid_id,
+            details.proof_of_residence
         FROM registration_requests
+        LEFT JOIN registration_application_details AS details
+            ON details.registration_id = registration_requests.id
         WHERE status = 'pending'
-        ORDER BY created_at ASC
+        ORDER BY registration_requests.created_at ASC
     ");
 
     $applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($applications as &$application) {
+        if ($application["application_data"] !== null) {
+            $application["application_data"] = decodeRegistrationApplicationJson($application["application_data"], "data");
+            $application["valid_id"] = decodeRegistrationApplicationJson($application["valid_id"], "valid ID");
+            $application["proof_of_residence"] = decodeRegistrationApplicationJson($application["proof_of_residence"], "proof of residence");
+        }
+    }
+    unset($application);
 
     echo json_encode([
         "success" => true,

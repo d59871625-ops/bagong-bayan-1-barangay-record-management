@@ -280,6 +280,37 @@ function residentSyncNewRequest(
     return $request;
 }
 
+function residentSyncNewPaymentDraft(
+    stdClass $incoming,
+    string $residentCode,
+    string $fullName,
+    array $allowedDocuments,
+    array $documentFees,
+    string $now
+): stdClass {
+    if (($incoming->awaitingPaymentSubmission ?? false) !== true
+        || ($incoming->paymentStatus ?? "") !== "Unpaid") {
+        throw new InvalidArgumentException("Only unpaid payment drafts can be submitted.");
+    }
+
+    $draft = residentSyncNewRequest(
+        $incoming,
+        $residentCode,
+        $fullName,
+        $allowedDocuments,
+        $documentFees,
+        $now
+    );
+    if ($draft->feeAmount <= 0) {
+        throw new InvalidArgumentException("A payment draft must have a fee greater than zero.");
+    }
+
+    $draft->awaitingPaymentSubmission = true;
+    $draft->paymentDraftedAt = residentSyncString($incoming, "paymentDraftedAt", 80) ?: $now;
+    unset($draft->requestedAt, $draft->statusHistory, $draft->activity);
+    return $draft;
+}
+
 function residentSyncApplyUpdate(stdClass $existing, stdClass $incoming, string $now): stdClass
 {
     $updated = clone $existing;
@@ -478,10 +509,16 @@ try {
             $residentCode,
             $fullName
         );
+        $paymentDrafts = residentSyncOwnedRecords(
+            residentSyncReadState($pdo, "bb1-resident-payment-drafts", []),
+            $residentCode,
+            $fullName
+        );
         residentSyncRespond(200, [
             "success" => true,
             "data" => [
                 "requests" => $requests,
+                "drafts" => $paymentDrafts,
                 "history" => $history,
             ],
         ]);
@@ -489,7 +526,7 @@ try {
 
     $body = file_get_contents("php://input");
     if ($body === false || $body === "") {
-        residentSyncRespond(400, ["success" => false, "message" => "A request list is required."]);
+        residentSyncRespond(400, ["success" => false, "message" => "Resident request data is required."]);
     }
     if (strlen($body) > 12 * 1024 * 1024) {
         residentSyncRespond(413, ["success" => false, "message" => "Resident request data is too large to synchronize."]);
@@ -501,15 +538,16 @@ try {
         residentSyncRespond(400, ["success" => false, "message" => "Invalid JSON request."]);
     }
     if (!($input instanceof stdClass)
-        || array_diff(array_keys(get_object_vars($input)), ["requests"])
-        || !property_exists($input, "requests")
-        || !residentSyncIsList($input->requests)
-        || count($input->requests) > 200) {
-        residentSyncRespond(400, ["success" => false, "message" => "A valid resident request list is required."]);
+        || array_diff(array_keys(get_object_vars($input)), ["requests", "drafts", "removedDraftIds"])
+        || (!property_exists($input, "requests") && !property_exists($input, "drafts") && !property_exists($input, "removedDraftIds"))
+        || (property_exists($input, "requests") && (!residentSyncIsList($input->requests) || count($input->requests) > 200))
+        || (property_exists($input, "drafts") && (!residentSyncIsList($input->drafts) || count($input->drafts) > 200))
+        || (property_exists($input, "removedDraftIds") && (!residentSyncIsList($input->removedDraftIds) || count($input->removedDraftIds) > 200))) {
+        residentSyncRespond(400, ["success" => false, "message" => "Valid resident request data is required."]);
     }
 
     $incomingIds = [];
-    foreach ($input->requests as $incoming) {
+    foreach (($input->requests ?? []) as $incoming) {
         if (!($incoming instanceof stdClass)) {
             residentSyncRespond(422, ["success" => false, "message" => "Each request must be an object."]);
         }
@@ -521,6 +559,27 @@ try {
         if (!residentSyncRecordBelongsTo($incoming, $residentCode, $fullName)) {
             residentSyncRespond(403, ["success" => false, "message" => "A request does not belong to this resident account."]);
         }
+    }
+    $incomingDraftIds = [];
+    foreach (($input->drafts ?? []) as $incoming) {
+        if (!($incoming instanceof stdClass)) {
+            residentSyncRespond(422, ["success" => false, "message" => "Each payment draft must be an object."]);
+        }
+        $id = residentSyncString($incoming, "id", 100, true);
+        if (isset($incomingDraftIds[$id])) {
+            residentSyncRespond(422, ["success" => false, "message" => "Duplicate payment draft IDs were submitted."]);
+        }
+        $incomingDraftIds[$id] = true;
+        if (!residentSyncRecordBelongsTo($incoming, $residentCode, $fullName)) {
+            residentSyncRespond(403, ["success" => false, "message" => "A payment draft does not belong to this resident account."]);
+        }
+    }
+    $removedDraftIds = [];
+    foreach (($input->removedDraftIds ?? []) as $id) {
+        if (!is_string($id) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/', $id)) {
+            residentSyncRespond(422, ["success" => false, "message" => "A removed payment draft ID is invalid."]);
+        }
+        $removedDraftIds[$id] = true;
     }
 
     $pdo->beginTransaction();
@@ -536,6 +595,12 @@ try {
             VALUES (?, '[]')
         ");
         $ensureHistoryState->execute(["bb1-resident-history"]);
+
+        $ensurePaymentDraftState = $pdo->prepare("
+            INSERT IGNORE INTO bb1_app_state (data_key, data_value)
+            VALUES (?, '[]')
+        ");
+        $ensurePaymentDraftState->execute(["bb1-resident-payment-drafts"]);
 
         $lock = $pdo->prepare("
             SELECT data_value
@@ -566,6 +631,20 @@ try {
             $fullName
         );
 
+        $paymentDraftLock = $pdo->prepare("
+            SELECT data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $paymentDraftLock->execute(["bb1-resident-payment-drafts"]);
+        $savedPaymentDraftsJson = $paymentDraftLock->fetchColumn();
+        $allPaymentDrafts = json_decode($savedPaymentDraftsJson, false, 512, JSON_THROW_ON_ERROR);
+        if (!residentSyncIsList($allPaymentDrafts)) {
+            throw new RuntimeException("Saved resident payment drafts are not a list.");
+        }
+
         $existingIndexes = [];
         foreach ($allRequests as $index => $record) {
             if (!($record instanceof stdClass)) {
@@ -586,7 +665,7 @@ try {
         }
 
         $now = gmdate("c");
-        foreach ($input->requests as $incoming) {
+        foreach (($input->requests ?? []) as $incoming) {
             $id = $incoming->id;
             if (isset($archivedIds[$id])) {
                 continue;
@@ -614,8 +693,64 @@ try {
             $allRequests[] = $newRequest;
         }
 
+        $paymentDraftIndexes = [];
+        foreach ($allPaymentDrafts as $index => $draft) {
+            if (!($draft instanceof stdClass)) {
+                throw new RuntimeException("A saved resident payment draft is invalid.");
+            }
+            $draftId = $draft->id ?? null;
+            if (is_string($draftId) && $draftId !== "") {
+                $paymentDraftIndexes[$draftId] = $index;
+            }
+        }
+        $draftIdsToRemove = $removedDraftIds;
+        foreach (($input->requests ?? []) as $incoming) {
+            if (($incoming->paymentStatus ?? "") === "Pending verification") {
+                $draftIdsToRemove[$incoming->id] = true;
+            }
+        }
+        foreach (($input->drafts ?? []) as $incoming) {
+            $id = residentSyncString($incoming, "id", 100, true);
+            if (isset($existingIndexes[$id]) && !isset($paymentDraftIndexes[$id])) {
+                throw new DomainException("A payment draft ID is already in use.");
+            }
+            $validatedDraft = residentSyncNewPaymentDraft(
+                $incoming,
+                $residentCode,
+                $fullName,
+                $allowedDocuments,
+                $documentFees,
+                $now
+            );
+            if (isset($paymentDraftIndexes[$id])) {
+                $existingDraft = $allPaymentDrafts[$paymentDraftIndexes[$id]];
+                if (!residentSyncRecordBelongsTo($existingDraft, $residentCode, $fullName)) {
+                    throw new DomainException("A payment draft ID is already in use.");
+                }
+                $allPaymentDrafts[$paymentDraftIndexes[$id]] = $validatedDraft;
+            } else {
+                $paymentDraftIndexes[$id] = count($allPaymentDrafts);
+                $allPaymentDrafts[] = $validatedDraft;
+            }
+            unset($draftIdsToRemove[$id]);
+        }
+        if ($draftIdsToRemove) {
+            $allPaymentDrafts = array_values(array_filter(
+                $allPaymentDrafts,
+                static fn($draft) => !(
+                    $draft instanceof stdClass
+                    && isset($draftIdsToRemove[$draft->id ?? ""])
+                    && residentSyncRecordBelongsTo($draft, $residentCode, $fullName)
+                )
+            ));
+        }
+
         $encodedRequests = json_encode(
             array_values($allRequests),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+        );
+        $encodedPaymentDrafts = json_encode(
+            array_values($allPaymentDrafts),
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
         );
         $update = $pdo->prepare("
@@ -624,13 +759,16 @@ try {
             WHERE data_key = ?
         ");
         $update->execute([$encodedRequests, "bb1-resident-requests"]);
+        $update->execute([$encodedPaymentDrafts, "bb1-resident-payment-drafts"]);
         $pdo->commit();
 
         $ownRequests = residentSyncOwnedRecords($allRequests, $residentCode, $fullName);
+        $ownPaymentDrafts = residentSyncOwnedRecords($allPaymentDrafts, $residentCode, $fullName);
         residentSyncRespond(200, [
             "success" => true,
             "data" => [
                 "requests" => $ownRequests,
+                "drafts" => $ownPaymentDrafts,
                 "history" => $history,
             ],
         ]);

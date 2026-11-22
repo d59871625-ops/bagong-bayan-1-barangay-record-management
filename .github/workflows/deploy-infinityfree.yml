@@ -58,6 +58,9 @@ jobs:
           php -l backend/certificate-to-pdf.php
           php -l backend/resident-request-sync.php
           php -l backend/resident-code-recovery.php
+          php -l backend/pending-registrations.php
+          php -l backend/submit-resident-registration.php
+          php -l backend/registration-application-storage.php
 
       - name: Prepare production files
         run: |
