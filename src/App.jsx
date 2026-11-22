@@ -29,16 +29,16 @@ const DATABASE_REFRESH_INTERVAL_MS = 15000
 const DATABASE_HEALTH_TIMEOUT_MS = 8000
 const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 2000
-const DATABASE_ADMIN_READ_TIMEOUT_MS = 5000
-const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 15000
-const DATABASE_ADMIN_RECONNECT_TIMEOUT_MS = 15000
+const DATABASE_ADMIN_READ_TIMEOUT_MS = 30000
+const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 60000
+const DATABASE_ADMIN_RECONNECT_TIMEOUT_MS = 60000
 const DATABASE_ADMIN_SUPPLEMENTAL_READ_TIMEOUT_MS = 15000
 const DATABASE_ADMIN_COUNT_TIMEOUT_MS = 5000
 const DATABASE_RECONNECT_INTERVAL_MS = 2000
 const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
 const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 2000
-const RESIDENT_REQUEST_READ_TIMEOUT_MS = 5000
-const RESIDENT_REQUEST_INITIAL_READ_TIMEOUT_MS = 15000
+const RESIDENT_REQUEST_READ_TIMEOUT_MS = 30000
+const RESIDENT_REQUEST_INITIAL_READ_TIMEOUT_MS = 45000
 const DATABASE_REQUEST_TIMEOUT_MS = 20000
 const ADMIN_RECORD_CACHE_DB = 'bb1-admin-record-cache'
 const ADMIN_RECORD_CACHE_STORE = 'snapshots'
@@ -573,13 +573,13 @@ const createOfficialPortrait = async (file) => {
   return dataUrl
 }
 
-const compressStoredImageDataUrl = async (dataUrl, maxDimension = 1200) => {
+const compressStoredImageDataUrl = async (dataUrl, maxDimension = 1000) => {
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl
   const response = await fetch(dataUrl)
   if (!response.ok) throw new Error('The saved photo could not be opened for optimization.')
   const sourceBlob = await response.blob()
   const bitmap = await createImageBitmap(sourceBlob)
-  if (sourceBlob.size <= 350 * 1024
+  if (sourceBlob.size <= 180 * 1024
     && Math.max(bitmap.width, bitmap.height) <= maxDimension) {
     bitmap.close()
     return dataUrl
@@ -609,16 +609,16 @@ const compressStoredImageDataUrl = async (dataUrl, maxDimension = 1200) => {
   let optimizedBlob
   try {
     draw()
-    optimizedBlob = await compress(0.62)
-    if (optimizedBlob.size > 350 * 1024) optimizedBlob = await compress(0.5)
-    if (optimizedBlob.size > 350 * 1024) {
+    optimizedBlob = await compress(0.52)
+    if (optimizedBlob.size > 180 * 1024) optimizedBlob = await compress(0.5)
+    if (optimizedBlob.size > 180 * 1024) {
       const resizeScale = Math.min(1, 1000 / Math.max(canvas.width, canvas.height))
       canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
       canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
       draw()
       optimizedBlob = await compress(0.48)
     }
-    if (optimizedBlob.size > 350 * 1024) {
+    if (optimizedBlob.size > 180 * 1024) {
       const resizeScale = Math.min(1, 800 / Math.max(canvas.width, canvas.height))
       canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
       canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
@@ -4930,6 +4930,7 @@ function App() {
   const fastSyncRef = useRef(null)
   const adminSyncDataHandlerRef = useRef(null)
   const databaseRecordsRef = useRef(null)
+  const reconnectResultRef = useRef(null)
   const adminSupplementalCacheRef = useRef({})
   const adminPriorityCacheSignatureRef = useRef('')
   const publicCommunityEtagRef = useRef('')
@@ -6066,7 +6067,9 @@ function App() {
           && !Array.isArray(cachedData)
           && Array.isArray(cachedData[residentRequestsStorageKey])
           && Array.isArray(cachedData[residentRecordsStorageKey]))
-        const isPriorityLoad = Boolean(officialBackendToken && !databaseRecordsRef.current)
+        const isPriorityLoad = Boolean(officialBackendToken)
+        const recovered = reconnectResultRef.current
+        reconnectResultRef.current = null
         const initialDatabaseUrl = officialBackendToken
           ? isPriorityLoad
             ? ADMIN_PRIORITY_API_URL
@@ -6077,12 +6080,12 @@ function App() {
             response: { ok: true, headers: new Headers() },
             result: { success: true, data: cachedData },
           }
-          : await fetchJsonWithTimeout(initialDatabaseUrl, {
+          : (recovered?.token === officialBackendToken ? recovered : await fetchJsonWithTimeout(initialDatabaseUrl, {
             method: 'GET',
             cache: 'no-store',
             ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
             signal: controller.signal,
-        }, 'Database request', officialBackendToken ? DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS : undefined)
+        }, 'Database request', officialBackendToken ? DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS : undefined))
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
@@ -6434,7 +6437,7 @@ function App() {
 
         setDatabaseSaveError('')
         setDatabaseSaveStatus('checking')
-        setHasLoadedPrivateDatabaseData(false)
+        reconnectResultRef.current = { response, result, token: officialBackendToken }
         setIsDatabaseConnected(false)
         setDatabaseLoadVersion((version) => version + 1)
       } catch (error) {
@@ -10866,6 +10869,10 @@ function App() {
       ? {
         ...currentRequest,
         paymentStatus: 'Paid',
+        ...(['New', 'For Verification'].includes(currentRequest.status) ? {
+          status: 'Under review',
+          statusHistory: [...(currentRequest.statusHistory || []), { status: 'Under review', changedAt: now.toISOString() }],
+        } : {}),
         paymentOrNumber: orNumber,
         paymentVerifiedAt: now.toISOString(),
         paymentVerifiedBy: 'Barangay Secretary',
