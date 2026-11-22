@@ -31,7 +31,8 @@ const DATABASE_HEALTH_TIMEOUT_MS = 2000
 const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 2000
 const DATABASE_ADMIN_READ_TIMEOUT_MS = 5000
-const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 15000
+const DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS = 5000
+const DATABASE_ADMIN_SUPPLEMENTAL_READ_TIMEOUT_MS = 15000
 const DATABASE_ADMIN_COUNT_TIMEOUT_MS = 5000
 const DATABASE_RECONNECT_INTERVAL_MS = 2000
 const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
@@ -5205,6 +5206,7 @@ function App() {
         }
         setAdminDatabaseCounts(result.counts)
         setIsLoadingAdminDatabaseCounts(false)
+        window.clearTimeout(retryTimer)
       } catch (error) {
         if (cancelled || error.name === 'AbortError') return
         console.error('Unable to load saved admin record counts.', error)
@@ -5214,11 +5216,22 @@ function App() {
         requestPending = false
       }
     }
+    const refreshCountsWhenVisible = () => {
+      if (document.visibilityState === 'visible') void loadCounts()
+    }
 
     loadCounts()
+    const refreshTimer = window.setInterval(refreshCountsWhenVisible, DATABASE_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', refreshCountsWhenVisible)
+    window.addEventListener('online', refreshCountsWhenVisible)
+    document.addEventListener('visibilitychange', refreshCountsWhenVisible)
     return () => {
       cancelled = true
       window.clearTimeout(retryTimer)
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', refreshCountsWhenVisible)
+      window.removeEventListener('online', refreshCountsWhenVisible)
+      document.removeEventListener('visibilitychange', refreshCountsWhenVisible)
       controller.abort()
     }
   }, [officialBackendToken])
@@ -6025,7 +6038,13 @@ function App() {
         if (cancelled) return
         if (cachedData && typeof cachedData === 'object' && !Array.isArray(cachedData)) {
           adminSupplementalCacheRef.current = Object.fromEntries(
-            [certificateTemplatesStorageKey, officialPhotosStorageKey]
+            [
+              certificateTemplatesStorageKey,
+              officialPhotosStorageKey,
+              issuedDocumentsStorageKey,
+              officialProfilesStorageKey,
+              officialAvailabilityStorageKey,
+            ]
               .filter((key) => Object.prototype.hasOwnProperty.call(cachedData, key))
               .map((key) => [key, cachedData[key]]),
           )
@@ -6818,8 +6837,8 @@ function App() {
     && !hasLoadedPrivateDatabaseData
     && databaseSaveStatus === 'checking'
   const getPrivateDatabaseCount = (count, serverCount) => {
+    if (officialBackendToken && Number.isSafeInteger(serverCount)) return serverCount
     if (officialBackendToken && !hasLoadedPrivateDatabaseData) {
-      if (Number.isSafeInteger(serverCount)) return serverCount
       return isLoadingPrivateDatabaseData || isLoadingAdminDatabaseCounts ? '…' : '—'
     }
     return count
@@ -7647,13 +7666,18 @@ function App() {
     adminSyncDataHandlerRef.current = applyAdminSyncData
   }, [applyAdminSyncData])
   useEffect(() => {
-    if (!isStorageLoaded || !officialBackendToken
-      || !hasLoadedPrivateDatabaseData || !isDatabaseConnected) return undefined
+    if (!isStorageLoaded || !officialBackendToken) return undefined
 
     const controller = new AbortController()
     const etags = new Map()
     let requestPending = false
-    const supplementalKeys = [certificateTemplatesStorageKey, officialPhotosStorageKey]
+    const supplementalKeys = [
+      issuedDocumentsStorageKey,
+      officialProfilesStorageKey,
+      officialAvailabilityStorageKey,
+      certificateTemplatesStorageKey,
+      officialPhotosStorageKey,
+    ]
     const refreshSupplementalRecords = async () => {
       if (requestPending || document.visibilityState !== 'visible') return
       requestPending = true
@@ -7669,13 +7693,61 @@ function App() {
                 ...(etags.has(key) ? { 'If-None-Match': etags.get(key) } : {}),
               },
               signal: controller.signal,
-            }, 'Supplemental admin records', DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS)
+            }, 'Supplemental admin records',
+            [issuedDocumentsStorageKey, officialProfilesStorageKey, officialAvailabilityStorageKey].includes(key)
+              ? DATABASE_ADMIN_INITIAL_READ_TIMEOUT_MS
+              : DATABASE_ADMIN_SUPPLEMENTAL_READ_TIMEOUT_MS)
             if (response.status === 304) continue
             if (!response.ok || !result?.success || !result.data
               || typeof result.data !== 'object' || Array.isArray(result.data)) {
               throw new Error(result?.message || `The ${key} record could not be loaded.`)
             }
             etags.set(key, response.headers.get('ETag') || '')
+
+            if ([issuedDocumentsStorageKey, officialProfilesStorageKey, officialAvailabilityStorageKey].includes(key)) {
+              const records = result.data[key]
+              if (!Array.isArray(records) || !records.every((record) => (
+                record && typeof record === 'object' && !Array.isArray(record)
+              ))) {
+                throw new Error(`Saved ${key} must be a list of records.`)
+              }
+              const deletedRequestIds = new Set(
+                databaseRecordsRef.current?.[residentRequestDeletionsStorageKey] || [],
+              )
+              const normalizedData = key === issuedDocumentsStorageKey
+                ? {
+                  ...result.data,
+                  [key]: records.filter((record) => (
+                    !deletedRequestIds.has(record.requestId || record.id)
+                  )),
+                }
+                : result.data
+              const hasAdminRecordSnapshot = Boolean(databaseRecordsRef.current)
+              if (key === issuedDocumentsStorageKey) {
+                if (hasAdminRecordSnapshot) applySharedAdminSearchRecords(normalizedData)
+                else setIssuedDocuments(normalizedData[key])
+              } else {
+                applySharedCommunityRecords(normalizedData)
+              }
+              const normalizedRecords = normalizedData[key]
+              adminSupplementalCacheRef.current = {
+                ...adminSupplementalCacheRef.current,
+                [key]: normalizedRecords,
+              }
+              if (hasAdminRecordSnapshot) {
+                databaseRecordsRef.current = {
+                  ...databaseRecordsRef.current,
+                  [key]: normalizedRecords,
+                }
+                void writeAdminRecordCache({
+                  ...databaseRecordsRef.current,
+                  ...adminSupplementalCacheRef.current,
+                }).catch((error) => {
+                  console.warn(`Could not cache supplemental ${key}.`, error)
+                })
+              }
+              continue
+            }
 
             if (key === certificateTemplatesStorageKey) {
               applySharedCertificateCatalog(result.data)
@@ -7753,8 +7825,10 @@ function App() {
             console.error(`Unable to load supplemental admin record ${key}.`, error)
             if (key === officialPhotosStorageKey) {
               setOfficialPhotoError(error.message || 'Official photos could not be loaded.')
-            } else {
+            } else if (key === certificateTemplatesStorageKey) {
               setCustomTemplateError(error.message || 'Certificate templates could not be loaded.')
+            } else {
+              setDatabaseSaveError(error.message || `Saved ${key} could not be loaded.`)
             }
           }
         }
@@ -7780,8 +7854,8 @@ function App() {
     }
   }, [
     applySharedCertificateCatalog,
-    hasLoadedPrivateDatabaseData,
-    isDatabaseConnected,
+    applySharedAdminSearchRecords,
+    applySharedCommunityRecords,
     isStorageLoaded,
     officialBackendToken,
   ])

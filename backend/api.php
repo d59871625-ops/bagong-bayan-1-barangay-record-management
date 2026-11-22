@@ -115,7 +115,13 @@ try {
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
         if (isset($_GET["key"])) {
             $key = (string) $_GET["key"];
-            if (!in_array($key, ["bb1-certificate-templates", "bb1-official-photos"], true)) {
+            if (!in_array($key, [
+                "bb1-certificate-templates",
+                "bb1-official-photos",
+                "bb1-issued-documents",
+                "bb1-official-profiles",
+                "bb1-official-availability",
+            ], true)) {
                 respond(400, ["success" => false, "message" => "This record is not enabled for database access."]);
             }
 
