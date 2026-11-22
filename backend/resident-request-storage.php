@@ -30,27 +30,6 @@ function bb1LoadResidentRequestChanges(PDO $pdo): array
     return $statement->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function bb1LoadResidentRequestChangesForAdmin(PDO $pdo): array
-{
-    bb1EnsureResidentRequestChangesTable($pdo);
-    $statement = $pdo->query("
-        SELECT
-            request_id,
-            CASE WHEN is_deleted = 0 AND data_value IS NOT NULL
-                THEN JSON_REMOVE(data_value, '$.requirementPhotos', '$.philsysVerificationEvidence')
-                ELSE NULL
-            END AS data_value,
-            is_deleted,
-            CASE WHEN is_deleted = 0 AND data_value IS NOT NULL
-                THEN JSON_CONTAINS_PATH(data_value, 'one', '$.requirementPhotos', '$.philsysVerificationEvidence')
-                ELSE 0
-            END AS has_evidence
-        FROM bb1_resident_request_changes
-        ORDER BY request_id
-    ");
-    return $statement->fetchAll(PDO::FETCH_ASSOC);
-}
-
 function bb1MergeResidentRequestChanges($baseRequests, array $changes): array
 {
     if (!is_array($baseRequests)) {

@@ -153,63 +153,34 @@ try {
             respond(200, ["success" => true, "data" => ["request" => $request]]);
         }
 
-        $priorityKeys = array_values(array_diff($allowedKeys, [
-            "bb1-registration-requests",
-            "bb1-archived-residents",
-            "bb1-issued-documents",
-            "bb1-official-photos",
-        ]));
-        $responseKeys = ($_GET["priority"] ?? "") === "1" ? $priorityKeys : $allowedKeys;
-        $isPriorityLoad = ($_GET["priority"] ?? "") === "1";
-        $placeholders = implode(",", array_fill(0, count($responseKeys), "?"));
-        if (!$isPriorityLoad) {
-            $metadataStatement = $pdo->prepare(
-                "SELECT data_key, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
-            );
-            $metadataStatement->execute($responseKeys);
-            $metadataRows = $metadataStatement->fetchAll();
-            $changeMetadata = $pdo->query("
-                SELECT request_id, is_deleted, updated_at, UNIX_TIMESTAMP(updated_at) AS updated_epoch
-                FROM bb1_resident_request_changes
-                ORDER BY request_id
-            ")->fetchAll();
-            $etagContext = hash_init("sha256");
-            $metadataIsFresh = false;
-            $now = time();
-            foreach ($metadataRows as $row) {
-                hash_update($etagContext, $row["data_key"] . "\0" . $row["updated_at"] . "\0");
-                $metadataIsFresh = $metadataIsFresh || (int) $row["updated_epoch"] >= $now - 10;
-            }
-            foreach ($changeMetadata as $change) {
-                hash_update(
-                    $etagContext,
-                    "resident-request-change\0"
-                        . $change["request_id"] . "\0"
-                        . (string) $change["is_deleted"] . "\0"
-                        . (string) $change["updated_at"] . "\0"
-                );
-                $metadataIsFresh = $metadataIsFresh || (int) $change["updated_epoch"] >= $now - 10;
-            }
-            $etag = '"' . hash_final($etagContext) . '"';
-            header("ETag: " . $etag);
-            $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
-            if ($clientEtag !== "" && hash_equals($etag, $clientEtag) && !$metadataIsFresh) {
-                http_response_code(304);
-                exit;
-            }
-        }
-
-        try {
-            $requestChanges = bb1LoadResidentRequestChangesForAdmin($pdo);
-        } catch (Throwable $error) {
-            error_log("Unable to strip resident request evidence in SQL; using the compatible loader: " . $error->getMessage());
-            $requestChanges = bb1LoadResidentRequestChanges($pdo);
-        }
+        $requestChanges = bb1LoadResidentRequestChanges($pdo);
+        $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
         );
-        $statement->execute($responseKeys);
+        $statement->execute($allowedKeys);
+
         $rows = $statement->fetchAll();
+        $etagContext = hash_init("sha256");
+        foreach ($rows as $row) {
+            hash_update($etagContext, $row["data_key"] . "\0" . $row["data_value"] . "\0");
+        }
+        foreach ($requestChanges as $change) {
+            hash_update(
+                $etagContext,
+                "resident-request-change\0"
+                    . $change["request_id"] . "\0"
+                    . (string) $change["is_deleted"] . "\0"
+                    . (string) ($change["data_value"] ?? "") . "\0"
+            );
+        }
+        $etag = '"' . hash_final($etagContext) . '"';
+        header("ETag: " . $etag);
+        $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+        if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+            http_response_code(304);
+            exit;
+        }
 
         $data = [];
         foreach ($rows as $row) {
@@ -217,32 +188,15 @@ try {
         }
         $baseRequests = $data["bb1-resident-requests"] ?? [];
         $requests = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
-        $evidenceRequestIds = [];
-        foreach ($baseRequests as $baseRequest) {
-            if ($baseRequest instanceof stdClass
-                && is_scalar($baseRequest->id ?? null)
-                && (string) $baseRequest->id !== ""
-                && bb1RequestHasEvidence($baseRequest)) {
-                $evidenceRequestIds[(string) $baseRequest->id] = true;
-            }
-        }
-        foreach ($requestChanges as $change) {
-            $requestId = (string) ($change["request_id"] ?? "");
-            if ($requestId === "") {
-                continue;
-            }
-            $hasEvidence = array_key_exists("has_evidence", $change)
-                ? (int) $change["has_evidence"] === 1
-                : bb1RequestHasEvidence(json_decode((string) ($change["data_value"] ?? ""), false, 512, JSON_THROW_ON_ERROR));
-            if ((int) ($change["is_deleted"] ?? 0) === 1 || !$hasEvidence) {
-                unset($evidenceRequestIds[$requestId]);
-            } else {
-                $evidenceRequestIds[$requestId] = true;
-            }
-        }
         $data["requestEvidenceIds"] = array_values(array_map(
-            static fn($requestId) => (string) $requestId,
-            array_keys($evidenceRequestIds)
+            static fn($request) => (string) $request->id,
+            array_filter(
+                $requests,
+                static fn($request) => $request instanceof stdClass
+                    && is_scalar($request->id ?? null)
+                    && (string) $request->id !== ""
+                    && bb1RequestHasEvidence($request)
+            )
         ));
         $data["bb1-resident-requests"] = array_map("bb1StripRequestEvidence", $requests);
 
