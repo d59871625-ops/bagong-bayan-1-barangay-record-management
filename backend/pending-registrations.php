@@ -27,6 +27,30 @@ require_once __DIR__ . "/registration-application-storage.php";
 $admin = authenticateUser($pdo, ["admin", "official"]);
 
 try {
+    $versionStatement = $pdo->query("
+        SELECT id, status, created_at
+        FROM registration_requests
+        WHERE status = 'pending'
+        ORDER BY created_at ASC, id ASC
+    ");
+    $versionRows = $versionStatement->fetchAll(PDO::FETCH_ASSOC);
+    $etagContext = hash_init("sha256");
+    foreach ($versionRows as $versionRow) {
+        hash_update(
+            $etagContext,
+            (string) $versionRow["id"] . "\0"
+                . (string) $versionRow["status"] . "\0"
+                . (string) $versionRow["created_at"] . "\0"
+        );
+    }
+    $etag = '"' . hash_final($etagContext) . '"';
+    header("ETag: " . $etag);
+    $clientEtag = trim($_SERVER["HTTP_IF_NONE_MATCH"] ?? "");
+    if ($clientEtag !== "" && hash_equals($etag, $clientEtag)) {
+        http_response_code(304);
+        exit;
+    }
+
     ensureRegistrationApplicationDetailsTable($pdo);
     $stmt = $pdo->query("
         SELECT

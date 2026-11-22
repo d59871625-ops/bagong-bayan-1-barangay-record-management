@@ -19,6 +19,50 @@ function respond(int $status, array $payload): void
     exit;
 }
 
+function bb1RequestHasEvidence($request): bool
+{
+    if (!($request instanceof stdClass)) {
+        return false;
+    }
+
+    $photos = $request->requirementPhotos ?? null;
+    if ($photos instanceof stdClass) {
+        foreach (get_object_vars($photos) as $photo) {
+            if ($photo instanceof stdClass
+                && is_string($photo->dataUrl ?? null)
+                && strpos($photo->dataUrl, "data:image/") === 0) {
+                return true;
+            }
+        }
+    }
+
+    $evidence = $request->philsysVerificationEvidence ?? null;
+    if (is_string($evidence) && strpos($evidence, "data:image/") === 0) {
+        return true;
+    }
+    if ($evidence instanceof stdClass
+        && is_string($evidence->dataUrl ?? null)
+        && strpos($evidence->dataUrl, "data:image/") === 0) {
+        return true;
+    }
+
+    return false;
+}
+
+function bb1StripRequestEvidence($request)
+{
+    if (!($request instanceof stdClass)) {
+        return $request;
+    }
+
+    unset(
+        $request->requirementPhotos,
+        $request->philsysVerificationEvidence
+    );
+
+    return $request;
+}
+
 $allowedKeys = [
     "bb1-community-updates",
     "bb1-about-contact-information",
@@ -61,6 +105,54 @@ try {
     bb1EnsureResidentRequestChangesTable($pdo);
 
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
+        if (array_key_exists("requestEvidence", $_GET)) {
+            $requestId = trim((string) $_GET["requestEvidence"]);
+            if (!preg_match('/^[A-Za-z0-9._:-]{1,100}$/', $requestId)) {
+                respond(400, ["success" => false, "message" => "A valid resident request ID is required."]);
+            }
+
+            $changeStatement = $pdo->prepare("
+                SELECT data_value, is_deleted
+                FROM bb1_resident_request_changes
+                WHERE request_id = ?
+                LIMIT 1
+            ");
+            $changeStatement->execute([$requestId]);
+            $change = $changeStatement->fetch();
+            $request = null;
+            if ($change) {
+                if ((int) $change["is_deleted"] === 0 && $change["data_value"] !== null) {
+                    $request = json_decode($change["data_value"], false, 512, JSON_THROW_ON_ERROR);
+                }
+            } else {
+                $requestStatement = $pdo->prepare("
+                    SELECT data_value
+                    FROM bb1_app_state
+                    WHERE data_key = ?
+                    LIMIT 1
+                ");
+                $requestStatement->execute(["bb1-resident-requests"]);
+                $requestJson = $requestStatement->fetchColumn();
+                if ($requestJson !== false) {
+                    $savedRequests = json_decode($requestJson, false, 512, JSON_THROW_ON_ERROR);
+                    if (is_array($savedRequests)) {
+                        foreach ($savedRequests as $savedRequest) {
+                            if ($savedRequest instanceof stdClass
+                                && (string) ($savedRequest->id ?? "") === $requestId) {
+                                $request = $savedRequest;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!($request instanceof stdClass)) {
+                respond(404, ["success" => false, "message" => "The resident request or its evidence could not be found."]);
+            }
+            respond(200, ["success" => true, "data" => ["request" => $request]]);
+        }
+
         $requestChanges = bb1LoadResidentRequestChanges($pdo);
         $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
         $statement = $pdo->prepare(
@@ -95,7 +187,18 @@ try {
             $data[$row["data_key"]] = json_decode($row["data_value"], false, 512, JSON_THROW_ON_ERROR);
         }
         $baseRequests = $data["bb1-resident-requests"] ?? [];
-        $data["bb1-resident-requests"] = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
+        $requests = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
+        $data["requestEvidenceIds"] = array_values(array_map(
+            static fn($request) => (string) $request->id,
+            array_filter(
+                $requests,
+                static fn($request) => $request instanceof stdClass
+                    && is_scalar($request->id ?? null)
+                    && (string) $request->id !== ""
+                    && bb1RequestHasEvidence($request)
+            )
+        ));
+        $data["bb1-resident-requests"] = array_map("bb1StripRequestEvidence", $requests);
 
         respond(200, ["success" => true, "data" => (object) $data]);
     }

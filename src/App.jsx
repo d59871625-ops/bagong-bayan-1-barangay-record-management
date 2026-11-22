@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { PDFDocument } from 'pdf-lib'
+import createFastSync from './fast-sync.js'
 import barangaySeal from './brgy.png'
 import barangayHall from './bb1.jpeg'
 import {
@@ -26,9 +27,14 @@ const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3
 const configuredBackendApiUrl = import.meta.env.VITE_BACKEND_API_URL?.trim()
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim()
 const DATABASE_REFRESH_INTERVAL_MS = 15000
-const DATABASE_HEALTH_TIMEOUT_MS = 2000
-const DATABASE_HEALTH_RETRY_INTERVAL_MS = 5000
+const DATABASE_HEALTH_TIMEOUT_MS = 8000
+const DATABASE_HEALTH_RETRY_INTERVAL_MS = 2000
 const ADMIN_INBOX_REFRESH_INTERVAL_MS = 5000
+const DATABASE_ADMIN_READ_TIMEOUT_MS = 8000
+const DATABASE_RECONNECT_INTERVAL_MS = 2000
+const PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS = 5000
+const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 5000
+const RESIDENT_REQUEST_READ_TIMEOUT_MS = 8000
 const DATABASE_REQUEST_TIMEOUT_MS = 30000
 const productionBackendApiUrl = `${window.location.origin}/backend`
 const BACKEND_API_URL = configuredBackendApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(configuredBackendApiUrl))
@@ -187,7 +193,7 @@ const getResidentRequestChangeBatches = (requestChanges) => {
   return batches
 }
 
-const saveDatabaseRecords = async (records, backendToken, requestChanges = null) => {
+const saveDatabaseRecords = async (records, backendToken, requestChanges = null, fastSync = null) => {
   if (!backendToken) {
     throw new Error('Sign in with an active backend administrator account before saving shared records.')
   }
@@ -210,6 +216,11 @@ const saveDatabaseRecords = async (records, backendToken, requestChanges = null)
       ...(hasRecords ? [{ records }] : []),
       ...requestBatches,
     ]
+  if (fastSync?.isActive()) {
+    await fastSync.saveMany(payloads)
+    return
+  }
+
   for (const payload of payloads) {
     const response = await fetchWithTimeout(API_URL, {
       method: 'POST',
@@ -227,8 +238,10 @@ const saveDatabaseRecords = async (records, backendToken, requestChanges = null)
   }
 }
 
-const queueDatabaseRecords = (queueRef, records, backendToken, requestChanges = null) => {
-  const save = queueRef.current.catch(() => {}).then(() => saveDatabaseRecords(records, backendToken, requestChanges))
+const queueDatabaseRecords = (queueRef, records, backendToken, requestChanges = null, fastSync = null) => {
+  const save = queueRef.current.catch(() => {}).then(() => (
+    saveDatabaseRecords(records, backendToken, requestChanges, fastSync)
+  ))
   queueRef.current = save.catch(() => {})
   return save
 }
@@ -299,7 +312,7 @@ const createRequirementPhoto = async (file) => {
   if (file.size > 15 * 1024 * 1024) throw new Error('Choose an image smaller than 15 MB.')
 
   const bitmap = await createImageBitmap(file)
-  const scale = Math.min(1, 1800 / Math.max(bitmap.width, bitmap.height))
+  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height))
   const canvas = window.document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(bitmap.width * scale))
   canvas.height = Math.max(1, Math.round(bitmap.height * scale))
@@ -311,14 +324,32 @@ const createRequirementPhoto = async (file) => {
   context.fillStyle = '#ffffff'
   context.fillRect(0, 0, canvas.width, canvas.height)
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-  bitmap.close()
 
-  const compressedPhoto = await new Promise((resolve, reject) => {
+  const compress = (quality) => new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob)
       else reject(new Error('The image could not be compressed for upload.'))
-    }, 'image/jpeg', 0.86)
+    }, 'image/jpeg', quality)
   })
+  let compressedPhoto
+  try {
+    compressedPhoto = await compress(0.78)
+    if (compressedPhoto.size > 800 * 1024) compressedPhoto = await compress(0.62)
+    if (compressedPhoto.size > 800 * 1024) {
+      const resizeScale = Math.min(1, 1200 / Math.max(canvas.width, canvas.height))
+      canvas.width = Math.max(1, Math.round(canvas.width * resizeScale))
+      canvas.height = Math.max(1, Math.round(canvas.height * resizeScale))
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      compressedPhoto = await compress(0.58)
+    }
+  } finally {
+    bitmap.close()
+  }
+  if (compressedPhoto.size > 800 * 1024) {
+    throw new Error('This photo is too large to send. Choose a smaller or clearer cropped image.')
+  }
   const dataUrl = await new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => {
@@ -3047,130 +3078,6 @@ const officialProfilesStorageKey = 'bb1-official-profiles'
 const officialPhotosStorageKey = 'bb1-official-photos'
 const documentFeesDefaultsVersionStorageKey = 'bb1-document-fees-defaults-version'
 const documentFeesDefaultsVersion = 1
-const registrationCacheDatabaseName = 'bb1-registration-cache'
-const registrationCacheObjectStoreName = 'records'
-const registrationCacheRecordKey = 'registration-requests'
-const residentLocalRecordKeys = [
-  residentRequestsStorageKey,
-  residentPaymentDraftsStorageKey,
-  residentHistoryStorageKey,
-  residentDraftsStorageKey,
-]
-const serverBackedStorageKeys = [
-  communityUpdatesStorageKey,
-  barangayContactInformationStorageKey,
-  residentRequestsStorageKey,
-  residentRequestDeletionsStorageKey,
-  residentPaymentDraftsStorageKey,
-  gcashRecipientsStorageKey,
-  residentRecordsStorageKey,
-  registrationRequestsStorageKey,
-  residentCodeRecoveryRequestsStorageKey,
-  residentProfileUpdateRequestsStorageKey,
-  documentFeesStorageKey,
-  documentFeesDefaultsVersionStorageKey,
-  adminPreferencesStorageKey,
-  residentHistoryStorageKey,
-  archivedResidentsStorageKey,
-  issuedDocumentsStorageKey,
-  residentDraftsStorageKey,
-  officialAvailabilityStorageKey,
-  certificateTemplatesStorageKey,
-  enabledCertificateTypesStorageKey,
-  officialProfilesStorageKey,
-  officialPhotosStorageKey,
-]
-
-const openRegistrationCacheDatabase = () => new Promise((resolve, reject) => {
-  if (!window.indexedDB) {
-    reject(new Error('This browser does not support local registration storage.'))
-    return
-  }
-  const request = window.indexedDB.open(registrationCacheDatabaseName, 1)
-  request.onupgradeneeded = () => {
-    if (!request.result.objectStoreNames.contains(registrationCacheObjectStoreName)) {
-      request.result.createObjectStore(registrationCacheObjectStoreName)
-    }
-  }
-  request.onsuccess = () => resolve(request.result)
-  request.onerror = () => reject(request.error || new Error('Unable to open local registration storage.'))
-  request.onblocked = () => reject(new Error('Local registration storage is busy in another browser tab.'))
-})
-
-const loadLocalRegistrationRequests = async () => {
-  let indexedRequests = []
-  const database = window.indexedDB ? await openRegistrationCacheDatabase() : null
-  if (database) {
-    try {
-      const storedRequests = await new Promise((resolve, reject) => {
-        const request = database
-          .transaction(registrationCacheObjectStoreName, 'readonly')
-          .objectStore(registrationCacheObjectStoreName)
-          .get(registrationCacheRecordKey)
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error || new Error('Unable to read local registration storage.'))
-      })
-      if (storedRequests !== undefined) {
-        if (!Array.isArray(storedRequests) || !storedRequests.every((request) => request && typeof request.id === 'string')) {
-          throw new Error('Saved local registration requests use an invalid format.')
-        }
-        indexedRequests = storedRequests
-      }
-    } finally {
-      database.close()
-    }
-  }
-  const savedRequests = window.localStorage.getItem(registrationRequestsStorageKey)
-  let browserRequests = []
-  if (savedRequests !== null) {
-    browserRequests = JSON.parse(savedRequests)
-    if (!Array.isArray(browserRequests) || !browserRequests.every((request) => request && typeof request.id === 'string')) {
-      throw new Error('Saved local registration requests use an invalid format.')
-    }
-  }
-  return mergePersistedRecordLists(indexedRequests, browserRequests, 'legacy registration requests')
-}
-
-const readIndexedResidentRecord = async (key) => {
-  const database = await openRegistrationCacheDatabase()
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = database
-        .transaction(registrationCacheObjectStoreName, 'readonly')
-        .objectStore(registrationCacheObjectStoreName)
-        .get(key)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error || new Error('Unable to read resident browser storage.'))
-    })
-  } finally {
-    database.close()
-  }
-}
-
-const loadLocalResidentRecord = async (key, fallback) => {
-  let indexedRecord
-  try {
-    indexedRecord = await readIndexedResidentRecord(key)
-  } catch (error) {
-    console.warn(`Unable to read ${key} from IndexedDB; trying browser storage.`, error)
-  }
-
-  const serializedRecord = window.localStorage.getItem(key)
-  let parsedRecord = fallback
-  if (serializedRecord !== null) {
-    try {
-      parsedRecord = JSON.parse(serializedRecord)
-    } catch (error) {
-      throw new Error(`Saved ${key} in browser storage is invalid. ${error.message}`, { cause: error })
-    }
-  }
-  if (indexedRecord === undefined) return parsedRecord
-  if (!Array.isArray(indexedRecord) || !Array.isArray(parsedRecord)) {
-    throw new Error(`Saved ${key} in browser storage is not a list.`)
-  }
-  return mergePersistedRecordLists(indexedRecord, parsedRecord, `legacy ${key}`)
-}
-
 const createResidentDraftId = () => `DRAFT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const createResidentPaymentGroupId = () => `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const isRequestReadyForDocumentProcessing = (request) => (
@@ -3293,19 +3200,6 @@ const getResidentCommunityUpdateId = (update) => (
   `community-update-${getAdminNavigationItemId(update)}`
 )
 
-const readStoredImageMap = (key) => {
-  const saved = window.localStorage.getItem(key)
-  if (!saved) return {}
-  const parsed = JSON.parse(saved)
-  const normalized = normalizeOfficialPhotoMap(parsed)
-  if (!normalized) {
-    throw new Error(`Saved data for ${key} must be an image map.`)
-  }
-  return normalized
-}
-
-const officialPhotosCacheRecordKey = 'official-photos'
-
 const isOfficialPhotoMap = (photos) => Boolean(
   photos && typeof photos === 'object' && !Array.isArray(photos)
   && Object.values(photos).every((photo) => typeof photo === 'string'),
@@ -3317,50 +3211,6 @@ const normalizeOfficialPhotoMap = (photos) => {
   return Object.fromEntries(photos.flatMap((photo, index) => (
     typeof photo === 'string' && photo ? [[String(index), photo]] : []
   )))
-}
-
-const loadLocalOfficialPhotos = async () => {
-  const database = window.indexedDB ? await openRegistrationCacheDatabase() : null
-  if (!database) return readStoredImageMap(officialPhotosStorageKey)
-  let indexedPhotos = {}
-  try {
-    const photos = await new Promise((resolve, reject) => {
-      const request = database
-        .transaction(registrationCacheObjectStoreName, 'readonly')
-        .objectStore(registrationCacheObjectStoreName)
-        .get(officialPhotosCacheRecordKey)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error || new Error('Unable to read saved official photos.'))
-    })
-    if (photos !== undefined) {
-      indexedPhotos = normalizeOfficialPhotoMap(photos)
-      if (!indexedPhotos) throw new Error('Saved official photos use an invalid format.')
-    }
-  } finally {
-    database.close()
-  }
-  return { ...readStoredImageMap(officialPhotosStorageKey), ...indexedPhotos }
-}
-
-const loadLegacyBrowserRecordSnapshot = async () => {
-  const records = {}
-  serverBackedStorageKeys.forEach((key) => {
-    const saved = window.localStorage.getItem(key)
-    if (saved === null) return
-    try {
-      records[key] = JSON.parse(saved)
-    } catch (error) {
-      throw new Error(`Saved browser data for ${key} is invalid and was not changed. ${error.message}`, { cause: error })
-    }
-  })
-
-  await Promise.all(residentLocalRecordKeys.map(async (key) => {
-    records[key] = await loadLocalResidentRecord(key, records[key] ?? [])
-  }))
-  records[registrationRequestsStorageKey] = await loadLocalRegistrationRequests()
-  records[officialPhotosStorageKey] = await loadLocalOfficialPhotos()
-
-  return records
 }
 
 const normalizeBarangayContactInformation = (value) => {
@@ -3651,94 +3501,6 @@ const resolveResidentRequestIdCollisions = (requests, remoteRequests) => {
   })
 
   return uniqueResidentRequestsById(resolvedRequests)
-}
-
-const mergePersistedRecordLists = (databaseRecords, browserRecords, label) => {
-  if (!Array.isArray(databaseRecords) || !Array.isArray(browserRecords)) {
-    throw new Error(`Saved ${label} must be a list.`)
-  }
-
-  const records = new Map()
-  const unkeyedRecords = []
-  for (const record of databaseRecords) {
-    if (record && (typeof record.id === 'string' || typeof record.id === 'number')) {
-      records.set(String(record.id), record)
-    } else {
-      unkeyedRecords.push(record)
-    }
-  }
-
-  for (const browserRecord of browserRecords) {
-    if (!browserRecord || (typeof browserRecord.id !== 'string' && typeof browserRecord.id !== 'number')) {
-      if (!unkeyedRecords.some((record) => JSON.stringify(record) === JSON.stringify(browserRecord))) {
-        unkeyedRecords.push(browserRecord)
-      }
-      continue
-    }
-
-    const id = String(browserRecord.id)
-    const databaseRecord = records.get(id)
-    if (!databaseRecord) {
-      records.set(id, browserRecord)
-      continue
-    }
-
-    const browserIsNewer = getPersistedRecordTimestamp(browserRecord) > getPersistedRecordTimestamp(databaseRecord)
-    const olderRecord = browserIsNewer ? databaseRecord : browserRecord
-    const newerRecord = browserIsNewer ? browserRecord : databaseRecord
-    records.set(id, {
-      ...olderRecord,
-      ...newerRecord,
-      ...(olderRecord.data || newerRecord.data
-        ? { data: { ...(olderRecord.data || {}), ...(newerRecord.data || {}) } }
-        : {}),
-      ...(olderRecord.files || newerRecord.files
-        ? { files: { ...(olderRecord.files || {}), ...(newerRecord.files || {}) } }
-        : {}),
-      ...(olderRecord.reviewSteps || newerRecord.reviewSteps
-        ? { reviewSteps: { ...(olderRecord.reviewSteps || {}), ...(newerRecord.reviewSteps || {}) } }
-        : {}),
-    })
-  }
-
-  return [...records.values(), ...unkeyedRecords]
-}
-
-const mergeMissingRecordLists = (databaseRecords, browserRecords, label) => {
-  if (!Array.isArray(databaseRecords) || !Array.isArray(browserRecords)) {
-    throw new Error(`Saved ${label} must be a list.`)
-  }
-  const identityOf = (record) => {
-    if (!record || typeof record !== 'object') return ''
-    const identity = record.id ?? record.code ?? record.residentCode ?? record.resident_code
-      ?? record.submissionId
-    return identity === undefined || identity === null || String(identity).trim() === ''
-      ? ''
-      : String(identity).trim().toLowerCase()
-  }
-  const serverIds = new Set(databaseRecords.flatMap((record) => (
-    identityOf(record) ? [identityOf(record)] : []
-  )))
-  const records = [...databaseRecords]
-  const unkeyedRecords = new Set(
-    databaseRecords
-      .filter((record) => !identityOf(record))
-      .map((record) => JSON.stringify(record)),
-  )
-  browserRecords.forEach((record) => {
-    const identity = identityOf(record)
-    if (identity) {
-      if (serverIds.has(identity)) return
-      serverIds.add(identity)
-      records.push(record)
-      return
-    }
-    const serialized = JSON.stringify(record)
-    if (unkeyedRecords.has(serialized)) return
-    unkeyedRecords.add(serialized)
-    records.push(record)
-  })
-  return records
 }
 
 const getResidentRecordNameKey = (resident) => normalizeRecoveryIdentity(
@@ -4978,11 +4740,14 @@ function App() {
   const adminContentRef = useRef(null)
   const skipNextDatabaseSaveRef = useRef(false)
   const databaseSaveQueueRef = useRef(Promise.resolve())
+  const fastSyncRef = useRef(null)
+  const adminSyncDataHandlerRef = useRef(null)
   const databaseRecordsRef = useRef(null)
-  const legacyBrowserRecordsRef = useRef(null)
-  const legacyBrowserRecoveryAppliedRef = useRef(false)
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
+  const pendingRegistrationEtagRef = useRef('')
+  const requestEvidenceAvailableIdsRef = useRef(new Set())
+  const requestEvidenceLoadedIdsRef = useRef(new Set())
   const [selectedRole, setSelectedRole] = useState('')
   const [hasStarted, setHasStarted] = useState(false)
   const [showOfficials, setShowOfficials] = useState(false)
@@ -5077,13 +4842,9 @@ function App() {
   const [showOfficialDashboard, setShowOfficialDashboard] = useState(false)
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
+  const [requestEvidenceAvailableIds, setRequestEvidenceAvailableIds] = useState(() => new Set())
+  const [requestEvidenceLoadedIds, setRequestEvidenceLoadedIds] = useState(() => new Set())
   const [hasLoadedPrivateDatabaseData, setHasLoadedPrivateDatabaseData] = useState(false)
-  const [hasLocalResidentCache, setHasLocalResidentCache] = useState(false)
-  const [hasLocalRequestCache, setHasLocalRequestCache] = useState(false)
-  const [hasLocalRegistrationCache, setHasLocalRegistrationCache] = useState(false)
-  const [isUsingLocalPrivateSnapshot, setIsUsingLocalPrivateSnapshot] = useState(false)
-  const [hasResolvedLegacyBrowserSnapshot, setHasResolvedLegacyBrowserSnapshot] = useState(false)
-  const [legacyBrowserRecoveryError, setLegacyBrowserRecoveryError] = useState('')
   const [sharedDatabaseHealth, setSharedDatabaseHealth] = useState('checking')
   useEffect(() => {
     let cancelled = false
@@ -5146,6 +4907,7 @@ function App() {
   const [databaseSaveStatus, setDatabaseSaveStatus] = useState('checking')
   const [databaseSaveError, setDatabaseSaveError] = useState('')
   const [databaseLoadVersion, setDatabaseLoadVersion] = useState(0)
+  const [adminFastSync, setAdminFastSync] = useState(null)
   const [residentRequests, setResidentRequests] = useState([])
   const [residentNotificationReadState, setResidentNotificationReadState] = useState({})
   const [adminNavigationReadState, setAdminNavigationReadState] = useState({})
@@ -5218,6 +4980,12 @@ function App() {
   const setOfficialBackendToken = useCallback((token) => {
     setOfficialBackendTokenState(token)
     setAdminDatabaseHealth('checking')
+    databaseEtagRef.current = ''
+    pendingRegistrationEtagRef.current = ''
+    requestEvidenceAvailableIdsRef.current = new Set()
+    requestEvidenceLoadedIdsRef.current = new Set()
+    setRequestEvidenceAvailableIds(new Set())
+    setRequestEvidenceLoadedIds(new Set())
   }, [])
   useEffect(() => {
     if (!officialBackendToken) return undefined
@@ -5491,6 +5259,7 @@ function App() {
   const [requirementPhotoLoading, setRequirementPhotoLoading] = useState({})
   const [requirementPhotoError, setRequirementPhotoError] = useState('')
   const [selectedRequestId, setSelectedRequestId] = useState(null)
+  const [requestEvidenceError, setRequestEvidenceError] = useState('')
   const [selectedResidentGroupId, setSelectedResidentGroupId] = useState(null)
   const [documentQueueFilter, setDocumentQueueFilter] = useState('incoming')
   const [releaseForm, setReleaseForm] = useState({ requestId: '', releasedTo: '', orNumber: '', issuingOfficer: '' })
@@ -5810,6 +5579,63 @@ function App() {
   const normalizeResidentName = (name) => normalizeRecoveryIdentity(name)
 
   useEffect(() => {
+    if (!selectedRequestId || !officialBackendToken || !showOfficialDashboard
+      || !requestEvidenceAvailableIdsRef.current.has(selectedRequestId)
+      || requestEvidenceLoadedIdsRef.current.has(selectedRequestId)) return undefined
+
+    const requestId = selectedRequestId
+    const controller = new AbortController()
+    let cancelled = false
+    const loadRequestEvidence = async () => {
+      try {
+        const requestUrl = `${API_URL}${API_URL.includes('?') ? '&' : '?'}requestEvidence=${encodeURIComponent(requestId)}`
+        const { response, result } = await fetchJsonWithTimeout(requestUrl, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${officialBackendToken}` },
+          signal: controller.signal,
+        }, 'Resident request evidence', DATABASE_REQUEST_TIMEOUT_MS)
+        if (!response.ok || !result?.success || result.data?.request?.id !== requestId) {
+          throw new Error(result?.message || 'The submitted request evidence could not be loaded.')
+        }
+        if (cancelled) return
+
+        const nextRequests = residentRequestsRef.current.map((request) => (
+          request.id === requestId ? { ...request, ...result.data.request } : request
+        ))
+        residentRequestsRef.current = nextRequests
+        if (databaseRecordsRef.current) {
+          databaseRecordsRef.current = {
+            ...databaseRecordsRef.current,
+            [residentRequestsStorageKey]: nextRequests,
+          }
+        }
+        requestEvidenceLoadedIdsRef.current.add(requestId)
+        setRequestEvidenceLoadedIds(new Set(requestEvidenceLoadedIdsRef.current))
+        setRequestEvidenceError(null)
+        setResidentRequests(nextRequests)
+      } catch (error) {
+        if (!cancelled && error.name !== 'AbortError') {
+          console.error('Unable to load evidence for the selected resident request.', error)
+          setRequestEvidenceError({ requestId, message: error.message || 'The submitted request evidence could not be loaded.' })
+        }
+      }
+    }
+
+    loadRequestEvidence()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [
+    officialBackendToken,
+    requestEvidenceAvailableIds,
+    requestEvidenceLoadedIds,
+    residentRequests,
+    selectedRequestId,
+    showOfficialDashboard,
+  ])
+
+  useEffect(() => {
     const active = showRequestForm || showReview
     document.documentElement.classList.toggle('request-workflow-scroll', active)
     return () => document.documentElement.classList.remove('request-workflow-scroll')
@@ -5893,61 +5719,6 @@ function App() {
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
-    const applyBrowserPrivateSnapshot = (browserRecords) => {
-      const hasResidents = Array.isArray(browserRecords[residentRecordsStorageKey])
-      const hasRequests = Array.isArray(browserRecords[residentRequestsStorageKey])
-      const hasRegistrations = Array.isArray(browserRecords[registrationRequestsStorageKey])
-      const hasRecordId = (record) => record
-        && typeof record === 'object'
-        && !Array.isArray(record)
-        && record.id !== undefined
-        && record.id !== null
-        && String(record.id).trim() !== ''
-      if (hasResidents && !browserRecords[residentRecordsStorageKey].every(hasRecordId)) {
-        throw new Error('Saved browser resident records contain an invalid record.')
-      }
-      if (hasRequests && !browserRecords[residentRequestsStorageKey].every(hasRecordId)) {
-        throw new Error('Saved browser document requests contain an invalid record.')
-      }
-      if (hasRegistrations && !browserRecords[registrationRequestsStorageKey].every(hasRecordId)) {
-        throw new Error('Saved browser registration requests contain an invalid record.')
-      }
-      if (hasResidents) {
-        setAdminResidents(reconcileResidentCodeRotationRecords(
-          browserRecords[residentRecordsStorageKey],
-          Array.isArray(browserRecords[residentCodeRecoveryRequestsStorageKey])
-            ? browserRecords[residentCodeRecoveryRequestsStorageKey]
-            : [],
-        ))
-      }
-      if (hasRequests) {
-        const deletedRequestIds = new Set(
-          Array.isArray(browserRecords[residentRequestDeletionsStorageKey])
-            ? browserRecords[residentRequestDeletionsStorageKey]
-            : [],
-        )
-        const browserHistory = Array.isArray(browserRecords[residentHistoryStorageKey])
-          ? browserRecords[residentHistoryStorageKey]
-          : []
-        const templates = Array.isArray(browserRecords[certificateTemplatesStorageKey])
-          ? browserRecords[certificateTemplatesStorageKey]
-          : []
-        const cachedRequests = splitMultiDocumentRequests(
-          browserRecords[residentRequestsStorageKey]
-            .filter((request) => !deletedRequestIds.has(request.id))
-            .map(withRequestStatusHistory),
-          templates,
-        )
-        const restoredRequests = restoreUnprintedApprovedRequests(cachedRequests, browserHistory)
-        setResidentRequests(restoredRequests.requests)
-        setResidentHistory(restoredRequests.history)
-      }
-      if (hasRegistrations) setRegistrationRequests(browserRecords[registrationRequestsStorageKey])
-      setHasLocalResidentCache(hasResidents)
-      setHasLocalRequestCache(hasRequests)
-      setHasLocalRegistrationCache(hasRegistrations)
-      setIsUsingLocalPrivateSnapshot(hasResidents || hasRequests || hasRegistrations)
-    }
     const loadDatabaseData = async () => {
       if (!officialBackendToken) setHasLoadedPrivateDatabaseData(false)
       if (officialBackendToken) {
@@ -5955,49 +5726,12 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const databaseRequest = fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
           signal: controller.signal,
-        }, 'Database request', officialBackendToken ? DATABASE_REQUEST_TIMEOUT_MS : undefined)
-        const browserRecordsRequest = officialBackendToken
-          ? legacyBrowserRecordsRef.current === null
-            ? loadLegacyBrowserRecordSnapshot().then((records) => {
-              legacyBrowserRecordsRef.current = records
-              setHasResolvedLegacyBrowserSnapshot(true)
-              setLegacyBrowserRecoveryError('')
-            if (!cancelled && !databaseRecordsRef.current) applyBrowserPrivateSnapshot(records)
-              return records
-            }).catch((error) => {
-              console.error('Unable to read legacy browser recovery records.', error)
-              legacyBrowserRecordsRef.current = {}
-              legacyBrowserRecoveryAppliedRef.current = true
-              setHasResolvedLegacyBrowserSnapshot(true)
-              setLegacyBrowserRecoveryError(error.message || 'Saved browser recovery data could not be read.')
-              return {}
-            })
-            : Promise.resolve(legacyBrowserRecordsRef.current).then((records) => {
-              if (!cancelled && !databaseRecordsRef.current) applyBrowserPrivateSnapshot(records)
-              return records
-            })
-          : Promise.resolve({})
-        let browserSnapshotTimeoutId
-        const browserSnapshotTimeout = new Promise((resolve) => {
-          browserSnapshotTimeoutId = window.setTimeout(() => resolve(null), 1200)
-        })
-        const [{ response, result }, initialBrowserRecords] = await Promise.all([
-          databaseRequest,
-          officialBackendToken
-            ? Promise.race([browserRecordsRequest, browserSnapshotTimeout])
-            : Promise.resolve({}),
-        ])
-        window.clearTimeout(browserSnapshotTimeoutId)
-        const browserSnapshotIncluded = initialBrowserRecords !== null
-        const browserResidentRecords = initialBrowserRecords || {}
-        if (officialBackendToken && browserSnapshotIncluded) {
-          legacyBrowserRecoveryAppliedRef.current = true
-        }
+        }, 'Database request', officialBackendToken ? DATABASE_ADMIN_READ_TIMEOUT_MS : undefined)
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
@@ -6016,28 +5750,25 @@ function App() {
         if (officialBackendToken) databaseEtagRef.current = response.headers.get('ETag') || ''
 
         const data = result.data || {}
-
-        const loadValue = (key, fallback) => {
-          if (Object.prototype.hasOwnProperty.call(data, key)) {
-            const serverValue = data[key]
-            const browserValue = browserResidentRecords[key]
-            return Array.isArray(serverValue) && Array.isArray(browserValue)
-              ? mergeMissingRecordLists(serverValue, browserValue, key)
-              : serverValue
-          }
-
-          return Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
-            ? browserResidentRecords[key]
-            : fallback
+        if (data.requestEvidenceIds !== undefined
+          && (!Array.isArray(data.requestEvidenceIds)
+            || !data.requestEvidenceIds.every((id) => typeof id === 'string'))) {
+          throw new Error('The server returned invalid resident request evidence references.')
         }
-        const loadMergedList = (key, fallback, label) => {
+        requestEvidenceAvailableIdsRef.current = new Set(data.requestEvidenceIds || [])
+        setRequestEvidenceAvailableIds(requestEvidenceAvailableIdsRef.current)
+
+        const loadValue = (key, fallback) => (
+          Object.prototype.hasOwnProperty.call(data, key) ? data[key] : fallback
+        )
+        const loadServerList = (key, fallback, label) => {
           const databaseRecords = Object.prototype.hasOwnProperty.call(data, key)
             ? data[key]
-            : loadValue(key, fallback)
-          const browserRecords = Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
-            ? browserResidentRecords[key]
-            : []
-          return mergeMissingRecordLists(databaseRecords, browserRecords, label)
+            : fallback
+          if (!Array.isArray(databaseRecords)) {
+            throw new Error(`Saved ${label} must be a list.`)
+          }
+          return databaseRecords
         }
 
         const updates = loadValue(communityUpdatesStorageKey, initialCommunityUpdates)
@@ -6053,23 +5784,23 @@ function App() {
           !deletedRequestIdSet.has(record.requestId || record.id)
         ))
         const paymentDrafts = excludeDeletedRequestRecords(
-          loadMergedList(residentPaymentDraftsStorageKey, [], 'resident payment drafts'),
+          loadServerList(residentPaymentDraftsStorageKey, [], 'resident payment drafts'),
         )
         const savedResidentDrafts = excludeDeletedRequestRecords(
-          loadMergedList(residentDraftsStorageKey, [], 'resident request drafts'),
+          loadServerList(residentDraftsStorageKey, [], 'resident request drafts'),
         )
-        const codeRecoveryRequests = loadMergedList(residentCodeRecoveryRequestsStorageKey, [], 'resident code recovery requests')
+        const codeRecoveryRequests = loadServerList(residentCodeRecoveryRequestsStorageKey, [], 'resident code recovery requests')
         const reconciledResidents = reconcileResidentCodeRotationRecords(
-          loadMergedList(residentRecordsStorageKey, [], 'resident records'),
+          loadServerList(residentRecordsStorageKey, [], 'resident records'),
           codeRecoveryRequests,
         )
         const residents = reconciledResidents
         const history = excludeDeletedRequestRecords(
-          loadMergedList(residentHistoryStorageKey, [], 'resident history'),
+          loadServerList(residentHistoryStorageKey, [], 'resident history'),
         )
-        const archived = loadMergedList(archivedResidentsStorageKey, [], 'archived residents')
+        const archived = loadServerList(archivedResidentsStorageKey, [], 'archived residents')
         const issued = excludeDeletedRequestRecords(
-          loadMergedList(issuedDocumentsStorageKey, [], 'issued documents'),
+          loadServerList(issuedDocumentsStorageKey, [], 'issued documents'),
         )
         const customTemplates = loadValue(certificateTemplatesStorageKey, [])
         const hasValidTemplateLocation = (field) => (
@@ -6102,7 +5833,7 @@ function App() {
           throw new Error('Saved custom certificate templates exceed the 5 MB shared-storage limit.')
         }
         const requests = splitMultiDocumentRequests(
-          loadMergedList(residentRequestsStorageKey, [], 'resident requests')
+          loadServerList(residentRequestsStorageKey, [], 'resident requests')
             .filter((request) => !deletedRequestIdSet.has(request.id))
             .map(withRequestStatusHistory),
           customTemplates,
@@ -6116,21 +5847,16 @@ function App() {
         if (!Array.isArray(remoteRegistrations)) {
           throw new Error('Saved registration requests must be a list.')
         }
-        const registrations = mergeMissingRecordLists(
-          remoteRegistrations,
-          browserResidentRecords[registrationRequestsStorageKey] || [],
-          'registration requests',
-        )
-        const profileUpdates = loadMergedList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
+        const registrations = remoteRegistrations
+        const profileUpdates = loadServerList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
         const profiles = loadValue(officialProfilesStorageKey, initialOfficialProfiles)
         const serverPhotos = Object.prototype.hasOwnProperty.call(data, officialPhotosStorageKey)
           ? normalizeOfficialPhotoMap(data[officialPhotosStorageKey])
           : {}
-        const browserPhotos = normalizeOfficialPhotoMap(browserResidentRecords[officialPhotosStorageKey] || {})
-        if (!serverPhotos || !browserPhotos) {
+        if (!serverPhotos) {
           throw new Error('Saved official photos must be an image map or a legacy list of photo strings.')
         }
-        const photos = { ...browserPhotos, ...serverPhotos }
+        const photos = serverPhotos
         if (!photos) throw new Error('Saved official photos must be an image map or a legacy list of photo strings.')
         const recipients = loadValue(gcashRecipientsStorageKey, initialGcashRecipients)
         if (!isValidGcashRecipientList(recipients)) {
@@ -6203,88 +5929,12 @@ function App() {
           [gcashRecipientsStorageKey]: recipients,
         }
 
-        const savedRequestIds = new Set(
-          (Array.isArray(data[residentRequestsStorageKey]) ? data[residentRequestsStorageKey] : [])
-            .map((request) => String(request.id)),
-        )
-        const requestUpserts = getResidentRequestChanges(
-          data[residentRequestsStorageKey],
-          records[residentRequestsStorageKey],
-        ).upserts.filter((request) => !savedRequestIds.has(String(request.id)))
-        const requestRecoveryChanges = {
-          upserts: requestUpserts,
-          deletes: [],
-        }
-        const recoveredRecords = Object.fromEntries(Object.keys(records).flatMap((key) => {
-          if (key === residentRequestsStorageKey
-            || !Object.prototype.hasOwnProperty.call(browserResidentRecords, key)) return []
-          if (!Object.prototype.hasOwnProperty.call(data, key)) return [[key, records[key]]]
-          const serverValue = data[key]
-          const browserValue = browserResidentRecords[key]
-          if (Array.isArray(serverValue) && Array.isArray(browserValue)) {
-            const merged = mergeMissingRecordLists(serverValue, browserValue, key)
-            return merged.length > serverValue.length ? [[key, merged]] : []
-          }
-          if (key === officialPhotosStorageKey
-            && serverValue && typeof serverValue === 'object' && !Array.isArray(serverValue)
-            && browserValue && typeof browserValue === 'object' && !Array.isArray(browserValue)) {
-            const merged = { ...browserValue, ...serverValue }
-            return Object.keys(merged).length > Object.keys(serverValue).length ? [[key, merged]] : []
-          }
-          return []
-        }))
-        const hasRequestRecoveryChanges = requestRecoveryChanges.upserts.length > 0
-        const hasRecoveryChanges = Object.keys(recoveredRecords).length > 0 || hasRequestRecoveryChanges
-        if (officialBackendToken && hasRecoveryChanges) {
-          await saveDatabaseRecords(recoveredRecords, officialBackendToken, requestRecoveryChanges)
-          const { response: verificationResponse, result: verificationResult } = await fetchJsonWithTimeout(API_URL, {
-            method: 'GET',
-            cache: 'no-store',
-            headers: { Authorization: `Bearer ${officialBackendToken}` },
-            signal: controller.signal,
-          }, 'Database verification', DATABASE_REQUEST_TIMEOUT_MS)
-          if (!verificationResponse.ok || !verificationResult.success || !verificationResult.data) {
-            throw new Error(verificationResult?.message || 'Saved records could not be verified from the shared database.')
-          }
-          const verifiedData = verificationResult.data
-          const recordsToVerify = { ...recoveredRecords }
-          if (hasRequestRecoveryChanges) {
-            recordsToVerify[residentRequestsStorageKey] = requestRecoveryChanges.upserts
-          }
-          Object.entries(recordsToVerify).forEach(([key, expected]) => {
-            if (!Object.prototype.hasOwnProperty.call(verifiedData, key)) {
-              throw new Error(`The shared database did not return ${key} after saving.`)
-            }
-            if (key === residentRequestsStorageKey) {
-              const verifiedById = new Map((verifiedData[key] || []).map((record) => [record.id, record]))
-              const missingRequest = expected.find((record) => (
-                !verifiedById.has(record.id)
-                || JSON.stringify(verifiedById.get(record.id)) !== JSON.stringify(record)
-              ))
-              if (missingRequest) {
-                throw new Error(`Resident request ${missingRequest.id} could not be verified in the shared database.`)
-              }
-              return
-            }
-            if (JSON.stringify(verifiedData[key]) !== JSON.stringify(expected)) {
-              throw new Error(`Saved records for ${key} do not match the shared database.`)
-            }
-          })
-        }
         databaseRecordsRef.current = records
         if (officialBackendToken) setHasLoadedPrivateDatabaseData(true)
-        setHasLocalResidentCache(false)
-        setHasLocalRequestCache(false)
-        setHasLocalRegistrationCache(false)
-        setIsUsingLocalPrivateSnapshot(false)
-
         setDatabaseSaveError('')
         setDatabaseSaveStatus(officialBackendToken ? 'saved' : 'offline')
         setIsDatabaseConnected(Boolean(officialBackendToken))
         setIsPublicCommunityConnected(true)
-        if (officialBackendToken && browserSnapshotIncluded) {
-          legacyBrowserRecoveryAppliedRef.current = true
-        }
         console.log(officialBackendToken
           ? 'Barangay records loaded from database.'
           : 'Public community records loaded from database.')
@@ -6309,13 +5959,6 @@ function App() {
   }, [databaseLoadVersion, officialBackendToken, setOfficialBackendToken])
 
   useEffect(() => {
-    if (!officialBackendToken || !isDatabaseConnected || !hasResolvedLegacyBrowserSnapshot
-      || legacyBrowserRecoveryAppliedRef.current) return
-    legacyBrowserRecoveryAppliedRef.current = true
-    setDatabaseLoadVersion((version) => version + 1)
-  }, [hasResolvedLegacyBrowserSnapshot, isDatabaseConnected, officialBackendToken])
-
-  useEffect(() => {
     if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken) return undefined
     const controller = new AbortController()
     let requestPending = false
@@ -6324,16 +5967,20 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetchWithTimeout(`${BACKEND_API_URL}/pending-registrations.php`, {
+        const { response, result } = await fetchJsonWithTimeout(`${BACKEND_API_URL}/pending-registrations.php`, {
           cache: 'no-store',
-          headers: { Authorization: `Bearer ${officialBackendToken}` },
+          headers: {
+            Authorization: `Bearer ${officialBackendToken}`,
+            ...(pendingRegistrationEtagRef.current ? { 'If-None-Match': pendingRegistrationEtagRef.current } : {}),
+          },
           signal: controller.signal,
-        })
-        const result = await response.json()
+        }, 'Pending registrations')
+        if (response.status === 304) return
         if (!response.ok || !result.success || !Array.isArray(result.data)) {
           throw new Error(result.message || 'The registration service returned an invalid response.')
         }
 
+        pendingRegistrationEtagRef.current = response.headers.get('ETag') || ''
         const pendingRequests = result.data.map(mapBackendRegistrationRequest)
         setRegistrationRequests((requests) => mergeRegistrationRequestLists(pendingRequests, requests))
         setRegistrationSyncError('')
@@ -6370,7 +6017,8 @@ function App() {
   }, [isStorageLoaded, officialBackendToken, showOfficialDashboard])
 
   useEffect(() => {
-    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken) return undefined
+    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken
+      || databaseSaveStatus === 'checking') return undefined
     const controller = new AbortController()
     let requestPending = false
     const retryDatabaseConnection = async () => {
@@ -6385,10 +6033,11 @@ function App() {
             ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
           },
           signal: controller.signal,
-        }, 'Database reconnection', DATABASE_REQUEST_TIMEOUT_MS)
+        }, 'Database reconnection', DATABASE_ADMIN_READ_TIMEOUT_MS)
         if (response.status === 304) {
           if (databaseRecordsRef.current) {
             setDatabaseSaveError('')
+            setDatabaseSaveStatus('saved')
             setIsDatabaseConnected(true)
           } else {
             setDatabaseSaveStatus('checking')
@@ -6410,13 +6059,11 @@ function App() {
         }
         databaseEtagRef.current = response.headers.get('ETag') || ''
 
-        if (databaseRecordsRef.current) {
-          setDatabaseSaveError('')
-          setIsDatabaseConnected(true)
-        } else {
-          setDatabaseSaveStatus('checking')
-          setDatabaseLoadVersion((version) => version + 1)
-        }
+        setDatabaseSaveError('')
+        setDatabaseSaveStatus('checking')
+        setHasLoadedPrivateDatabaseData(false)
+        setIsDatabaseConnected(false)
+        setDatabaseLoadVersion((version) => version + 1)
       } catch (error) {
         if (error.name !== 'AbortError') {
           console.error('Unable to reconnect to the application database.', error)
@@ -6430,7 +6077,7 @@ function App() {
       if (document.visibilityState === 'visible') retryDatabaseConnection()
     }
     retryDatabaseConnection()
-    const retryTimer = window.setInterval(retryDatabaseConnection, DATABASE_REFRESH_INTERVAL_MS)
+    const retryTimer = window.setInterval(retryDatabaseConnection, DATABASE_RECONNECT_INTERVAL_MS)
     window.addEventListener('focus', retryDatabaseConnection)
     window.addEventListener('online', retryDatabaseConnection)
     document.addEventListener('visibilitychange', retryWhenVisible)
@@ -6441,7 +6088,14 @@ function App() {
       document.removeEventListener('visibilitychange', retryWhenVisible)
       controller.abort()
     }
-  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, officialBackendToken, setOfficialBackendToken])
+  }, [
+    applySharedCommunityRecords,
+    databaseSaveStatus,
+    isStorageLoaded,
+    isDatabaseConnected,
+    officialBackendToken,
+    setOfficialBackendToken,
+  ])
 
   const archivedDocumentRequests = residentHistory
     .filter((entry) => entry.type === 'documentRequest' && entry.request)
@@ -6832,13 +6486,13 @@ function App() {
   const isLoadingPrivateDatabaseData = Boolean(officialBackendToken)
     && !hasLoadedPrivateDatabaseData
     && databaseSaveStatus === 'checking'
-  const getPrivateDatabaseCount = (count, hasLocalCache = false) => (
-    officialBackendToken && !hasLoadedPrivateDatabaseData && !hasLocalCache
+  const getPrivateDatabaseCount = (count) => (
+    officialBackendToken && !hasLoadedPrivateDatabaseData
       ? isLoadingPrivateDatabaseData ? '…' : '—'
       : count
   )
-  const getPrivateDatabaseEmptyMessage = (label, emptyMessage, hasLocalCache = false) => {
-    if (hasLoadedPrivateDatabaseData || hasLocalCache || !officialBackendToken) return emptyMessage
+  const getPrivateDatabaseEmptyMessage = (label, emptyMessage) => {
+    if (hasLoadedPrivateDatabaseData || !officialBackendToken) return emptyMessage
     return isLoadingPrivateDatabaseData
       ? `Loading ${label} from the shared database…`
       : `${label} are unavailable while the shared database is disconnected.`
@@ -6866,6 +6520,9 @@ function App() {
   const pendingRecoveryRequestCount = residentCodeRecoveryRequests.filter((request) => request.status === 'Pending').length
   const adminPaymentRecords = groupPaymentRequests(residentRequests.filter((request) => Number(request.feeAmount || 0) > 0))
   const activePaymentRecords = adminPaymentRecords
+  const unpaidResidentPaymentRecords = groupPaymentRequests(residentPaymentDrafts.filter((request) => (
+    request.awaitingPaymentSubmission && Number(request.feeAmount || 0) > 0
+  )))
   const paymentAssessmentRecords = activePaymentRecords.filter((payment) => (
     payment.paymentStatus === 'Pending verification'
       && payment.requests.some((request) => request.status !== 'Cancelled')
@@ -6904,6 +6561,7 @@ function App() {
       `official:${index}:${getAdminNavigationItemId(official)}`
     )),
     payments: [
+      ...unpaidResidentPaymentRecords.map((request) => `payment-draft:${getAdminNavigationItemId(request)}`),
       ...paymentAssessmentRecords.map((request) => `payment:${getAdminNavigationItemId(request)}`),
       ...cancelledPaymentRequests
         .filter((request) => request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
@@ -6985,6 +6643,7 @@ function App() {
       request.status === 'Pending' && isAdminNotificationUnread('residents', 'profile-update', request)
     )).length
     + paymentAssessmentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment', request)).length
+    + unpaidResidentPaymentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment-draft', request)).length
     + cancelledPaymentRequests.filter((request) => (
       (request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
         && isAdminNotificationUnread('payments', 'refund', request)
@@ -7345,19 +7004,18 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetchWithTimeout(PUBLIC_COMMUNITY_API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(PUBLIC_COMMUNITY_API_URL, {
           cache: 'no-store',
           headers: publicCommunityEtagRef.current
             ? { 'X-Public-Data-Match': publicCommunityEtagRef.current }
             : {},
           signal: controller.signal,
-        })
+        }, 'Community refresh')
         if (response.status === 304) {
           setIsPublicCommunityConnected(true)
           return
         }
         if (!response.ok) throw new Error(`Community refresh failed with status ${response.status}.`)
-        const result = await response.json()
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
           throw new Error('The server returned invalid community records.')
         }
@@ -7396,7 +7054,7 @@ function App() {
       if (document.visibilityState === 'visible') refreshCommunityRecords()
     }
     refreshCommunityRecords()
-    const refreshTimer = window.setInterval(refreshCommunityRecords, DATABASE_REFRESH_INTERVAL_MS)
+    const refreshTimer = window.setInterval(refreshCommunityRecords, PUBLIC_COMMUNITY_REFRESH_INTERVAL_MS)
     window.addEventListener('focus', refreshCommunityRecords)
     window.addEventListener('online', refreshCommunityRecords)
     document.addEventListener('visibilitychange', refreshWhenVisible)
@@ -7480,17 +7138,16 @@ function App() {
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetchWithTimeout(API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(API_URL, {
           cache: 'no-store',
           headers: {
             Authorization: `Bearer ${officialBackendToken}`,
             ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
           },
           signal: controller.signal,
-        }, DATABASE_REQUEST_TIMEOUT_MS)
+        }, 'Resident updates refresh', DATABASE_ADMIN_READ_TIMEOUT_MS)
         if (response.status === 304) return
         if (!response.ok) throw new Error(`Resident updates refresh failed with status ${response.status}.`)
-        const result = await response.json()
         databaseEtagRef.current = response.headers.get('ETag') || databaseEtagRef.current
         if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
           throw new Error('The server returned invalid resident update records.')
@@ -7547,128 +7204,76 @@ function App() {
     }
   }, [applySharedCertificateCatalog, applySharedGcashRecipients, customCertificateTemplates, isDatabaseConnected, isStorageLoaded, officialBackendToken, residentDashboardSection, showResidentInboxPage])
 
-  useEffect(() => {
-    if (!isStorageLoaded || !isDatabaseConnected || !showOfficialDashboard || !officialBackendToken) return undefined
-    const controller = new AbortController()
-    let requestPending = false
-    const refreshAdminRequests = async () => {
-      if (document.visibilityState !== 'visible') return
-      if (requestPending) return
-      requestPending = true
-      try {
-        const response = await fetchWithTimeout(API_URL, {
-          cache: 'no-store',
-          headers: {
-            Authorization: `Bearer ${officialBackendToken}`,
-            ...(databaseEtagRef.current ? { 'If-None-Match': databaseEtagRef.current } : {}),
-          },
-          signal: controller.signal,
-        }, DATABASE_REQUEST_TIMEOUT_MS)
-        if (response.status === 304) return
-        if (response.status === 401) {
-          setOfficialBackendToken('')
-          setIsDatabaseConnected(false)
-          setShowOfficialDashboard(false)
-          setShowOfficialLogin(true)
-          setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
-          return
-        }
-        if (!response.ok) throw new Error(`Admin request refresh failed with status ${response.status}.`)
-        const result = await response.json()
-        if (!result.success || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
-          throw new Error('The server returned invalid admin request records.')
-        }
-        databaseEtagRef.current = response.headers.get('ETag') || ''
-        applySharedCommunityRecords(result.data)
-        applySharedCertificateCatalog(result.data)
-        applySharedGcashRecipients(result.data)
-        applySharedAdminSearchRecords(result.data)
-        const remoteRequests = result.data[residentRequestsStorageKey]
-        let nextRequests = residentRequestsRef.current
-        if (remoteRequests !== undefined) {
-          if (!Array.isArray(remoteRequests)) throw new Error('Saved resident requests must be a list.')
-          if (residentRequestSavePendingRef.current === 0 && Date.now() >= residentRequestSyncPauseUntilRef.current) {
-            nextRequests = splitMultiDocumentRequests(
-              remoteRequests.map(withRequestStatusHistory),
-              customCertificateTemplates,
-            )
-          }
-        }
+  const applyAdminSyncData = useCallback((data) => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('The server returned invalid admin records.')
+    }
+    if (data.requestEvidenceIds !== undefined
+      && (!Array.isArray(data.requestEvidenceIds)
+        || !data.requestEvidenceIds.every((id) => typeof id === 'string'))) {
+      throw new Error('The server returned invalid resident request evidence references.')
+    }
 
-        const remoteHistory = result.data[residentHistoryStorageKey]
-        if (remoteHistory !== undefined && !Array.isArray(remoteHistory)) {
-          throw new Error('Saved resident history must be a list.')
-        }
-        let nextHistory = residentHistoryRef.current
-        if (remoteHistory !== undefined
-          && residentRequestSavePendingRef.current === 0
-          && Date.now() >= residentRequestSyncPauseUntilRef.current) {
-          nextHistory = remoteHistory
-        }
-        const restoredRequests = restoreUnprintedApprovedRequests(
-          nextRequests,
-          nextHistory,
-        )
-        const requestsChanged = JSON.stringify(residentRequestsRef.current) !== JSON.stringify(restoredRequests.requests)
-        const historyChanged = JSON.stringify(residentHistoryRef.current) !== JSON.stringify(restoredRequests.history)
-        if (requestsChanged || historyChanged) {
-          residentRequestsRef.current = restoredRequests.requests
-          residentHistoryRef.current = restoredRequests.history
-          if (requestsChanged) setResidentRequests(restoredRequests.requests)
-          if (historyChanged) setResidentHistory(restoredRequests.history)
-          if (databaseRecordsRef.current) {
-            databaseRecordsRef.current = {
-              ...databaseRecordsRef.current,
-              [residentRequestsStorageKey]: restoredRequests.requests,
-              [residentHistoryStorageKey]: restoredRequests.history,
-            }
-          }
-        }
+    requestEvidenceAvailableIdsRef.current = new Set(data.requestEvidenceIds || [])
+    setRequestEvidenceAvailableIds(requestEvidenceAvailableIdsRef.current)
+    applySharedCommunityRecords(data)
+    applySharedCertificateCatalog(data)
+    applySharedGcashRecipients(data)
+    applySharedAdminSearchRecords(data)
 
-        const remotePaymentDrafts = result.data[residentPaymentDraftsStorageKey]
-        if (remotePaymentDrafts !== undefined) {
-          if (!Array.isArray(remotePaymentDrafts)) throw new Error('Saved resident payment drafts must be a list.')
-          const currentDrafts = residentPaymentDraftsRef.current
-          const savedDrafts = databaseRecordsRef.current?.[residentPaymentDraftsStorageKey]
-          const hasLocalDraftChanges = JSON.stringify(currentDrafts) !== JSON.stringify(savedDrafts)
-          const mergedDrafts = new Map(
-            [...(hasLocalDraftChanges ? currentDrafts : []), ...remotePaymentDrafts]
-              .map((request) => [request.id, request]),
-          )
-          const nextPaymentDrafts = Array.from(mergedDrafts.values())
-          if (JSON.stringify(residentPaymentDraftsRef.current) !== JSON.stringify(nextPaymentDrafts)) {
-            residentPaymentDraftsRef.current = nextPaymentDrafts
-            setResidentPaymentDrafts(nextPaymentDrafts)
-          }
-          if (databaseRecordsRef.current) {
-            databaseRecordsRef.current = {
-              ...databaseRecordsRef.current,
-              [residentPaymentDraftsStorageKey]: nextPaymentDrafts,
-            }
-          }
+    const remoteRequests = data[residentRequestsStorageKey] ?? []
+    let nextRequests = residentRequestsRef.current
+    if (!Array.isArray(remoteRequests)) throw new Error('Saved resident requests must be a list.')
+    if (residentRequestSavePendingRef.current === 0 && Date.now() >= residentRequestSyncPauseUntilRef.current) {
+      nextRequests = splitMultiDocumentRequests(
+        remoteRequests.map(withRequestStatusHistory),
+        customCertificateTemplates,
+      )
+    }
+
+    const remoteHistory = data[residentHistoryStorageKey] ?? []
+    if (!Array.isArray(remoteHistory)) throw new Error('Saved resident history must be a list.')
+    let nextHistory = residentHistoryRef.current
+    if (residentRequestSavePendingRef.current === 0
+      && Date.now() >= residentRequestSyncPauseUntilRef.current) {
+      nextHistory = remoteHistory
+    }
+    const restoredRequests = restoreUnprintedApprovedRequests(nextRequests, nextHistory)
+    const requestsChanged = JSON.stringify(residentRequestsRef.current) !== JSON.stringify(restoredRequests.requests)
+    const historyChanged = JSON.stringify(residentHistoryRef.current) !== JSON.stringify(restoredRequests.history)
+    if (requestsChanged || historyChanged) {
+      residentRequestsRef.current = restoredRequests.requests
+      residentHistoryRef.current = restoredRequests.history
+      if (requestsChanged) setResidentRequests(restoredRequests.requests)
+      if (historyChanged) setResidentHistory(restoredRequests.history)
+      if (databaseRecordsRef.current) {
+        databaseRecordsRef.current = {
+          ...databaseRecordsRef.current,
+          [residentRequestsStorageKey]: restoredRequests.requests,
+          [residentHistoryStorageKey]: restoredRequests.history,
         }
-      } catch (error) {
-        if (error.name !== 'AbortError') {
-          console.error('Unable to refresh resident submissions in the admin request inbox.', error)
-        }
-      } finally {
-        requestPending = false
       }
     }
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === 'visible') refreshAdminRequests()
+
+    const remotePaymentDrafts = data[residentPaymentDraftsStorageKey] ?? []
+    if (!Array.isArray(remotePaymentDrafts)) throw new Error('Saved resident payment drafts must be a list.')
+    const currentDrafts = residentPaymentDraftsRef.current
+    const savedDrafts = databaseRecordsRef.current?.[residentPaymentDraftsStorageKey]
+    const hasLocalDraftChanges = JSON.stringify(currentDrafts) !== JSON.stringify(savedDrafts)
+    const mergedDrafts = new Map(
+      [...(hasLocalDraftChanges ? currentDrafts : []), ...remotePaymentDrafts]
+        .map((request) => [request.id, request]),
+    )
+    const nextPaymentDrafts = Array.from(mergedDrafts.values())
+    if (JSON.stringify(residentPaymentDraftsRef.current) !== JSON.stringify(nextPaymentDrafts)) {
+      residentPaymentDraftsRef.current = nextPaymentDrafts
+      setResidentPaymentDrafts(nextPaymentDrafts)
     }
-    refreshAdminRequests()
-    const refreshTimer = window.setInterval(refreshAdminRequests, ADMIN_INBOX_REFRESH_INTERVAL_MS)
-    window.addEventListener('focus', refreshAdminRequests)
-    window.addEventListener('online', refreshAdminRequests)
-    document.addEventListener('visibilitychange', refreshWhenVisible)
-    return () => {
-      window.clearInterval(refreshTimer)
-      window.removeEventListener('focus', refreshAdminRequests)
-      window.removeEventListener('online', refreshAdminRequests)
-      document.removeEventListener('visibilitychange', refreshWhenVisible)
-      controller.abort()
+    if (databaseRecordsRef.current) {
+      databaseRecordsRef.current = {
+        ...databaseRecordsRef.current,
+        [residentPaymentDraftsStorageKey]: nextPaymentDrafts,
+      }
     }
   }, [
     applySharedAdminSearchRecords,
@@ -7676,6 +7281,63 @@ function App() {
     applySharedCommunityRecords,
     applySharedGcashRecipients,
     customCertificateTemplates,
+  ])
+  useEffect(() => {
+    adminSyncDataHandlerRef.current = applyAdminSyncData
+  }, [applyAdminSyncData])
+
+  useEffect(() => {
+    if (!isStorageLoaded || !showOfficialDashboard || !officialBackendToken
+      || !hasLoadedPrivateDatabaseData || !isDatabaseConnected) return undefined
+
+    const fastSync = createFastSync()
+    fastSyncRef.current = fastSync
+    fastSync.start({
+      url: API_URL,
+      getToken: () => officialBackendToken,
+      initialEtag: databaseEtagRef.current,
+      onData: (data) => adminSyncDataHandlerRef.current?.(data),
+      onEtag: (etag) => {
+        databaseEtagRef.current = etag
+      },
+      onAuthError: () => {
+        setOfficialBackendToken('')
+        setIsDatabaseConnected(false)
+        setShowOfficialDashboard(false)
+        setShowOfficialLogin(true)
+        setLoginStatus('Your admin session is no longer valid. Sign in again to reconnect.')
+      },
+      onStatus: (message, failed, phase) => {
+        if (phase === 'save') {
+          if (failed) console.error(message)
+          setAdminFastSync(fastSync.isActive() ? fastSync : null)
+          return
+        }
+        if (failed) {
+          setAdminFastSync(null)
+          console.error('Unable to refresh admin records from the shared database.', message)
+          setDatabaseSaveError(message)
+          setDatabaseSaveStatus('offline')
+          setIsDatabaseConnected(false)
+          return
+        }
+        setAdminFastSync(fastSync)
+        setDatabaseSaveError('')
+        setDatabaseSaveStatus('saved')
+        setIsDatabaseConnected(true)
+      },
+      visibleMs: ADMIN_INBOX_REFRESH_INTERVAL_MS,
+      hiddenMs: 30000,
+      pullTimeoutMs: DATABASE_ADMIN_READ_TIMEOUT_MS,
+      saveTimeoutMs: DATABASE_REQUEST_TIMEOUT_MS,
+    })
+
+    return () => {
+      fastSync.stop()
+      if (fastSyncRef.current === fastSync) fastSyncRef.current = null
+    }
+  }, [
+    hasLoadedPrivateDatabaseData,
     isDatabaseConnected,
     isStorageLoaded,
     officialBackendToken,
@@ -7731,13 +7393,12 @@ function App() {
         })
         let remoteRequestsBeforeSubmit = []
         if (hasDuplicateRequestIds) {
-          const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
+          const { response, result } = await fetchJsonWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
             method: 'GET',
             cache: 'no-store',
             headers: { Authorization: `Bearer ${residentToken}` },
             signal: controller.signal,
-          }, DATABASE_REQUEST_TIMEOUT_MS)
-          const result = await readJsonResponse(response, 'Resident request sync')
+          }, 'Resident request sync', RESIDENT_REQUEST_READ_TIMEOUT_MS)
           if (!response.ok || !result.success || !result.data
             || !Array.isArray(result.data.requests)
             || !result.data.requests.every((request) => request && typeof request.id === 'string')) {
@@ -7778,7 +7439,7 @@ function App() {
           ...(recoveryRequestsChanged ? { recoveryRequests: currentOwnedRecoveryRequests } : {}),
           ...(profileUpdateRequestsChanged ? { profileUpdateRequests: currentOwnedProfileUpdateRequests } : {}),
         }
-        const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
+        const { response, result } = await fetchJsonWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
           method: shouldSubmit ? 'POST' : 'GET',
           cache: 'no-store',
           headers: {
@@ -7787,8 +7448,7 @@ function App() {
           },
           ...(shouldSubmit ? { body: JSON.stringify(syncPayload) } : {}),
           signal: controller.signal,
-        }, DATABASE_REQUEST_TIMEOUT_MS)
-        const result = await readJsonResponse(response, 'Resident request sync')
+        }, 'Resident request sync', shouldSubmit ? DATABASE_REQUEST_TIMEOUT_MS : RESIDENT_REQUEST_READ_TIMEOUT_MS)
         if (!response.ok || !result.success || !result.data
           || !Array.isArray(result.data.requests) || !Array.isArray(result.data.drafts)
           || !Array.isArray(result.data.requestDrafts) || !Array.isArray(result.data.recoveryRequests)
@@ -7897,7 +7557,7 @@ function App() {
       if (document.visibilityState === 'visible') synchronizeRequests()
     }
     synchronizeRequests()
-    const refreshTimer = window.setInterval(synchronizeRequests, DATABASE_REFRESH_INTERVAL_MS)
+    const refreshTimer = window.setInterval(synchronizeRequests, RESIDENT_REQUEST_SYNC_INTERVAL_MS)
     window.addEventListener('focus', synchronizeRequests)
     window.addEventListener('online', synchronizeRequests)
     document.addEventListener('visibilitychange', synchronizeWhenVisible)
@@ -7942,7 +7602,7 @@ function App() {
     const saveResidentRequests = async () => {
       try {
         setDatabaseSaveStatus('saving')
-        await queueDatabaseRecords(databaseSaveQueueRef, {}, officialBackendToken, requestChanges)
+        await queueDatabaseRecords(databaseSaveQueueRef, {}, officialBackendToken, requestChanges, fastSyncRef.current)
         databaseRecordsRef.current = {
           ...(databaseRecordsRef.current || {}),
           [residentRequestsStorageKey]: residentRequests,
@@ -7998,7 +7658,7 @@ function App() {
 
     const saveTimer = window.setTimeout(() => {
       setDatabaseSaveStatus('saving')
-      queueDatabaseRecords(databaseSaveQueueRef, changedRecords, officialBackendToken)
+      queueDatabaseRecords(databaseSaveQueueRef, changedRecords, officialBackendToken, null, fastSyncRef.current)
         .then(() => {
           databaseRecordsRef.current = { ...databaseRecordsRef.current, ...changedRecords }
           setDatabaseSaveError('')
@@ -8046,7 +7706,7 @@ function App() {
       return false
     }
     try {
-      await queueDatabaseRecords(databaseSaveQueueRef, { [communityUpdatesStorageKey]: updates }, officialBackendToken)
+      await queueDatabaseRecords(databaseSaveQueueRef, { [communityUpdatesStorageKey]: updates }, officialBackendToken, null, fastSyncRef.current)
       databaseRecordsRef.current = {
         ...(databaseRecordsRef.current || {}),
         [communityUpdatesStorageKey]: updates,
@@ -8073,7 +7733,7 @@ function App() {
     try {
       await queueDatabaseRecords(databaseSaveQueueRef, {
         [barangayContactInformationStorageKey]: updatedInformation,
-      }, officialBackendToken)
+      }, officialBackendToken, null, fastSyncRef.current)
       databaseRecordsRef.current = {
         ...(databaseRecordsRef.current || {}),
         [barangayContactInformationStorageKey]: updatedInformation,
@@ -8247,7 +7907,7 @@ function App() {
       ? { ...request, referenceNoticeDismissedAt: dismissedAt, updatedAt: dismissedAt }
       : request)
     try {
-      await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
+      await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken, null, fastSyncRef.current)
       databaseRecordsRef.current = {
         ...(databaseRecordsRef.current || {}),
         [registrationRequestsStorageKey]: nextRequests,
@@ -8836,7 +8496,7 @@ function App() {
         }
         nextRequests = [persistedRequest, ...registrationRequests.filter((current) => current.id !== requestId)]
       } else {
-        await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
+        await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken, null, fastSyncRef.current)
         databaseRecordsRef.current = {
           ...(databaseRecordsRef.current || {}),
           [registrationRequestsStorageKey]: nextRequests,
@@ -9516,7 +9176,7 @@ function App() {
     openRegistrationReview({ ...request, referenceAccessNote: '' }, getRegistrationReviewSteps()[0].key)
   }
 
-  const reviewRegistration = async (request, status) => {
+  const reviewRegistration = async (request, status, fastSync) => {
     if (request.status !== 'Pending') return
     if (getRegistrationReviewSteps(request).some(({ key }) => !request.reviewSteps?.[key])) return
     if (processingRegistrationId) return
@@ -9612,7 +9272,7 @@ function App() {
       if (status === 'Declined') {
         await saveDatabaseRecords({
           [registrationRequestsStorageKey]: nextRequests,
-        }, officialBackendToken)
+        }, officialBackendToken, null, fastSync)
         setRegistrationSyncError('')
       }
       setRegistrationRequests(nextRequests)
@@ -9701,7 +9361,7 @@ function App() {
       }
       const dataUrl = await createOfficialPortrait(file)
       const updatedPhotos = { ...officialPhotos, [index]: dataUrl }
-      await queueDatabaseRecords(databaseSaveQueueRef, { [officialPhotosStorageKey]: updatedPhotos }, officialBackendToken)
+      await queueDatabaseRecords(databaseSaveQueueRef, { [officialPhotosStorageKey]: updatedPhotos }, officialBackendToken, null, fastSyncRef.current)
       databaseRecordsRef.current = {
         ...(databaseRecordsRef.current || {}),
         [officialPhotosStorageKey]: updatedPhotos,
@@ -10106,7 +9766,7 @@ function App() {
 
   const confirmRequest = async () => {
     if (isSubmittingResidentRequest) return
-    const submittedRequirementPhotos = requirementPhotosRef.current
+    let submittedRequirementPhotos = requirementPhotosRef.current
     const availableDocuments = [...new Set(
       selectedDocuments.filter((document) => enabledCertificateTypes.includes(document))
     )]
@@ -10121,6 +9781,32 @@ function App() {
       setShowReview(false)
       setShowRequestForm(true)
       return
+    }
+    const oversizedSavedPhotos = Object.entries(submittedRequirementPhotos).filter(([, photo]) => (
+      photo?.dataUrl && photo.dataUrl.length > 1_050_000
+    ))
+    if (oversizedSavedPhotos.length) {
+      setIsSubmittingResidentRequest(true)
+      try {
+        const normalizedPhotos = await Promise.all(oversizedSavedPhotos.map(async ([key, photo]) => {
+          const response = await fetch(photo.dataUrl)
+          const blob = await response.blob()
+          const file = new File([blob], photo.fileName || `requirement-${key}.jpg`, {
+            type: blob.type || photo.mediaType || 'image/jpeg',
+          })
+          return [key, await createRequirementPhoto(file)]
+        }))
+        submittedRequirementPhotos = {
+          ...submittedRequirementPhotos,
+          ...Object.fromEntries(normalizedPhotos),
+        }
+        replaceRequirementPhotos(submittedRequirementPhotos)
+      } catch (error) {
+        setRequestSubmissionError(error.message || 'The request photos could not be prepared for upload.')
+        return
+      } finally {
+        setIsSubmittingResidentRequest(false)
+      }
     }
     const hasPaidDocuments = availableDocuments.some((document) => (getDocumentFeeSubtotal(document) || 0) > 0)
     const requestedAt = new Date()
@@ -10212,7 +9898,7 @@ function App() {
     let confirmedPaymentDrafts
     try {
       if (!residentToken) throw new Error('Your resident session is not connected. Sign in again before submitting.')
-      const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
+      const { response, result } = await fetchJsonWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
         method: 'POST',
         cache: 'no-store',
         headers: {
@@ -10223,8 +9909,7 @@ function App() {
           requests: requestsToSubmit,
           drafts: requestsAwaitingPayment,
         }),
-      }, DATABASE_REQUEST_TIMEOUT_MS)
-      const result = await readJsonResponse(response, 'Resident request submission')
+      }, 'Resident request submission', DATABASE_REQUEST_TIMEOUT_MS)
       if (!response.ok || !result.success || !result.data
         || !Array.isArray(result.data.requests) || !Array.isArray(result.data.drafts)
         || !result.data.requests.every((request) => request && typeof request.id === 'string')
@@ -10504,7 +10189,7 @@ function App() {
     try {
       if (!residentToken) throw new Error('Your resident session is not connected. Sign in again before submitting payment proof.')
       const requestIds = paymentSaveConfirmation.map((request) => request.id)
-      const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
+      const { response, result } = await fetchJsonWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
         method: 'POST',
         cache: 'no-store',
         headers: {
@@ -10515,8 +10200,7 @@ function App() {
           requests: paymentSaveConfirmation,
           removedDraftIds: requestIds,
         }),
-      }, DATABASE_REQUEST_TIMEOUT_MS)
-      const result = await readJsonResponse(response, 'Payment proof submission')
+      }, 'Payment proof submission', DATABASE_REQUEST_TIMEOUT_MS)
       if (!response.ok || !result.success || !result.data
         || !Array.isArray(result.data.requests) || !Array.isArray(result.data.drafts)
         || !result.data.requests.every((request) => request && typeof request.id === 'string')
@@ -10931,10 +10615,6 @@ function App() {
     setOfficialBackendToken('')
     setIsDatabaseConnected(false)
     setHasLoadedPrivateDatabaseData(false)
-    setHasLocalResidentCache(false)
-    setHasLocalRequestCache(false)
-    setHasLocalRegistrationCache(false)
-    setIsUsingLocalPrivateSnapshot(false)
     setHasLoadedPendingRegistrations(false)
     setResidentRequests([])
     setResidentPaymentDrafts([])
@@ -10989,10 +10669,6 @@ function App() {
   const logoutOfficial = () => {
     setOfficialBackendToken('')
     setHasLoadedPrivateDatabaseData(false)
-    setHasLocalResidentCache(false)
-    setHasLocalRequestCache(false)
-    setHasLocalRegistrationCache(false)
-    setIsUsingLocalPrivateSnapshot(false)
     setHasLoadedPendingRegistrations(false)
     setShowOfficialDashboard(false)
     setShowOfficialLogin(false)
@@ -11298,7 +10974,7 @@ function App() {
     const nextTemplates = existingCustomTemplate
       ? customCertificateTemplates.map((template) => template.id === existingCustomTemplate.id ? updatedTemplate : template)
       : [...customCertificateTemplates, updatedTemplate]
-    await saveDatabaseRecords({ [certificateTemplatesStorageKey]: nextTemplates }, officialBackendToken)
+    await saveDatabaseRecords({ [certificateTemplatesStorageKey]: nextTemplates }, officialBackendToken, null, fastSyncRef.current)
     setCustomCertificateTemplates(nextTemplates)
     setCustomTemplateError('')
     setCustomTemplateStatus(`The layout for “${name}” was saved online. Existing proof-document requirements, requests, fees, and availability settings were kept.`)
@@ -11475,7 +11151,7 @@ function App() {
         [certificateTemplatesStorageKey]: nextTemplates,
         [enabledCertificateTypesStorageKey]: nextEnabledTemplates,
         [documentFeesStorageKey]: nextFees,
-      }, officialBackendToken)
+      }, officialBackendToken, null, fastSyncRef.current)
       setCustomCertificateTemplates(nextTemplates)
       setEnabledCertificateTypes(nextEnabledTemplates)
       setDocumentFees(nextFees)
@@ -11510,7 +11186,7 @@ function App() {
     try {
       await saveDatabaseRecords({
         [certificateTemplatesStorageKey]: nextTemplates,
-      }, officialBackendToken)
+      }, officialBackendToken, null, fastSyncRef.current)
       setCustomCertificateTemplates(nextTemplates)
       setCustomTemplateError('')
       setCustomTemplateStatus(`The original layout for “${template.name}” was restored. Existing request records were kept.`)
@@ -11578,6 +11254,7 @@ function App() {
         deletedTemplateRecords,
         officialBackendToken,
         getResidentRequestChanges(residentRequests, nextRequests),
+        fastSyncRef.current,
       )
       databaseRecordsRef.current = {
         ...(databaseRecordsRef.current || {}),
@@ -12470,6 +12147,7 @@ function App() {
                   {residentCodeRecoveryRequests.filter((request) => request.status === 'Pending' && isAdminNotificationUnread('residents', 'recovery', request)).map((request) => <button type="button" key={request.id} onClick={() => { markAdminNotificationRead('residents', 'recovery', request); const closestResident = getClosestResidentRecord(request.fullName, adminResidents); setAdminView('residents'); setResidentRecordsTab('active'); setResidentRecordsSearch(closestResident?.name || request.fullName); setHighlightedResidentId(closestResident?.id || ''); setAdminRecoveryMessage(''); setNotificationsOpen(false) }}><span>Resident code recovery</span><small>{request.fullName} · {request.id}</small></button>)}
                   {residentProfileUpdateRequests.filter((request) => request.status === 'Pending' && isAdminNotificationUnread('residents', 'profile-update', request)).map((request) => <button type="button" key={request.id} onClick={() => { markAdminNotificationRead('residents', 'profile-update', request); setAdminView('residents'); setResidentRecordsTab('active'); setResidentProfileUpdateResidentCode(request.residentCode); setProfileUpdateError(''); setNotificationsOpen(false) }}><span>Profile update request</span><small>{request.resident} · {request.id}</small></button>)}
                   {paymentAssessmentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment', request)).map((request) => <button type="button" key={`payment-${request.id}`} onClick={() => { markAdminNotificationRead('payments', 'payment', request); setAdminView('payments'); setPaymentReviewRequestId(request.id); setNotificationsOpen(false) }}><span>Payment proof to verify</span><small>{request.resident} · {request.documents.join(' · ')}</small></button>)}
+                  {unpaidResidentPaymentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment-draft', request)).map((request) => <button type="button" key={`payment-draft-${request.id}`} onClick={() => { markAdminNotificationRead('payments', 'payment-draft', request); setAdminView('payments'); setNotificationsOpen(false) }}><span>Document request awaiting resident payment</span><small>{request.resident} · {request.documents.join(' · ')}</small></button>)}
                   {cancelledPaymentRequests.filter((request) => (
                     (request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
                       && isAdminNotificationUnread('payments', 'refund', request)
@@ -12539,11 +12217,9 @@ function App() {
             </aside>}
             <div className="admin-content" ref={adminContentRef}>
           {!isDatabaseConnected && adminDatabaseHealth === 'connected'
-            ? <div className={`database-save-indicator ${isUsingLocalPrivateSnapshot ? 'is-reachable' : 'is-saving'}`} role="status">
+            ? <div className="database-save-indicator is-saving" role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
-              <span>{isUsingLocalPrivateSnapshot
-                ? `Shared database connected. Showing browser-saved residents and requests while admin records sync.${databaseSaveError ? ` ${databaseSaveError}` : ''}`
-                : `Shared database connected. Waiting for private admin records to load.${databaseSaveError ? ` ${databaseSaveError}` : ''}`}</span>
+              <span>{`Shared database connected. Waiting for private admin records to load.${databaseSaveError ? ` ${databaseSaveError}` : ''}`}</span>
             </div>
             : !isDatabaseConnected
             ? adminDatabaseHealth === 'offline'
@@ -12553,19 +12229,18 @@ function App() {
               <span>{`Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
             </div>
             : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{databaseSaveStatus === 'saving' ? 'Saving changes to shared database…' : databaseSaveStatus === 'error' ? `Database save failed. ${databaseSaveError}` : 'Changes saved to shared database'}</span></div>}
-          {legacyBrowserRecoveryError && <div className="database-save-indicator is-error" role="alert">Legacy browser recovery data could not be read. {legacyBrowserRecoveryError}</div>}
           {adminView === 'overview' && <div className="dashboard-heading admin-overview-heading">
             <h1>Overview</h1>
             <span className="dashboard-date">{new Date().toLocaleDateString('en-US', { dateStyle: 'full' })}</span>
           </div>}
           {adminView === 'overview' && <>
             <div className="overview-stats">
-              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length, hasLocalResidentCache)}</strong></article>
-              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length, hasLocalRequestCache)}</strong></article>
+              <article><span>Current residents</span><strong>{getPrivateDatabaseCount(adminResidents.length)}</strong></article>
+              <article><span>Document requests</span><strong>{getPrivateDatabaseCount(allDocumentRequests.length)}</strong></article>
               <article className="overview-completion-stat">
                 <span>Completion rate</span>
-                <strong>{getPrivateDatabaseCount(`${dashboardCompletionRate}%`, hasLocalRequestCache)}</strong>
-                <small>{getPrivateDatabaseCount(`${dashboardCompletedRequestCount} of ${allDocumentRequests.length} requests`, hasLocalRequestCache)}</small>
+                <strong>{getPrivateDatabaseCount(`${dashboardCompletionRate}%`)}</strong>
+                <small>{getPrivateDatabaseCount(`${dashboardCompletedRequestCount} of ${allDocumentRequests.length} requests`)}</small>
                 <div role="meter" aria-label="Document request completion rate" aria-valuemin={0} aria-valuemax={100} aria-valuenow={dashboardCompletionRate}>
                   <span style={{ width: `${dashboardCompletionRate}%` }} />
                 </div>
@@ -12603,7 +12278,7 @@ function App() {
             <section className="admin-performance-panel" aria-labelledby="admin-performance-title">
               <header>
                 <div><span className="section-number">SERVICE WORKFLOW</span><h2 id="admin-performance-title">Request performance</h2><p>Current request counts and percentage of all document requests by status.</p></div>
-                <span className="admin-performance-total">{getPrivateDatabaseCount(`${allDocumentRequests.length} total`, hasLocalRequestCache)}</span>
+                <span className="admin-performance-total">{getPrivateDatabaseCount(`${allDocumentRequests.length} total`)}</span>
               </header>
               <div className="admin-performance-chart" role="list" aria-label="Document request counts by status">
                 {dashboardPerformanceStagesWithShare.map((stage) => <div className="admin-performance-stage" role="listitem" key={stage.label}>
@@ -12899,6 +12574,11 @@ function App() {
                   </>}
                   {selectedRequestId === request.id && (
                     <div className="request-detail" id={`request-detail-${request.id}`}>
+                      {requestEvidenceAvailableIds.has(request.id)
+                        && !requestEvidenceLoadedIds.has(request.id)
+                        && <p role="status">Loading submitted photos and payment proof from the shared database…</p>}
+                      {requestEvidenceError?.requestId === request.id
+                        && <p className="community-update-error" role="alert">{requestEvidenceError.message}</p>}
                       <div className="request-review-page-heading"><div><p className="detail-label">Resident request</p><h3>{request.resident}</h3><span>{request.id} · {request.requestedAt ? new Date(request.requestedAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : request.date || 'Date not recorded'}</span></div><span className={`compliance-status ${isPaymentVerificationPending ? 'pending' : request.status.toLowerCase().replace(/[^a-z]+/g, '-')}`}>{isPaymentVerificationPending ? 'Payment verification pending' : residentStatusLabels[request.status] || request.status}</span></div>
                       {isIncomingRequest ? (
                         <section className="incoming-request-preview" aria-label="Incoming request summary">
@@ -13232,7 +12912,7 @@ function App() {
                 </article>
                 )
               })}
-              {filteredResidentRequests.length === 0 && <p className="request-search-empty">{activeQueueRequests.length === 0 ? getPrivateDatabaseEmptyMessage('Resident document requests', 'No active resident document requests yet.', hasLocalRequestCache) : 'No active requests match this category, search, or document filter.'}</p>}
+              {filteredResidentRequests.length === 0 && <p className="request-search-empty">{activeQueueRequests.length === 0 ? getPrivateDatabaseEmptyMessage('Resident document requests', 'No active resident document requests yet.') : 'No active requests match this category, search, or document filter.'}</p>}
             </div>
             </section>
           </div>}
@@ -13284,7 +12964,7 @@ function App() {
           {adminView === 'registrations' && <div className="registration-requests-workspace registration-review-v2">
             <header className="registration-requests-heading">
               <div><span className="section-number">RESIDENT SERVICES / INTAKE</span><h2>Registration requests</h2><p>Review applicant details and supporting documents before recording a decision.{!officialBackendToken && <span className="registration-auth-note"> Backend account requests require authorized admin sign-in.</span>}</p></div>
-              <div className="registration-requests-counts"><span><strong>{pendingRegistrationCountLabel}</strong> awaiting review</span><span><strong>{getPrivateDatabaseCount(registrationHistoryRequests.length, hasLocalRegistrationCache)}</strong> processed</span></div>
+              <div className="registration-requests-counts"><span><strong>{pendingRegistrationCountLabel}</strong> awaiting review</span><span><strong>{getPrivateDatabaseCount(registrationHistoryRequests.length)}</strong> processed</span></div>
             </header>
             {registrationSyncError && <p className={`registration-sync-message${registrationSyncError.startsWith('The registration service is unavailable') ? ' is-info' : ''}`} role={registrationSyncError.startsWith('The registration service is unavailable') ? 'status' : 'alert'}>{registrationSyncError}</p>}
             <section className="registration-list-panel" aria-labelledby="registration-pending-title">
@@ -13432,21 +13112,21 @@ function App() {
                   <label className="registration-decline-reason registration-admin-note">Reason / note for the applicant <span>(required to decline or pause)</span><textarea value={registrationAdminNote} onChange={(event) => setRegistrationAdminNote(event.target.value)} maxLength={1000} rows="3" placeholder="Example: The ID photo is unclear. Please upload a clearer image showing your full name and ID number." /></label>
                   <p className="registration-decision-note">Be specific and respectful. Mention what is missing or incorrect and what the applicant can do next, such as correcting a name mismatch or providing clearer proof of residence. This note is saved with a rejection or shown while the application is paused.</p>
                   <div className="registration-decision-modal-actions">
-                    <button type="button" className="registration-decision-choice is-approve" disabled={processingRegistrationId === request.id} onClick={() => reviewRegistration(request, 'Approved')}><span aria-hidden="true">✓</span>{processingRegistrationId === request.id ? 'Saving…' : 'Approve'}</button>
-                    <button type="button" className="registration-decision-choice is-decline" disabled={processingRegistrationId === request.id} onClick={() => reviewRegistration(request, 'Declined')}><span aria-hidden="true">×</span>Decline</button>
+                    <button type="button" className="registration-decision-choice is-approve" disabled={processingRegistrationId === request.id} onClick={() => reviewRegistration(request, 'Approved', adminFastSync)}><span aria-hidden="true">✓</span>{processingRegistrationId === request.id ? 'Saving…' : 'Approve'}</button>
+                    <button type="button" className="registration-decision-choice is-decline" disabled={processingRegistrationId === request.id} onClick={() => reviewRegistration(request, 'Declined', adminFastSync)}><span aria-hidden="true">×</span>Decline</button>
                     <button type="button" className="registration-decision-choice is-pause" disabled={processingRegistrationId === request.id} onClick={() => pauseRegistrationApplication(request)}><span aria-hidden="true">Ⅱ</span>Pause</button>
                   </div>
                 </section>
               </div>
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
-              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length, hasLocalResidentCache)}</span></div>
+              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
               <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                 <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
               </tr>)}
-              {!adminResidents.length && <tr><td colSpan="5">{getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet. Approved applications will be added here.', hasLocalResidentCache)}</td></tr>}
+              {!adminResidents.length && <tr><td colSpan="5">{getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet. Approved applications will be added here.')}</td></tr>}
               </tbody></table></div></TableSearch>
             </section>
             {registrationResidentViewCode && (() => {
@@ -13509,6 +13189,22 @@ function App() {
           {adminView === 'payments' && <section className="admin-payment-management-page">
             <PaymentWorkflowTabs activeView="payments" onSelect={setAdminView} />
             <div className="payment-dashboard-panels">
+              {unpaidResidentPaymentRecords.length > 0 && <section className="payment-assessment-panel" aria-labelledby="payment-awaiting-title">
+                <header className="admin-panel-heading">
+                  <div><span className="section-number">REQUESTS RECEIVED</span><h3 id="payment-awaiting-title">Awaiting resident payment</h3><p>These paid document requests are saved. Residents must submit payment proof before they enter the review queue.</p></div>
+                  <span className="admin-panel-count">{unpaidResidentPaymentRecords.length}</span>
+                </header>
+                <div className="payment-assessment-list">
+                  {unpaidResidentPaymentRecords.map((payment) => <article className="payment-assessment-item" key={`awaiting-payment-${payment.id}`}>
+                    <div className="payment-assessment-summary">
+                      <div className="payment-assessment-resident"><strong>{payment.resident}</strong><span>{payment.residentCode || 'Resident code not recorded'} · {payment.id}</span></div>
+                      <div className="payment-assessment-request"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><span>{payment.requests.length} request{payment.requests.length === 1 ? '' : 's'} · Submitted {payment.paymentDraftedAt ? new Date(payment.paymentDraftedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'date not recorded'}</span></div>
+                      <span className="payment-action-needed">Awaiting payment</span>
+                      <div className="payment-assessment-amount-wrap"><span>Amount due</span><strong className="payment-assessment-amount">₱{Number(payment.feeAmount || 0).toFixed(2)}</strong></div>
+                    </div>
+                  </article>)}
+                </div>
+              </section>}
               <section className="payment-assessment-panel" aria-labelledby="payment-assessment-title">
                 <header className="admin-panel-heading">
                   <div><span className="section-number">ACTION REQUIRED</span><h3 id="payment-assessment-title">Payment assessment</h3><p>Check the resident’s proof, then record the verified official receipt number.</p></div>
@@ -13721,7 +13417,7 @@ function App() {
             </section>
           </section>}
           {(adminView === 'residents' || adminView === 'archivedResidents') && <section className="requests-panel resident-records-panel green-startup-workspace">
-            <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Manage current residents and review rejected registration applications.</p></div><span className="request-notification">{getPrivateDatabaseCount(`${adminResidents.length} current`, hasLocalResidentCache)}</span></div>
+            <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Manage current residents and review rejected registration applications.</p></div><span className="request-notification">{getPrivateDatabaseCount(`${adminResidents.length} current`)}</span></div>
             {residentAccountMessage && !residentProfileUpdateResidentCode && <p className="resident-account-message" role="status">{residentAccountMessage}</p>}
             <div className="resident-record-tabs" role="group" aria-label="Resident record categories">
               <button type="button" aria-pressed={residentRecordsTab === 'active'} className={residentRecordsTab === 'active' ? 'active' : ''} onClick={() => setResidentRecordsTab('active')}>Current residents <span>{adminResidents.length}</span></button>
@@ -13757,7 +13453,7 @@ function App() {
               </form>}
               {residentFormError && <p className="community-update-error" role="alert">{residentFormError}</p>}
               <p className="resident-record-result-count" aria-live="polite">{!hasLoadedPrivateDatabaseData && officialBackendToken
-                ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.', hasLocalResidentCache)
+                ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')
                 : `Showing ${filteredAdminResidents.length} of ${adminResidents.length} current residents`}</p>
               <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
                 const profileRequests = residentProfileUpdateRequests.filter((request) => request.residentCode?.toLowerCase() === resident.code.toLowerCase())
@@ -13778,7 +13474,7 @@ function App() {
                 </tr>
               })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length
                 ? 'No current residents match your search.'
-                : getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.', hasLocalResidentCache)}</td></tr>}</tbody></table></div>
+                : getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')}</td></tr>}</tbody></table></div>
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
               <div className="requests-heading"><div><span className="section-number">EXISTING RESIDENT ACCESS</span><h3>Resident code recovery requests</h3><p>Verify against an existing resident record. Recovery never creates a new resident account.</p></div><span className="request-notification">{pendingRecoveryRequestCount} pending</span></div>
               {adminRecoveryMessage && <p className="recovery-admin-message" role="status">{adminRecoveryMessage}</p>}

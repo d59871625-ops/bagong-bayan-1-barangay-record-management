@@ -493,15 +493,6 @@ try {
                 ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
-            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            data_key VARCHAR(100) NOT NULL,
-            data_value LONGTEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_snapshot_key_created (data_key, created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ");
     bb1EnsureResidentRequestChangesTable($pdo);
     $residentStatement = $pdo->prepare("
         SELECT
@@ -724,32 +715,18 @@ try {
         $removedDraftIds[$id] = true;
     }
 
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
+            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            data_key VARCHAR(100) NOT NULL,
+            data_value LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_snapshot_key_created (data_key, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
     $pdo->beginTransaction();
     try {
-        $snapshotInsert = $pdo->prepare("
-            INSERT INTO bb1_app_state_snapshots (data_key, data_value)
-            VALUES (?, ?)
-        ");
-        $snapshotSelect = $pdo->prepare("
-            SELECT data_value
-            FROM bb1_app_state
-            WHERE data_key = ?
-            LIMIT 1
-        ");
-        foreach ([
-            "bb1-resident-requests",
-            "bb1-resident-payment-drafts",
-            "bb1-resident-request-drafts",
-            "bb1-resident-history",
-            "bb1-resident-code-recovery-requests",
-            "bb1-resident-profile-update-requests",
-        ] as $snapshotKey) {
-            $snapshotSelect->execute([$snapshotKey]);
-            $snapshotValue = $snapshotSelect->fetchColumn();
-            if ($snapshotValue !== false) {
-                $snapshotInsert->execute([$snapshotKey, $snapshotValue]);
-            }
-        }
         $ensureRequestState = $pdo->prepare("
             INSERT IGNORE INTO bb1_app_state (data_key, data_value)
             VALUES (?, '[]')
@@ -996,6 +973,47 @@ try {
             array_values($allRequestDrafts),
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
         );
+        $stateValuesToSave = [
+            "bb1-resident-payment-drafts" => $encodedPaymentDrafts,
+        ];
+        if (property_exists($input, "requestDrafts")) {
+            $stateValuesToSave["bb1-resident-request-drafts"] = $encodedRequestDrafts;
+        }
+        foreach ([
+            "recoveryRequests" => "bb1-resident-code-recovery-requests",
+            "profileUpdateRequests" => "bb1-resident-profile-update-requests",
+        ] as $inputKey => $stateKey) {
+            if (property_exists($input, $inputKey)) {
+                $stateValuesToSave[$stateKey] = json_encode(
+                    $submissionState[$stateKey],
+                    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+                );
+            }
+        }
+
+        $snapshotInsert = $pdo->prepare("
+            INSERT INTO bb1_app_state_snapshots (data_key, data_value)
+            VALUES (?, ?)
+        ");
+        $snapshotSelect = $pdo->prepare("
+            SELECT data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+            LIMIT 1
+        ");
+        $valuesToUpdate = [];
+        foreach ($stateValuesToSave as $stateKey => $newValue) {
+            $snapshotSelect->execute([$stateKey]);
+            $oldValue = $snapshotSelect->fetchColumn();
+            if ($oldValue === $newValue) {
+                continue;
+            }
+            if ($oldValue !== false) {
+                $snapshotInsert->execute([$stateKey, $oldValue]);
+            }
+            $valuesToUpdate[$stateKey] = $newValue;
+        }
+
         $update = $pdo->prepare("
             UPDATE bb1_app_state
             SET data_value = ?
@@ -1004,20 +1022,8 @@ try {
         if ($requestUpserts) {
             bb1SaveResidentRequestChanges($pdo, $requestUpserts, []);
         }
-        $update->execute([$encodedPaymentDrafts, "bb1-resident-payment-drafts"]);
-        if (property_exists($input, "requestDrafts")) {
-            $update->execute([$encodedRequestDrafts, "bb1-resident-request-drafts"]);
-        }
-        foreach ([
-            "recoveryRequests" => "bb1-resident-code-recovery-requests",
-            "profileUpdateRequests" => "bb1-resident-profile-update-requests",
-        ] as $inputKey => $stateKey) {
-            if (property_exists($input, $inputKey)) {
-                $update->execute([
-                    json_encode($submissionState[$stateKey], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-                    $stateKey,
-                ]);
-            }
+        foreach ($valuesToUpdate as $stateKey => $newValue) {
+            $update->execute([$newValue, $stateKey]);
         }
         $pdo->commit();
 
