@@ -9373,6 +9373,8 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 }
 .database-save-indicator .database-sync-indicator { width: 6px; height: 6px; flex-basis: 6px; margin-top: 0; background: #67866a; }
 .database-save-indicator.is-saving .database-sync-indicator { background: #b17a2b; }
+.database-save-indicator.is-reachable { color: #36583b; }
+.database-save-indicator.is-reachable .database-sync-indicator { background: #43834b; }
 .database-save-indicator.is-offline { color: #943d32; }
 .database-save-indicator.is-offline .database-sync-indicator { background: #b5483b; }
 .database-save-indicator.is-error { color: #943d32; }

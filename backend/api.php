@@ -45,21 +45,17 @@ $allowedKeys = [
 ];
 
 try {
+    if ($_SERVER["REQUEST_METHOD"] === "GET" && ($_GET["health"] ?? "") === "1") {
+        $pdo->query("SELECT 1")->fetchColumn();
+        respond(200, ["success" => true, "database" => "connected"]);
+    }
+
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS bb1_app_state (
             data_key VARCHAR(100) NOT NULL PRIMARY KEY,
             data_value LONGTEXT NOT NULL,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ");
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
-            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            data_key VARCHAR(100) NOT NULL,
-            data_value LONGTEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_snapshot_key_created (data_key, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
     bb1EnsureResidentRequestChangesTable($pdo);
@@ -108,6 +104,16 @@ try {
         header("Allow: GET, POST, OPTIONS");
         respond(405, ["success" => false, "message" => "Method not allowed."]);
     }
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
+            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            data_key VARCHAR(100) NOT NULL,
+            data_value LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_snapshot_key_created (data_key, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
 
     $input = json_decode(file_get_contents("php://input"), false, 512, JSON_THROW_ON_ERROR);
     if (!($input instanceof stdClass)) {
@@ -220,7 +226,11 @@ try {
             WHERE data_key = ?
             LIMIT 1
         ");
-        foreach ($allowedKeys as $snapshotKey) {
+        $snapshotKeys = array_keys($encodedRecords);
+        if ($hasRequestChanges && !in_array("bb1-resident-requests", $snapshotKeys, true)) {
+            $snapshotKeys[] = "bb1-resident-requests";
+        }
+        foreach (array_unique($snapshotKeys) as $snapshotKey) {
             $snapshotSelect->execute([$snapshotKey]);
             $snapshotValue = $snapshotSelect->fetchColumn();
             if ($snapshotValue !== false) {

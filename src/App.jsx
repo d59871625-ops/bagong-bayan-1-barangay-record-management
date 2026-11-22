@@ -39,6 +39,7 @@ const API_URL = configuredApiUrl && (!import.meta.env.PROD || !isLoopbackApiUrl(
   : `${BACKEND_API_URL}/api.php`
 const PUBLIC_COMMUNITY_API_URL = `${BACKEND_API_URL}/public-community.php`
 const DATABASE_HEALTH_URL = `${PUBLIC_COMMUNITY_API_URL}?health=1`
+const ADMIN_DATABASE_HEALTH_URL = `${API_URL}${API_URL.includes('?') ? '&' : '?'}health=1`
 const RESIDENT_REQUEST_SYNC_URL = `${BACKEND_API_URL}/resident-request-sync.php`
 const EMPTY_CERTIFICATE_TEMPLATES = Object.freeze([])
 const CERTIFICATE_PDF_URL = import.meta.env.VITE_CERTIFICATE_PDF_URL?.trim()
@@ -5212,7 +5213,72 @@ function App() {
   const [recoveryDeliveryMode, setRecoveryDeliveryMode] = useState('send')
   const [isSendingRecoveryCode, setIsSendingRecoveryCode] = useState(false)
   const [isSendingRecoveryNotice, setIsSendingRecoveryNotice] = useState(false)
-  const [officialBackendToken, setOfficialBackendToken] = useState('')
+  const [officialBackendToken, setOfficialBackendTokenState] = useState('')
+  const [adminDatabaseHealth, setAdminDatabaseHealth] = useState('checking')
+  const setOfficialBackendToken = useCallback((token) => {
+    setOfficialBackendTokenState(token)
+    setAdminDatabaseHealth('checking')
+  }, [])
+  useEffect(() => {
+    if (!officialBackendToken) return undefined
+    let cancelled = false
+    let requestPending = false
+    let retryTimer
+    let activeController
+    const scheduleCheck = (delay) => {
+      window.clearTimeout(retryTimer)
+      retryTimer = window.setTimeout(checkDatabaseHealth, delay)
+    }
+    const checkDatabaseHealth = async () => {
+      if (cancelled || requestPending) return
+      if (document.visibilityState !== 'visible') {
+        scheduleCheck(DATABASE_HEALTH_RETRY_INTERVAL_MS)
+        return
+      }
+      requestPending = true
+      activeController = new AbortController()
+      try {
+        const { response, result } = await fetchJsonWithTimeout(ADMIN_DATABASE_HEALTH_URL, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${officialBackendToken}` },
+          signal: activeController.signal,
+        }, 'Admin database health check', DATABASE_HEALTH_TIMEOUT_MS)
+        if (!response.ok || !result?.success || result.database !== 'connected') {
+          throw new Error(result?.message || 'Admin database health check failed.')
+        }
+        if (!cancelled) setAdminDatabaseHealth('connected')
+        scheduleCheck(DATABASE_REFRESH_INTERVAL_MS)
+      } catch (error) {
+        if (!cancelled && error.name !== 'AbortError') {
+          setAdminDatabaseHealth('offline')
+          console.error('Unable to verify authenticated admin database access.', error)
+          scheduleCheck(DATABASE_HEALTH_RETRY_INTERVAL_MS)
+        }
+      } finally {
+        requestPending = false
+      }
+    }
+    const refreshWhenOnline = () => {
+      if (document.visibilityState !== 'visible') return
+      window.clearTimeout(retryTimer)
+      checkDatabaseHealth()
+    }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshWhenOnline()
+    }
+    checkDatabaseHealth()
+    window.addEventListener('online', refreshWhenOnline)
+    window.addEventListener('focus', refreshWhenOnline)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      cancelled = true
+      window.clearTimeout(retryTimer)
+      activeController?.abort()
+      window.removeEventListener('online', refreshWhenOnline)
+      window.removeEventListener('focus', refreshWhenOnline)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [officialBackendToken])
   const [adminView, setAdminView] = useState('overview')
   const allCertificateDocuments = [...new Set([...barangayDocuments, ...customCertificateTemplates.map((template) => template.name)])]
   const getCertificateTemplateTarget = (request) => {
@@ -6240,7 +6306,7 @@ function App() {
       cancelled = true
       controller.abort()
     }
-  }, [databaseLoadVersion, officialBackendToken])
+  }, [databaseLoadVersion, officialBackendToken, setOfficialBackendToken])
 
   useEffect(() => {
     if (!officialBackendToken || !isDatabaseConnected || !hasResolvedLegacyBrowserSnapshot
@@ -6375,7 +6441,7 @@ function App() {
       document.removeEventListener('visibilitychange', retryWhenVisible)
       controller.abort()
     }
-  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, officialBackendToken])
+  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, officialBackendToken, setOfficialBackendToken])
 
   const archivedDocumentRequests = residentHistory
     .filter((entry) => entry.type === 'documentRequest' && entry.request)
@@ -7613,6 +7679,7 @@ function App() {
     isDatabaseConnected,
     isStorageLoaded,
     officialBackendToken,
+    setOfficialBackendToken,
     showOfficialDashboard,
   ])
 
@@ -12471,15 +12538,17 @@ function App() {
               </section>)}
             </aside>}
             <div className="admin-content" ref={adminContentRef}>
-          {!isDatabaseConnected && isUsingLocalPrivateSnapshot
-            ? <div className="database-save-indicator is-offline" role="status">
+          {!isDatabaseConnected && adminDatabaseHealth === 'connected'
+            ? <div className={`database-save-indicator ${isUsingLocalPrivateSnapshot ? 'is-reachable' : 'is-saving'}`} role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
-              <span>{databaseSaveError
-                ? `Showing browser-saved records. Shared database is unavailable: ${databaseSaveError}`
-                : 'Showing browser-saved residents and requests while reconnecting to the shared database.'}</span>
+              <span>{isUsingLocalPrivateSnapshot
+                ? `Shared database connected. Showing browser-saved residents and requests while admin records sync.${databaseSaveError ? ` ${databaseSaveError}` : ''}`
+                : `Shared database connected. Waiting for private admin records to load.${databaseSaveError ? ` ${databaseSaveError}` : ''}`}</span>
             </div>
             : !isDatabaseConnected
-            ? databaseSaveStatus === 'checking' ? null : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
+            ? adminDatabaseHealth === 'offline'
+              ? <div className="database-save-indicator is-offline" role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{`Shared database offline; retrying automatically. ${databaseSaveError}`}</span></div>
+              : databaseSaveStatus === 'checking' ? null : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status">
               <span className="database-sync-indicator" aria-hidden="true" />
               <span>{`Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
             </div>
