@@ -7,6 +7,7 @@ header("Expires: 0");
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/resident-request-storage.php";
 
 function residentSyncRespond(int $status, array $payload): void
 {
@@ -77,6 +78,82 @@ function residentSyncOwnedRecords($records, string $residentCode, string $fullNa
         $records,
         static fn($record) => residentSyncRecordBelongsTo($record, $residentCode, $fullName)
     ));
+}
+
+function residentSyncPendingSubmissions(
+    $records,
+    string $kind,
+    string $residentCode,
+    string $fullName
+): array {
+    if (!residentSyncIsList($records) || count($records) > 200) {
+        throw new InvalidArgumentException("Invalid " . $kind . " submissions.");
+    }
+
+    $seen = [];
+    $validated = [];
+    foreach ($records as $record) {
+        if (!($record instanceof stdClass)
+            || residentSyncString($record, "status", 40) !== "Pending"
+            || !residentSyncRecordBelongsTo($record, $residentCode, $fullName)) {
+            throw new InvalidArgumentException("Invalid pending " . $kind . " submission.");
+        }
+        $id = residentSyncString($record, "id", 100, true);
+        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/', $id) || isset($seen[$id])) {
+            throw new InvalidArgumentException("A " . $kind . " submission ID is invalid or duplicated.");
+        }
+        $seen[$id] = true;
+        $clean = new stdClass();
+        $clean->id = $id;
+        $clean->status = "Pending";
+        $submittedAt = residentSyncString($record, "submittedAt", 80);
+        $clean->submittedAt = $submittedAt !== "" ? $submittedAt : gmdate("c");
+
+        if ($kind === "recovery request") {
+            foreach (["birthDate" => 20, "emailAddress" => 254, "mobileNumber" => 40, "address" => 500, "reason" => 2000] as $field => $limit) {
+                $clean->{$field} = residentSyncString($record, $field, $limit);
+            }
+            if ($clean->birthDate === "" || $clean->emailAddress === "" || $clean->address === "" || $clean->reason === "") {
+                throw new InvalidArgumentException("Recovery request details are incomplete.");
+            }
+            $clean->fullName = $fullName;
+        } else {
+            $changes = $record->proposedChanges ?? null;
+            if (!($changes instanceof stdClass)
+                || array_diff(array_keys(get_object_vars($changes)), ["birthDate", "contactNumber", "emailAddress", "address"])) {
+                throw new InvalidArgumentException("Invalid resident profile update details.");
+            }
+            $clean->resident = $fullName;
+            $clean->residentCode = $residentCode;
+            $clean->proposedChanges = new stdClass();
+            foreach (get_object_vars($changes) as $field => $value) {
+                if (!is_string($value) || strlen($value) > 1000) {
+                    throw new InvalidArgumentException("Invalid resident profile update details.");
+                }
+                $clean->proposedChanges->{$field} = trim($value);
+            }
+            if (!get_object_vars($clean->proposedChanges)) {
+                throw new InvalidArgumentException("Enter at least one resident profile change.");
+            }
+        }
+        $validated[] = $clean;
+    }
+
+    return $validated;
+}
+
+function residentSyncReplaceOwnedPending($saved, array $incoming, string $residentCode, string $fullName): array
+{
+    if (!residentSyncIsList($saved)) {
+        throw new RuntimeException("Saved resident submissions must be a list.");
+    }
+    $kept = array_values(array_filter($saved, static function ($record) use ($residentCode, $fullName) {
+        return !(
+            residentSyncRecordBelongsTo($record, $residentCode, $fullName)
+            && ($record->status ?? "") === "Pending"
+        );
+    }));
+    return array_merge($kept, $incoming);
 }
 
 function residentSyncSafeValue($value, string $field, int $maximumBytes)
@@ -416,6 +493,16 @@ try {
                 ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
+            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            data_key VARCHAR(100) NOT NULL,
+            data_value LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_snapshot_key_created (data_key, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    bb1EnsureResidentRequestChangesTable($pdo);
     $residentStatement = $pdo->prepare("
         SELECT
             r.resident_code,
@@ -502,10 +589,28 @@ try {
         $residentCode,
         $fullName
     );
+    $requestDrafts = residentSyncOwnedRecords(
+        residentSyncReadState($pdo, "bb1-resident-request-drafts", []),
+        $residentCode,
+        $fullName
+    );
+    $recoveryRequests = residentSyncOwnedRecords(
+        residentSyncReadState($pdo, "bb1-resident-code-recovery-requests", []),
+        $residentCode,
+        $fullName
+    );
+    $profileUpdateRequests = residentSyncOwnedRecords(
+        residentSyncReadState($pdo, "bb1-resident-profile-update-requests", []),
+        $residentCode,
+        $fullName
+    );
 
     if ($method === "GET") {
         $requests = residentSyncOwnedRecords(
-            residentSyncReadState($pdo, "bb1-resident-requests", []),
+            bb1MergeResidentRequestChanges(
+                residentSyncReadState($pdo, "bb1-resident-requests", []),
+                bb1LoadResidentRequestChanges($pdo)
+            ),
             $residentCode,
             $fullName
         );
@@ -519,6 +624,9 @@ try {
             "data" => [
                 "requests" => $requests,
                 "drafts" => $paymentDrafts,
+                "requestDrafts" => $requestDrafts,
+                "recoveryRequests" => $recoveryRequests,
+                "profileUpdateRequests" => $profileUpdateRequests,
                 "history" => $history,
             ],
         ]);
@@ -538,10 +646,17 @@ try {
         residentSyncRespond(400, ["success" => false, "message" => "Invalid JSON request."]);
     }
     if (!($input instanceof stdClass)
-        || array_diff(array_keys(get_object_vars($input)), ["requests", "drafts", "removedDraftIds"])
-        || (!property_exists($input, "requests") && !property_exists($input, "drafts") && !property_exists($input, "removedDraftIds"))
+        || array_diff(array_keys(get_object_vars($input)), [
+            "requests", "drafts", "removedDraftIds", "requestDrafts", "recoveryRequests", "profileUpdateRequests",
+        ])
+        || (!property_exists($input, "requests") && !property_exists($input, "drafts")
+            && !property_exists($input, "removedDraftIds") && !property_exists($input, "requestDrafts")
+            && !property_exists($input, "recoveryRequests") && !property_exists($input, "profileUpdateRequests"))
         || (property_exists($input, "requests") && (!residentSyncIsList($input->requests) || count($input->requests) > 200))
         || (property_exists($input, "drafts") && (!residentSyncIsList($input->drafts) || count($input->drafts) > 200))
+        || (property_exists($input, "requestDrafts") && (!residentSyncIsList($input->requestDrafts) || count($input->requestDrafts) > 200))
+        || (property_exists($input, "recoveryRequests") && (!residentSyncIsList($input->recoveryRequests) || count($input->recoveryRequests) > 200))
+        || (property_exists($input, "profileUpdateRequests") && (!residentSyncIsList($input->profileUpdateRequests) || count($input->profileUpdateRequests) > 200))
         || (property_exists($input, "removedDraftIds") && (!residentSyncIsList($input->removedDraftIds) || count($input->removedDraftIds) > 200))) {
         residentSyncRespond(400, ["success" => false, "message" => "Valid resident request data is required."]);
     }
@@ -574,6 +689,33 @@ try {
             residentSyncRespond(403, ["success" => false, "message" => "A payment draft does not belong to this resident account."]);
         }
     }
+    $incomingRequestDraftIds = [];
+    $validatedRequestDrafts = [];
+    foreach (($input->requestDrafts ?? []) as $incoming) {
+        if (!($incoming instanceof stdClass)) {
+            residentSyncRespond(422, ["success" => false, "message" => "Each request draft must be an object."]);
+        }
+        $id = residentSyncString($incoming, "id", 100, true);
+        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/', $id)
+            || isset($incomingRequestDraftIds[$id])) {
+            residentSyncRespond(422, ["success" => false, "message" => "A request draft ID is invalid or duplicated."]);
+        }
+        $incomingRequestDraftIds[$id] = true;
+        if (!residentSyncRecordBelongsTo($incoming, $residentCode, $fullName)) {
+            residentSyncRespond(403, ["success" => false, "message" => "A request draft does not belong to this resident account."]);
+        }
+        residentSyncValidateImageDataUrls($incoming, "request draft");
+        $draft = residentSyncSafeValue($incoming, "request draft", 5 * 1024 * 1024);
+        $draft->resident = $fullName;
+        $draft->residentCode = $residentCode;
+        $validatedRequestDrafts[] = $draft;
+    }
+    $validatedRecoveryRequests = property_exists($input, "recoveryRequests")
+        ? residentSyncPendingSubmissions($input->recoveryRequests, "recovery request", $residentCode, $fullName)
+        : [];
+    $validatedProfileUpdateRequests = property_exists($input, "profileUpdateRequests")
+        ? residentSyncPendingSubmissions($input->profileUpdateRequests, "profile update request", $residentCode, $fullName)
+        : [];
     $removedDraftIds = [];
     foreach (($input->removedDraftIds ?? []) as $id) {
         if (!is_string($id) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/', $id)) {
@@ -584,6 +726,30 @@ try {
 
     $pdo->beginTransaction();
     try {
+        $snapshotInsert = $pdo->prepare("
+            INSERT INTO bb1_app_state_snapshots (data_key, data_value)
+            VALUES (?, ?)
+        ");
+        $snapshotSelect = $pdo->prepare("
+            SELECT data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+            LIMIT 1
+        ");
+        foreach ([
+            "bb1-resident-requests",
+            "bb1-resident-payment-drafts",
+            "bb1-resident-request-drafts",
+            "bb1-resident-history",
+            "bb1-resident-code-recovery-requests",
+            "bb1-resident-profile-update-requests",
+        ] as $snapshotKey) {
+            $snapshotSelect->execute([$snapshotKey]);
+            $snapshotValue = $snapshotSelect->fetchColumn();
+            if ($snapshotValue !== false) {
+                $snapshotInsert->execute([$snapshotKey, $snapshotValue]);
+            }
+        }
         $ensureRequestState = $pdo->prepare("
             INSERT IGNORE INTO bb1_app_state (data_key, data_value)
             VALUES (?, '[]')
@@ -602,6 +768,20 @@ try {
         ");
         $ensurePaymentDraftState->execute(["bb1-resident-payment-drafts"]);
 
+        $ensureRequestDraftState = $pdo->prepare("
+            INSERT IGNORE INTO bb1_app_state (data_key, data_value)
+            VALUES (?, '[]')
+        ");
+        $ensureRequestDraftState->execute(["bb1-resident-request-drafts"]);
+
+        foreach (["bb1-resident-code-recovery-requests", "bb1-resident-profile-update-requests"] as $submissionStateKey) {
+            $ensureSubmissionState = $pdo->prepare("
+                INSERT IGNORE INTO bb1_app_state (data_key, data_value)
+                VALUES (?, '[]')
+            ");
+            $ensureSubmissionState->execute([$submissionStateKey]);
+        }
+
         $lock = $pdo->prepare("
             SELECT data_value
             FROM bb1_app_state
@@ -615,6 +795,10 @@ try {
         if (!residentSyncIsList($allRequests)) {
             throw new RuntimeException("Saved resident requests are not a list.");
         }
+        $allRequests = bb1MergeResidentRequestChanges(
+            $allRequests,
+            bb1LoadResidentRequestChanges($pdo)
+        );
 
         $historyLock = $pdo->prepare("
             SELECT data_value
@@ -645,6 +829,38 @@ try {
             throw new RuntimeException("Saved resident payment drafts are not a list.");
         }
 
+        $requestDraftLock = $pdo->prepare("
+            SELECT data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $requestDraftLock->execute(["bb1-resident-request-drafts"]);
+        $savedRequestDraftsJson = $requestDraftLock->fetchColumn();
+        $allRequestDrafts = json_decode($savedRequestDraftsJson, false, 512, JSON_THROW_ON_ERROR);
+        if (!residentSyncIsList($allRequestDrafts)) {
+            throw new RuntimeException("Saved resident request drafts are not a list.");
+        }
+
+        $submissionState = [];
+        $submissionLock = $pdo->prepare("
+            SELECT data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+            LIMIT 1
+            FOR UPDATE
+        ");
+        foreach (["bb1-resident-code-recovery-requests", "bb1-resident-profile-update-requests"] as $submissionStateKey) {
+            $submissionLock->execute([$submissionStateKey]);
+            $submissionJson = $submissionLock->fetchColumn();
+            $submissionRecords = json_decode($submissionJson, false, 512, JSON_THROW_ON_ERROR);
+            if (!residentSyncIsList($submissionRecords)) {
+                throw new RuntimeException("Saved resident submissions are not a list.");
+            }
+            $submissionState[$submissionStateKey] = $submissionRecords;
+        }
+
         $existingIndexes = [];
         foreach ($allRequests as $index => $record) {
             if (!($record instanceof stdClass)) {
@@ -665,6 +881,7 @@ try {
         }
 
         $now = gmdate("c");
+        $requestUpserts = [];
         foreach (($input->requests ?? []) as $incoming) {
             $id = $incoming->id;
             if (isset($archivedIds[$id])) {
@@ -678,6 +895,7 @@ try {
                     throw new DomainException("A request ID is already in use.");
                 }
                 $allRequests[$index] = residentSyncApplyUpdate($existing, $incoming, $now);
+                $requestUpserts[] = $allRequests[$index];
                 continue;
             }
 
@@ -691,6 +909,7 @@ try {
             );
             $existingIndexes[$id] = count($allRequests);
             $allRequests[] = $newRequest;
+            $requestUpserts[] = $newRequest;
         }
 
         $paymentDraftIndexes = [];
@@ -745,12 +964,36 @@ try {
             ));
         }
 
-        $encodedRequests = json_encode(
-            array_values($allRequests),
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
-        );
+        if (property_exists($input, "requestDrafts")) {
+            $allRequestDrafts = array_values(array_filter(
+                $allRequestDrafts,
+                static fn($draft) => !residentSyncRecordBelongsTo($draft, $residentCode, $fullName)
+            ));
+            $allRequestDrafts = array_merge($allRequestDrafts, $validatedRequestDrafts);
+        }
+        if (property_exists($input, "recoveryRequests")) {
+            $submissionState["bb1-resident-code-recovery-requests"] = residentSyncReplaceOwnedPending(
+                $submissionState["bb1-resident-code-recovery-requests"],
+                $validatedRecoveryRequests,
+                $residentCode,
+                $fullName
+            );
+        }
+        if (property_exists($input, "profileUpdateRequests")) {
+            $submissionState["bb1-resident-profile-update-requests"] = residentSyncReplaceOwnedPending(
+                $submissionState["bb1-resident-profile-update-requests"],
+                $validatedProfileUpdateRequests,
+                $residentCode,
+                $fullName
+            );
+        }
+
         $encodedPaymentDrafts = json_encode(
             array_values($allPaymentDrafts),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+        );
+        $encodedRequestDrafts = json_encode(
+            array_values($allRequestDrafts),
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
         );
         $update = $pdo->prepare("
@@ -758,17 +1001,47 @@ try {
             SET data_value = ?
             WHERE data_key = ?
         ");
-        $update->execute([$encodedRequests, "bb1-resident-requests"]);
+        if ($requestUpserts) {
+            bb1SaveResidentRequestChanges($pdo, $requestUpserts, []);
+        }
         $update->execute([$encodedPaymentDrafts, "bb1-resident-payment-drafts"]);
+        if (property_exists($input, "requestDrafts")) {
+            $update->execute([$encodedRequestDrafts, "bb1-resident-request-drafts"]);
+        }
+        foreach ([
+            "recoveryRequests" => "bb1-resident-code-recovery-requests",
+            "profileUpdateRequests" => "bb1-resident-profile-update-requests",
+        ] as $inputKey => $stateKey) {
+            if (property_exists($input, $inputKey)) {
+                $update->execute([
+                    json_encode($submissionState[$stateKey], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+                    $stateKey,
+                ]);
+            }
+        }
         $pdo->commit();
 
         $ownRequests = residentSyncOwnedRecords($allRequests, $residentCode, $fullName);
         $ownPaymentDrafts = residentSyncOwnedRecords($allPaymentDrafts, $residentCode, $fullName);
+        $ownRequestDrafts = residentSyncOwnedRecords($allRequestDrafts, $residentCode, $fullName);
+        $ownRecoveryRequests = residentSyncOwnedRecords(
+            $submissionState["bb1-resident-code-recovery-requests"],
+            $residentCode,
+            $fullName
+        );
+        $ownProfileUpdateRequests = residentSyncOwnedRecords(
+            $submissionState["bb1-resident-profile-update-requests"],
+            $residentCode,
+            $fullName
+        );
         residentSyncRespond(200, [
             "success" => true,
             "data" => [
                 "requests" => $ownRequests,
                 "drafts" => $ownPaymentDrafts,
+                "requestDrafts" => $ownRequestDrafts,
+                "recoveryRequests" => $ownRecoveryRequests,
+                "profileUpdateRequests" => $ownProfileUpdateRequests,
                 "history" => $history,
             ],
         ]);

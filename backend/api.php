@@ -7,6 +7,7 @@ header("Expires: 0");
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/resident-request-storage.php";
 
 // Admin and officials only.
 $user = authenticateUser($pdo, ["admin", "official"]);
@@ -16,41 +17,6 @@ function respond(int $status, array $payload): void
     http_response_code($status);
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
-}
-
-function residentNameKey(string $name): string
-{
-    $name = function_exists("mb_strtolower")
-        ? mb_strtolower($name, "UTF-8")
-        : strtolower($name);
-    return preg_replace('/[^\p{L}\p{N}]+/u', '', $name) ?? "";
-}
-
-function residentRecordName(stdClass $record): string
-{
-    foreach (["name", "fullName", "full_name"] as $field) {
-        if (isset($record->{$field}) && is_string($record->{$field}) && trim($record->{$field}) !== "") {
-            return trim($record->{$field});
-        }
-    }
-
-    $parts = [];
-    foreach (["firstName", "middleName", "lastName", "suffix"] as $field) {
-        if (isset($record->{$field}) && is_string($record->{$field}) && trim($record->{$field}) !== "") {
-            $parts[] = trim($record->{$field});
-        }
-    }
-    return implode(" ", $parts);
-}
-
-function residentRecordIdentity(stdClass $record): ?string
-{
-    foreach (["id", "code", "residentCode", "resident_code"] as $field) {
-        if (isset($record->{$field}) && (is_string($record->{$field}) || is_int($record->{$field}))) {
-            return strtolower(trim((string) $record->{$field}));
-        }
-    }
-    return null;
 }
 
 $allowedKeys = [
@@ -87,8 +53,19 @@ try {
                 ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
+            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            data_key VARCHAR(100) NOT NULL,
+            data_value LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_snapshot_key_created (data_key, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    bb1EnsureResidentRequestChangesTable($pdo);
 
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
+        $requestChanges = bb1LoadResidentRequestChanges($pdo);
         $placeholders = implode(",", array_fill(0, count($allowedKeys), "?"));
         $statement = $pdo->prepare(
             "SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) ORDER BY data_key"
@@ -99,6 +76,15 @@ try {
         $etagContext = hash_init("sha256");
         foreach ($rows as $row) {
             hash_update($etagContext, $row["data_key"] . "\0" . $row["data_value"] . "\0");
+        }
+        foreach ($requestChanges as $change) {
+            hash_update(
+                $etagContext,
+                "resident-request-change\0"
+                    . $change["request_id"] . "\0"
+                    . (string) $change["is_deleted"] . "\0"
+                    . (string) ($change["data_value"] ?? "") . "\0"
+            );
         }
         $etag = '"' . hash_final($etagContext) . '"';
         header("ETag: " . $etag);
@@ -112,6 +98,8 @@ try {
         foreach ($rows as $row) {
             $data[$row["data_key"]] = json_decode($row["data_value"], false, 512, JSON_THROW_ON_ERROR);
         }
+        $baseRequests = $data["bb1-resident-requests"] ?? [];
+        $data["bb1-resident-requests"] = bb1MergeResidentRequestChanges($baseRequests, $requestChanges);
 
         respond(200, ["success" => true, "data" => (object) $data]);
     }
@@ -130,8 +118,48 @@ try {
         ? $input->records
         : (isset($input->key) && property_exists($input, "value")
             ? (object) [$input->key => $input->value]
-            : null);
-    if (!($records instanceof stdClass) || !get_object_vars($records)) {
+            : new stdClass());
+    if (!($records instanceof stdClass)) {
+        respond(400, ["success" => false, "message" => "Database records must be an object."]);
+    }
+
+    $requestUpserts = property_exists($input, "requestUpserts") ? $input->requestUpserts : [];
+    $requestDeletes = property_exists($input, "requestDeletes") ? $input->requestDeletes : [];
+    if (!is_array($requestUpserts)
+        || ($requestUpserts && array_keys($requestUpserts) !== range(0, count($requestUpserts) - 1))
+        || count($requestUpserts) > 500
+        || !is_array($requestDeletes)
+        || ($requestDeletes && array_keys($requestDeletes) !== range(0, count($requestDeletes) - 1))
+        || count($requestDeletes) > 1000) {
+        respond(400, ["success" => false, "message" => "Resident request changes must be valid lists."]);
+    }
+    $requestUpsertIds = [];
+    foreach ($requestUpserts as $request) {
+        if (!($request instanceof stdClass)
+            || !isset($request->id)
+            || (!is_string($request->id) && !is_int($request->id))) {
+            respond(400, ["success" => false, "message" => "A resident request change is invalid."]);
+        }
+        $requestId = (string) $request->id;
+        if (trim($requestId) === "" || strlen($requestId) > 100
+            || isset($requestUpsertIds[$requestId])) {
+            respond(400, ["success" => false, "message" => "A resident request change is invalid."]);
+        }
+        $requestUpsertIds[$requestId] = true;
+    }
+    $requestDeleteIds = [];
+    foreach ($requestDeletes as $requestId) {
+        if (!is_string($requestId)
+            || trim($requestId) === ""
+            || strlen($requestId) > 100
+            || isset($requestDeleteIds[$requestId])
+            || isset($requestUpsertIds[$requestId])) {
+            respond(400, ["success" => false, "message" => "A resident request deletion is invalid."]);
+        }
+        $requestDeleteIds[$requestId] = true;
+    }
+    $hasRequestChanges = count($requestUpserts) > 0 || count($requestDeletes) > 0;
+    if (!get_object_vars($records) && !$hasRequestChanges) {
         respond(400, ["success" => false, "message" => "A non-empty records object is required."]);
     }
 
@@ -144,17 +172,10 @@ try {
             if (!is_array($recordValue) || ($recordValue && array_keys($recordValue) !== range(0, count($recordValue) - 1))) {
                 respond(400, ["success" => false, "message" => "Resident records must be a list."]);
             }
-            $names = [];
             foreach ($recordValue as $resident) {
                 if (!($resident instanceof stdClass)) {
                     respond(400, ["success" => false, "message" => "Each resident record must be an object."]);
                 }
-                $nameKey = residentNameKey(residentRecordName($resident));
-                if (!$nameKey) continue;
-                if (isset($names[$nameKey])) {
-                    respond(409, ["success" => false, "message" => "A resident with this name already exists. The duplicate record was not saved."]);
-                }
-                $names[$nameKey] = residentRecordIdentity($resident);
             }
         }
         if ($key === "bb1-resident-requests") {
@@ -189,46 +210,39 @@ try {
     ");
     $pdo->beginTransaction();
     try {
-        foreach ($encodedRecords as $key => $value) {
-            if ($key === "bb1-resident-records") {
-                $existingStatement = $pdo->prepare("
-                    SELECT data_value
-                    FROM bb1_app_state
-                    WHERE data_key = ?
-                    LIMIT 1
-                    FOR UPDATE
-                ");
-                $existingStatement->execute([$key]);
-                $existingJson = $existingStatement->fetchColumn();
-                if ($existingJson !== false) {
-                    $existingResidents = json_decode($existingJson, false, 512, JSON_THROW_ON_ERROR);
-                    if (!is_array($existingResidents)) {
-                        throw new RuntimeException("Saved resident records are not a list.");
-                    }
-                    $existingIdentities = [];
-                    foreach ($existingResidents as $resident) {
-                        if ($resident instanceof stdClass) {
-                            $identity = residentRecordIdentity($resident);
-                            if ($identity !== null) $existingIdentities[$identity] = true;
-                        }
-                    }
-                    foreach ($records->{$key} as $resident) {
-                        if (!($resident instanceof stdClass) || residentRecordIdentity($resident) === null) continue;
-                        $identity = residentRecordIdentity($resident);
-                        if (isset($existingIdentities[$identity])) continue;
-                        $nameKey = residentNameKey(residentRecordName($resident));
-                        if (!$nameKey) continue;
-                        foreach ($existingResidents as $existingResident) {
-                            if (!($existingResident instanceof stdClass)) continue;
-                            if (residentRecordName($existingResident) === "") continue;
-                            if (residentNameKey(residentRecordName($existingResident)) === $nameKey) {
-                                if ($pdo->inTransaction()) $pdo->rollBack();
-                                respond(409, ["success" => false, "message" => "A resident with this name already exists. The duplicate record was not saved."]);
-                            }
-                        }
-                    }
-                }
+        $snapshotInsert = $pdo->prepare("
+            INSERT INTO bb1_app_state_snapshots (data_key, data_value)
+            VALUES (?, ?)
+        ");
+        $snapshotSelect = $pdo->prepare("
+            SELECT data_key, data_value
+            FROM bb1_app_state
+            WHERE data_key = ?
+            LIMIT 1
+        ");
+        foreach ($allowedKeys as $snapshotKey) {
+            $snapshotSelect->execute([$snapshotKey]);
+            $snapshotValue = $snapshotSelect->fetchColumn();
+            if ($snapshotValue !== false) {
+                $snapshotInsert->execute([$snapshotKey, $snapshotValue]);
             }
+        }
+        if ($hasRequestChanges || array_key_exists("bb1-resident-requests", $encodedRecords)) {
+            $ensureRequestState = $pdo->prepare("
+                INSERT IGNORE INTO bb1_app_state (data_key, data_value)
+                VALUES (?, '[]')
+            ");
+            $ensureRequestState->execute(["bb1-resident-requests"]);
+            $lockRequestState = $pdo->prepare("
+                SELECT data_key
+                FROM bb1_app_state
+                WHERE data_key = ?
+                LIMIT 1
+                FOR UPDATE
+            ");
+            $lockRequestState->execute(["bb1-resident-requests"]);
+        }
+        foreach ($encodedRecords as $key => $value) {
             if ($key === "bb1-resident-requests") {
                 $ensureRequestState = $pdo->prepare("
                     INSERT IGNORE INTO bb1_app_state (data_key, data_value)
@@ -248,6 +262,10 @@ try {
                 if (!is_array($existingRequests)) {
                     throw new RuntimeException("Saved resident requests are not a list.");
                 }
+                $existingRequests = bb1MergeResidentRequestChanges(
+                    $existingRequests,
+                    bb1LoadResidentRequestChanges($pdo)
+                );
 
                 $loadStateForMerge = static function (string $stateKey, $fallback) use ($pdo, $records) {
                     if (property_exists($records, $stateKey)) {
@@ -309,6 +327,12 @@ try {
                 );
             }
             $statement->execute([$key, $value]);
+            if ($key === "bb1-resident-requests") {
+                bb1ClearResidentRequestChanges($pdo);
+            }
+        }
+        if ($hasRequestChanges) {
+            bb1SaveResidentRequestChanges($pdo, $requestUpserts, array_keys($requestDeleteIds));
         }
         $pdo->commit();
     } catch (Throwable $error) {
@@ -318,7 +342,11 @@ try {
         throw $error;
     }
 
-    respond(200, ["success" => true, "saved" => array_keys($encodedRecords)]);
+    $savedKeys = array_keys($encodedRecords);
+    if ($hasRequestChanges && !in_array("bb1-resident-requests", $savedKeys, true)) {
+        $savedKeys[] = "bb1-resident-requests";
+    }
+    respond(200, ["success" => true, "saved" => $savedKeys]);
 } catch (JsonException $e) {
     respond(400, ["success" => false, "message" => "The request or stored record contains invalid JSON."]);
 } catch (Throwable $e) {
