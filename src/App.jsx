@@ -4948,6 +4948,7 @@ function App() {
   const databaseSaveQueueRef = useRef(Promise.resolve())
   const databaseRecordsRef = useRef(null)
   const legacyBrowserRecordsRef = useRef(null)
+  const pendingOfficialDashboardOpenRef = useRef(false)
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
   const [selectedRole, setSelectedRole] = useState('')
@@ -5042,6 +5043,7 @@ function App() {
   const [showRequestForm, setShowRequestForm] = useState(false)
   const [showOfficialLogin, setShowOfficialLogin] = useState(false)
   const [showOfficialDashboard, setShowOfficialDashboard] = useState(false)
+  const [isPreparingOfficialDashboard, setIsPreparingOfficialDashboard] = useState(false)
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [hasLoadedPrivateDatabaseData, setHasLoadedPrivateDatabaseData] = useState(false)
@@ -5750,6 +5752,21 @@ function App() {
             response,
             result: await readJsonResponse(response, 'Database request'),
           }))
+        const pendingRegistrationsRequest = officialBackendToken
+          ? fetchWithTimeout(`${BACKEND_API_URL}/pending-registrations.php`, {
+            cache: 'no-store',
+            headers: { Authorization: `Bearer ${officialBackendToken}` },
+            signal: controller.signal,
+          })
+            .then(async (response) => {
+              const result = await readJsonResponse(response, 'Pending registrations')
+              if (!response.ok || !result.success || !Array.isArray(result.data)) {
+                throw new Error(result.message || 'The registration service returned an invalid response.')
+              }
+              return { records: result.data.map(mapBackendRegistrationRequest), error: null }
+            })
+            .catch((error) => ({ records: null, error }))
+          : Promise.resolve({ records: null, error: null })
         const browserRecordsRequest = officialBackendToken
           ? legacyBrowserRecordsRef.current === null
             ? loadLegacyBrowserRecordSnapshot().then((records) => {
@@ -5758,13 +5775,16 @@ function App() {
             })
             : Promise.resolve(legacyBrowserRecordsRef.current)
           : Promise.resolve({})
-        const [{ response, result }, browserResidentRecords] = await Promise.all([
+        const [{ response, result }, browserResidentRecords, pendingRegistrationLoad] = await Promise.all([
           databaseRequest,
           browserRecordsRequest,
+          pendingRegistrationsRequest,
         ])
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
+            pendingOfficialDashboardOpenRef.current = false
+            setIsPreparingOfficialDashboard(false)
             setOfficialBackendToken('')
             setIsDatabaseConnected(false)
             setHasLoadedPrivateDatabaseData(false)
@@ -5882,6 +5902,9 @@ function App() {
           ),
           residents,
         )
+        const completeRegistrations = pendingRegistrationLoad.records
+          ? mergeRegistrationRequestLists(registrations, pendingRegistrationLoad.records)
+          : registrations
         const profileUpdates = loadMergedList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
         const profiles = loadValue(officialProfilesStorageKey, initialOfficialProfiles)
         const photos = normalizeOfficialPhotoMap(
@@ -5922,7 +5945,16 @@ function App() {
         setIssuedDocuments(issued)
         setCustomCertificateTemplates(customTemplates)
         setEnabledCertificateTypes(enabledTemplates)
-        setRegistrationRequests((currentRequests) => mergeRegistrationRequestLists(registrations, currentRequests))
+        setRegistrationRequests((currentRequests) => mergeRegistrationRequestLists(completeRegistrations, currentRequests))
+        if (officialBackendToken && pendingRegistrationLoad.records) {
+          setHasLoadedPendingRegistrations(true)
+          setRegistrationSyncError('')
+        } else if (officialBackendToken && pendingRegistrationLoad.error) {
+          setHasLoadedPendingRegistrations(false)
+          setRegistrationSyncError(/failed to fetch/i.test(pendingRegistrationLoad.error.message || '')
+            ? 'The registration service is unavailable. Saved applications remain visible; try again when the connection is restored.'
+            : pendingRegistrationLoad.error.message || 'Pending account registrations could not be loaded.')
+        }
         setResidentCodeRecoveryRequests(codeRecoveryRequests)
         setResidentProfileUpdateRequests(profileUpdates)
         setOfficialProfiles(profiles)
@@ -6029,6 +6061,13 @@ function App() {
         console.log(officialBackendToken
           ? 'Barangay records loaded from database.'
           : 'Public community records loaded from database.')
+        if (officialBackendToken && pendingOfficialDashboardOpenRef.current) {
+          pendingOfficialDashboardOpenRef.current = false
+          setIsPreparingOfficialDashboard(false)
+          setLoginStatus('')
+          setShowOfficialLogin(false)
+          setShowOfficialDashboard(true)
+        }
       } catch (error) {
         if (cancelled) return
         console.error('Database loading error:', error)
@@ -6036,6 +6075,13 @@ function App() {
         setDatabaseSaveError(error.message || 'The database could not be loaded.')
         setDatabaseSaveStatus('offline')
         setIsDatabaseConnected(false)
+        if (pendingOfficialDashboardOpenRef.current) {
+          pendingOfficialDashboardOpenRef.current = false
+          setIsPreparingOfficialDashboard(false)
+          setOfficialBackendToken('')
+          setShowOfficialLogin(true)
+          setLoginStatus(`Signed in, but the shared records could not be loaded. ${error.message || 'Please try again.'}`)
+        }
       } finally {
         if (!cancelled) setIsStorageLoaded(true)
       }
@@ -6087,7 +6133,7 @@ function App() {
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') refreshBackendRegistrations()
     }
-    refreshBackendRegistrations()
+    if (!hasLoadedPendingRegistrations) refreshBackendRegistrations()
     const refreshTimer = window.setInterval(refreshBackendRegistrations, ADMIN_INBOX_REFRESH_INTERVAL_MS)
     window.addEventListener('focus', refreshBackendRegistrations)
     window.addEventListener('online', refreshBackendRegistrations)
@@ -6099,10 +6145,10 @@ function App() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
-  }, [officialBackendToken, showOfficialDashboard])
+  }, [hasLoadedPendingRegistrations, officialBackendToken, showOfficialDashboard])
 
   useEffect(() => {
-    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken) return undefined
+    if (!isStorageLoaded || isDatabaseConnected || !officialBackendToken || isPreparingOfficialDashboard) return undefined
     const controller = new AbortController()
     let requestPending = false
     const retryDatabaseConnection = async () => {
@@ -6174,7 +6220,7 @@ function App() {
       document.removeEventListener('visibilitychange', retryWhenVisible)
       controller.abort()
     }
-  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, officialBackendToken])
+  }, [applySharedCommunityRecords, isStorageLoaded, isDatabaseConnected, isPreparingOfficialDashboard, officialBackendToken])
 
   const archivedDocumentRequests = residentHistory
     .filter((entry) => entry.type === 'documentRequest' && entry.request)
@@ -10660,6 +10706,9 @@ function App() {
       return
     }
 
+    pendingOfficialDashboardOpenRef.current = false
+    setIsPreparingOfficialDashboard(true)
+    setLoginStatus('Signing in…')
     setOfficialBackendToken('')
     setHasLoadedPrivateDatabaseData(false)
     setHasLoadedPendingRegistrations(false)
@@ -10675,25 +10724,28 @@ function App() {
       })
       const result = await response.json()
       if (!response.ok || !result.success || !result.token || !['admin', 'official'].includes(result.data?.role)) {
+        setIsPreparingOfficialDashboard(false)
         setLoginStatus(result.message || 'Sign-in failed. Use an active backend admin or official account.')
         setOfficialCredentials({ username: '', password: '' })
         return
       }
+      pendingOfficialDashboardOpenRef.current = true
       setOfficialBackendToken(result.token)
     } catch (error) {
       console.error('Unable to authenticate admin with the resident database service.', error)
+      setIsPreparingOfficialDashboard(false)
       setLoginStatus('Unable to reach the resident database service. Check that the backend is running, then try again.')
       setOfficialCredentials({ username: '', password: '' })
       return
     }
 
     setOfficialCredentials({ username: '', password: '' })
-    setLoginStatus('')
-    setShowOfficialLogin(false)
-    setShowOfficialDashboard(true)
+    setLoginStatus('Loading your official records…')
   }
 
   const logoutOfficial = () => {
+    pendingOfficialDashboardOpenRef.current = false
+    setIsPreparingOfficialDashboard(false)
     setOfficialBackendToken('')
     setHasLoadedPrivateDatabaseData(false)
     setHasLoadedPendingRegistrations(false)
@@ -13899,16 +13951,16 @@ function App() {
       ) : showOfficialLogin ? (
         <section className="official-login-page">
           <div className="official-login-card">
-            <button type="button" className="official-login-back" onClick={returnHome} aria-label="Back to access portal"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 12H5m7 7-7-7 7-7" /></svg></button>
+            <button type="button" className="official-login-back" onClick={returnHome} aria-label="Back to access portal" disabled={isPreparingOfficialDashboard}><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 12H5m7 7-7-7 7-7" /></svg></button>
             <div className="official-login-seal"><img src={barangaySeal} alt="" /></div>
             <h1 className="official-login-title">Official Login</h1>
             <form className="official-login-form" onSubmit={submitOfficialLogin}>
               <label htmlFor="official-username">Admin email</label>
-              <input id="official-username" type="email" value={officialCredentials.username} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, username: event.target.value }); setLoginStatus('') }} placeholder="Enter your admin email" autoComplete="email" required />
+              <input id="official-username" type="email" value={officialCredentials.username} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, username: event.target.value }); setLoginStatus('') }} placeholder="Enter your admin email" autoComplete="email" disabled={isPreparingOfficialDashboard} required />
               <label htmlFor="official-password">Password</label>
-              <input id="official-password" type="password" value={officialCredentials.password} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, password: event.target.value }); setLoginStatus('') }} placeholder="Enter your password" autoComplete="current-password" required />
-              <button type="submit" className="check-button">Log in</button>
-              <button type="button" className="official-password-reset-toggle" onClick={openOfficialPasswordReset}>Forgot password?</button>
+              <input id="official-password" type="password" value={officialCredentials.password} onChange={(event) => { setOfficialCredentials({ ...officialCredentials, password: event.target.value }); setLoginStatus('') }} placeholder="Enter your password" autoComplete="current-password" disabled={isPreparingOfficialDashboard} required />
+              <button type="submit" className="check-button" disabled={isPreparingOfficialDashboard}>{isPreparingOfficialDashboard ? 'Loading records…' : 'Log in'}</button>
+              <button type="button" className="official-password-reset-toggle" onClick={openOfficialPasswordReset} disabled={isPreparingOfficialDashboard}>Forgot password?</button>
               <p className="login-status" aria-live="polite">{loginStatus}</p>
             </form>
           </div>
