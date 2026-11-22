@@ -3043,129 +3043,6 @@ const officialProfilesStorageKey = 'bb1-official-profiles'
 const officialPhotosStorageKey = 'bb1-official-photos'
 const documentFeesDefaultsVersionStorageKey = 'bb1-document-fees-defaults-version'
 const documentFeesDefaultsVersion = 1
-const registrationCacheDatabaseName = 'bb1-registration-cache'
-const registrationCacheObjectStoreName = 'records'
-const registrationCacheRecordKey = 'registration-requests'
-const residentLocalRecordKeys = [
-  residentRequestsStorageKey,
-  residentPaymentDraftsStorageKey,
-  residentHistoryStorageKey,
-  residentDraftsStorageKey,
-]
-const serverBackedStorageKeys = [
-  communityUpdatesStorageKey,
-  barangayContactInformationStorageKey,
-  residentRequestsStorageKey,
-  residentRequestDeletionsStorageKey,
-  residentPaymentDraftsStorageKey,
-  gcashRecipientsStorageKey,
-  residentRecordsStorageKey,
-  registrationRequestsStorageKey,
-  residentCodeRecoveryRequestsStorageKey,
-  residentProfileUpdateRequestsStorageKey,
-  documentFeesStorageKey,
-  documentFeesDefaultsVersionStorageKey,
-  adminPreferencesStorageKey,
-  residentHistoryStorageKey,
-  archivedResidentsStorageKey,
-  issuedDocumentsStorageKey,
-  residentDraftsStorageKey,
-  officialAvailabilityStorageKey,
-  certificateTemplatesStorageKey,
-  enabledCertificateTypesStorageKey,
-  officialProfilesStorageKey,
-  officialPhotosStorageKey,
-]
-
-const openRegistrationCacheDatabase = () => new Promise((resolve, reject) => {
-  if (!window.indexedDB) {
-    reject(new Error('This browser does not support local registration storage.'))
-    return
-  }
-  const request = window.indexedDB.open(registrationCacheDatabaseName, 1)
-  request.onupgradeneeded = () => {
-    if (!request.result.objectStoreNames.contains(registrationCacheObjectStoreName)) {
-      request.result.createObjectStore(registrationCacheObjectStoreName)
-    }
-  }
-  request.onsuccess = () => resolve(request.result)
-  request.onerror = () => reject(request.error || new Error('Unable to open local registration storage.'))
-  request.onblocked = () => reject(new Error('Local registration storage is busy in another browser tab.'))
-})
-
-const loadLocalRegistrationRequests = async () => {
-  let indexedRequests = []
-  const database = window.indexedDB ? await openRegistrationCacheDatabase() : null
-  if (database) {
-    try {
-      const storedRequests = await new Promise((resolve, reject) => {
-        const request = database
-          .transaction(registrationCacheObjectStoreName, 'readonly')
-          .objectStore(registrationCacheObjectStoreName)
-          .get(registrationCacheRecordKey)
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error || new Error('Unable to read local registration storage.'))
-      })
-      if (storedRequests !== undefined) {
-        if (!Array.isArray(storedRequests) || !storedRequests.every((request) => request && typeof request.id === 'string')) {
-          throw new Error('Saved local registration requests use an invalid format.')
-        }
-        indexedRequests = storedRequests
-      }
-    } finally {
-      database.close()
-    }
-  }
-  const savedRequests = window.localStorage.getItem(registrationRequestsStorageKey)
-  let browserRequests = []
-  if (savedRequests !== null) {
-    browserRequests = JSON.parse(savedRequests)
-    if (!Array.isArray(browserRequests) || !browserRequests.every((request) => request && typeof request.id === 'string')) {
-      throw new Error('Saved local registration requests use an invalid format.')
-    }
-  }
-  return mergePersistedRecordLists(indexedRequests, browserRequests, 'legacy registration requests')
-}
-
-const readIndexedResidentRecord = async (key) => {
-  const database = await openRegistrationCacheDatabase()
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = database
-        .transaction(registrationCacheObjectStoreName, 'readonly')
-        .objectStore(registrationCacheObjectStoreName)
-        .get(key)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error || new Error('Unable to read resident browser storage.'))
-    })
-  } finally {
-    database.close()
-  }
-}
-
-const loadLocalResidentRecord = async (key, fallback) => {
-  let indexedRecord
-  try {
-    indexedRecord = await readIndexedResidentRecord(key)
-  } catch (error) {
-    console.warn(`Unable to read ${key} from IndexedDB; trying browser storage.`, error)
-  }
-
-  const serializedRecord = window.localStorage.getItem(key)
-  let parsedRecord = fallback
-  if (serializedRecord !== null) {
-    try {
-      parsedRecord = JSON.parse(serializedRecord)
-    } catch (error) {
-      throw new Error(`Saved ${key} in browser storage is invalid. ${error.message}`, { cause: error })
-    }
-  }
-  if (indexedRecord === undefined) return parsedRecord
-  if (!Array.isArray(indexedRecord) || !Array.isArray(parsedRecord)) {
-    throw new Error(`Saved ${key} in browser storage is not a list.`)
-  }
-  return mergePersistedRecordLists(indexedRecord, parsedRecord, `legacy ${key}`)
-}
 
 const createResidentDraftId = () => `DRAFT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const createResidentPaymentGroupId = () => `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -3296,19 +3173,6 @@ const getResidentCommunityUpdateId = (update) => (
   `community-update-${getAdminNavigationItemId(update)}`
 )
 
-const readStoredImageMap = (key) => {
-  const saved = window.localStorage.getItem(key)
-  if (!saved) return {}
-  const parsed = JSON.parse(saved)
-  const normalized = normalizeOfficialPhotoMap(parsed)
-  if (!normalized) {
-    throw new Error(`Saved data for ${key} must be an image map.`)
-  }
-  return normalized
-}
-
-const officialPhotosCacheRecordKey = 'official-photos'
-
 const isOfficialPhotoMap = (photos) => Boolean(
   photos && typeof photos === 'object' && !Array.isArray(photos)
   && Object.values(photos).every((photo) => typeof photo === 'string'),
@@ -3320,50 +3184,6 @@ const normalizeOfficialPhotoMap = (photos) => {
   return Object.fromEntries(photos.flatMap((photo, index) => (
     typeof photo === 'string' && photo ? [[String(index), photo]] : []
   )))
-}
-
-const loadLocalOfficialPhotos = async () => {
-  const database = window.indexedDB ? await openRegistrationCacheDatabase() : null
-  if (!database) return readStoredImageMap(officialPhotosStorageKey)
-  let indexedPhotos = {}
-  try {
-    const photos = await new Promise((resolve, reject) => {
-      const request = database
-        .transaction(registrationCacheObjectStoreName, 'readonly')
-        .objectStore(registrationCacheObjectStoreName)
-        .get(officialPhotosCacheRecordKey)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error || new Error('Unable to read saved official photos.'))
-    })
-    if (photos !== undefined) {
-      indexedPhotos = normalizeOfficialPhotoMap(photos)
-      if (!indexedPhotos) throw new Error('Saved official photos use an invalid format.')
-    }
-  } finally {
-    database.close()
-  }
-  return { ...readStoredImageMap(officialPhotosStorageKey), ...indexedPhotos }
-}
-
-const loadLegacyBrowserRecordSnapshot = async () => {
-  const records = {}
-  serverBackedStorageKeys.forEach((key) => {
-    const saved = window.localStorage.getItem(key)
-    if (saved === null) return
-    try {
-      records[key] = JSON.parse(saved)
-    } catch (error) {
-      throw new Error(`Saved browser data for ${key} is invalid and was not changed. ${error.message}`, { cause: error })
-    }
-  })
-
-  await Promise.all(residentLocalRecordKeys.map(async (key) => {
-    records[key] = await loadLocalResidentRecord(key, records[key] ?? [])
-  }))
-  records[registrationRequestsStorageKey] = await loadLocalRegistrationRequests()
-  records[officialPhotosStorageKey] = await loadLocalOfficialPhotos()
-
-  return records
 }
 
 const normalizeBarangayContactInformation = (value) => {
@@ -4982,8 +4802,6 @@ function App() {
   const skipNextDatabaseSaveRef = useRef(false)
   const databaseSaveQueueRef = useRef(Promise.resolve())
   const databaseRecordsRef = useRef(null)
-  const legacyBrowserRecordsRef = useRef(null)
-  const legacyBrowserRecoveryAppliedRef = useRef(false)
   const publicCommunityEtagRef = useRef('')
   const databaseEtagRef = useRef('')
   const [selectedRole, setSelectedRole] = useState('')
@@ -5082,8 +4900,6 @@ function App() {
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [hasLoadedPrivateDatabaseData, setHasLoadedPrivateDatabaseData] = useState(false)
-  const [hasResolvedLegacyBrowserSnapshot, setHasResolvedLegacyBrowserSnapshot] = useState(false)
-  const [legacyBrowserRecoveryError, setLegacyBrowserRecoveryError] = useState('')
   const [isPublicCommunityConnected, setIsPublicCommunityConnected] = useState(false)
   const [isResidentDatabaseConnected, setIsResidentDatabaseConnected] = useState(false)
   const [residentDatabaseSyncError, setResidentDatabaseSyncError] = useState('')
@@ -5779,45 +5595,12 @@ function App() {
         setDatabaseSaveError('')
       }
       try {
-        const databaseRequest = fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
+        const { response, result } = await fetchJsonWithTimeout(officialBackendToken ? API_URL : PUBLIC_COMMUNITY_API_URL, {
           method: 'GET',
           cache: 'no-store',
           ...(officialBackendToken ? { headers: { Authorization: `Bearer ${officialBackendToken}` } } : {}),
           signal: controller.signal,
         }, 'Database request', officialBackendToken ? DATABASE_REQUEST_TIMEOUT_MS : undefined)
-        const browserRecordsRequest = officialBackendToken
-          ? legacyBrowserRecordsRef.current === null
-            ? loadLegacyBrowserRecordSnapshot().then((records) => {
-              legacyBrowserRecordsRef.current = records
-              setHasResolvedLegacyBrowserSnapshot(true)
-              setLegacyBrowserRecoveryError('')
-              return records
-            }).catch((error) => {
-              console.error('Unable to read legacy browser recovery records.', error)
-              legacyBrowserRecordsRef.current = {}
-              legacyBrowserRecoveryAppliedRef.current = true
-              setHasResolvedLegacyBrowserSnapshot(true)
-              setLegacyBrowserRecoveryError(error.message || 'Saved browser recovery data could not be read.')
-              return {}
-            })
-            : Promise.resolve(legacyBrowserRecordsRef.current)
-          : Promise.resolve({})
-        let browserSnapshotTimeoutId
-        const browserSnapshotTimeout = new Promise((resolve) => {
-          browserSnapshotTimeoutId = window.setTimeout(() => resolve(null), 1200)
-        })
-        const [{ response, result }, initialBrowserRecords] = await Promise.all([
-          databaseRequest,
-          officialBackendToken
-            ? Promise.race([browserRecordsRequest, browserSnapshotTimeout])
-            : Promise.resolve({}),
-        ])
-        window.clearTimeout(browserSnapshotTimeoutId)
-        const browserSnapshotIncluded = initialBrowserRecords !== null
-        const browserResidentRecords = initialBrowserRecords || {}
-        if (officialBackendToken && browserSnapshotIncluded) {
-          legacyBrowserRecoveryAppliedRef.current = true
-        }
         if (cancelled) return
         if (!response.ok) {
           if (officialBackendToken && response.status === 401) {
@@ -5843,17 +5626,10 @@ function App() {
           if (Object.prototype.hasOwnProperty.call(data, key)) {
             return data[key]
           }
-
-          return Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
-            ? browserResidentRecords[key]
-            : fallback
+          return fallback
         }
         const loadMergedList = (key, fallback, label) => {
-          const databaseRecords = loadValue(key, fallback)
-          const browserRecords = Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
-            ? browserResidentRecords[key]
-            : []
-          return mergePersistedRecordLists(databaseRecords, browserRecords, label)
+          return mergePersistedRecordLists(loadValue(key, fallback), [], label)
         }
 
         const updates = loadValue(communityUpdatesStorageKey, initialCommunityUpdates)
@@ -5933,10 +5709,7 @@ function App() {
           throw new Error('Saved registration requests must be a list.')
         }
         const registrations = migrateInitialResidentsToRegistrationHistory(
-          mergeRegistrationRequestLists(
-            remoteRegistrations,
-            browserResidentRecords[registrationRequestsStorageKey] || [],
-          ),
+          mergeRegistrationRequestLists(remoteRegistrations, []),
           residents,
         )
         const profileUpdates = loadMergedList(residentProfileUpdateRequestsStorageKey, [], 'resident profile update requests')
@@ -5944,7 +5717,7 @@ function App() {
         const photos = normalizeOfficialPhotoMap(
           Object.prototype.hasOwnProperty.call(data, officialPhotosStorageKey)
             ? data[officialPhotosStorageKey]
-            : browserResidentRecords[officialPhotosStorageKey] || {},
+            : {},
         )
         if (!photos) throw new Error('Saved official photos must be an image map or a legacy list of photo strings.')
         const recipients = loadValue(gcashRecipientsStorageKey, initialGcashRecipients)
@@ -6030,11 +5803,8 @@ function App() {
         const recoveredRecords = Object.fromEntries(
           Object.entries(records).filter(([key, value]) => (
             key !== residentRequestsStorageKey
-            && (
-              Object.prototype.hasOwnProperty.call(data, key)
-                ? JSON.stringify(data[key]) !== JSON.stringify(value)
-                : Object.prototype.hasOwnProperty.call(browserResidentRecords, key)
-            )
+            && Object.prototype.hasOwnProperty.call(data, key)
+            && JSON.stringify(data[key]) !== JSON.stringify(value)
           )),
         )
         const hasRequestRecoveryChanges = requestRecoveryChanges.upserts.length > 0
@@ -6105,13 +5875,6 @@ function App() {
       controller.abort()
     }
   }, [databaseLoadVersion, officialBackendToken])
-
-  useEffect(() => {
-    if (!officialBackendToken || !isDatabaseConnected || !hasResolvedLegacyBrowserSnapshot
-      || legacyBrowserRecoveryAppliedRef.current) return
-    legacyBrowserRecoveryAppliedRef.current = true
-    setDatabaseLoadVersion((version) => version + 1)
-  }, [hasResolvedLegacyBrowserSnapshot, isDatabaseConnected, officialBackendToken])
 
   useEffect(() => {
     if (!showOfficialDashboard || !officialBackendToken) return undefined
@@ -12332,7 +12095,6 @@ function App() {
               <span>{`Not saved to shared database. ${databaseSaveError || 'Retrying connection automatically.'}`}</span>
             </div>
             : <div className={`database-save-indicator is-${databaseSaveStatus}`} role="status"><span className="database-sync-indicator" aria-hidden="true" /><span>{databaseSaveStatus === 'saving' ? 'Saving changes to shared database…' : databaseSaveStatus === 'error' ? `Database save failed. ${databaseSaveError}` : 'Changes saved to shared database'}</span></div>}
-          {legacyBrowserRecoveryError && <div className="database-save-indicator is-error" role="alert">Legacy browser recovery data could not be read. {legacyBrowserRecoveryError}</div>}
           {adminView === 'overview' && <div className="dashboard-heading admin-overview-heading">
             <h1>Overview</h1>
             <span className="dashboard-date">{new Date().toLocaleDateString('en-US', { dateStyle: 'full' })}</span>
