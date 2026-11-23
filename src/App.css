@@ -11864,6 +11864,123 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .resident-account-shell.resident-dark-mode .resident-account-popover > button:hover { border-color: #68896a; background: #304536; }
 .resident-account-shell.resident-dark-mode .resident-inbox-no-requests { border-color: #3b5140; background: #223128; color: #e5eee6; }
 
+/* Keep phone dark mode green across dashboard panels and nested cards. */
+@media (max-width: 720px) {
+  .resident-account-shell.resident-dark-mode :is(
+    .resident-dashboard-section,
+    .resident-workspace-panel,
+    .resident-request-detail-page,
+    .resident-request-information,
+    .resident-document-request-card,
+    .resident-document-request-card-copy,
+    .resident-request-list-item,
+    .resident-inbox-item,
+    .resident-payment-main-panel,
+    .resident-payment-records-panel,
+    .resident-payment-info-panel,
+    .resident-payment-side-panels,
+    .resident-payment-selection,
+    .resident-payment-method-step,
+    .resident-payment-selection-item,
+    .resident-payment-record-item,
+    .resident-payment-record-summary,
+    .resident-payment-request-information,
+    .resident-payment-request-outcomes,
+    .resident-payment-proof-display,
+    .resident-payment-pending,
+    .resident-payment-security-note,
+    .resident-payment-batch-form,
+    .resident-payment-form,
+    .resident-gcash-transfer-details,
+    .resident-gcash-recipient-table-wrap,
+    .resident-request-history-modal,
+    .resident-request-history-modal section,
+    .resident-cancellation-modal,
+    .resident-profile-card,
+    .resident-pickup-card,
+    .resident-document-update-card,
+    .resident-registration-inbox-item,
+    .resident-draft-card,
+    .resident-correction-card,
+    .resident-cancelled-card
+  ) {
+    border-color: #3b5941 !important;
+    background: #223729 !important;
+    color: #e5eee6;
+  }
+  .resident-account-shell.resident-dark-mode .resident-account-popover,
+  .resident-account-shell.resident-dark-mode .resident-account-popover > button,
+  .resident-account-shell.resident-dark-mode .resident-drafts-corrections-tabs,
+  .resident-account-shell.resident-dark-mode .resident-drafts-corrections-tabs button,
+  .resident-account-shell.resident-dark-mode .resident-update-history {
+    border-color: #3b5941;
+    background: #263d2d;
+    color: #e5eee6;
+  }
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table,
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table :is(thead, tbody, tr, th, td) {
+    border-color: #3b5941;
+    background-color: #223729;
+    color: #e5eee6;
+  }
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table thead th { background-color: #2d4934; }
+
+  .official-dashboard.dark-mode .admin-content :is(
+    .requests-panel,
+    .request-search-panel,
+    .request-item,
+    .request-detail,
+    .incoming-request-preview,
+    .incoming-request-panel,
+    .resident-record-form,
+    .community-update-form,
+    .community-update-item,
+    .official-admin-card,
+    .admin-table,
+    .admin-table thead,
+    .admin-table tbody tr,
+    .admin-table th,
+    .admin-table td,
+    .registration-review-panel,
+    .registration-review-information-card,
+    .registration-review-step-list,
+    .registration-evidence-card,
+    .registration-request-detail,
+    .registration-list-table,
+    .registration-queue-item,
+    .registration-process-step,
+    .payment-assessment-item,
+    .payment-proof-review-panel,
+    .payment-history-card,
+    .issued-documents-workspace,
+    .compliance-panel,
+    .admin-payment-management-page,
+    .document-request-workspace,
+    .admin-announcement-workspace
+  ) {
+    border-color: #3b5941 !important;
+    background: #223729 !important;
+    color: #e5eee6;
+  }
+  .official-dashboard.dark-mode .admin-content :is(
+    .request-item.is-open,
+    .registration-review-step-list li,
+    .registration-review-information-card.is-current-step,
+    .registration-evidence-image-button,
+    .payment-assessment-item.is-expanded,
+    .issued-document-row
+  ) { background: #294432 !important; }
+  .official-dashboard.dark-mode .admin-content :is(.request-item, .admin-table, .registration-review-information-card) :is(span, strong, small, p, label, th, td) {
+    color: #e5eee6;
+  }
+  .official-dashboard.dark-mode .admin-content :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+    border-color: #4b694f;
+    background: #192b20;
+    color: #e5eee6;
+    color-scheme: dark;
+  }
+}
+
 .recovery-request-search,
 .payment-tracking-search,
 .resident-dashboard-search { display: block; width: 100%; min-width: 0; margin: 10px 0; }
