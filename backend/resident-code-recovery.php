@@ -29,7 +29,8 @@ register_shutdown_function(static function () use (&$recoveryBootstrapStage): vo
     }
     echo json_encode([
         "success" => false,
-        "message" => "The resident recovery service failed during startup. Check the backend PHP error log.",
+        "message" => "The resident recovery service failed during {$recoveryBootstrapStage}. Check the backend PHP error log.",
+        "stage" => $recoveryBootstrapStage,
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 });
 
@@ -333,7 +334,9 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
     respond(405, ["success" => false, "message" => "Method not allowed."]);
 }
 
+$recoveryBootstrapStage = "request authorization";
 $admin = authenticateUser($pdo, ["admin", "official"]);
+$recoveryBootstrapStage = "request parsing";
 $input = json_decode(file_get_contents("php://input"), true);
 $action = is_array($input) ? strtolower(trim((string) ($input["action"] ?? "send_code"))) : "";
 
@@ -354,6 +357,7 @@ if ($action === "decline_notice") {
 
     $recipient = strtolower(trim($recipient));
     try {
+        $recoveryBootstrapStage = "decline notice lookup";
         $requestState = $pdo->prepare("SELECT data_value FROM bb1_app_state WHERE data_key = ? LIMIT 1");
         $requestState->execute(["bb1-resident-code-recovery-requests"]);
         $storedRequests = $requestState->fetchColumn();
@@ -387,6 +391,7 @@ if ($action === "decline_notice") {
     }
 
     try {
+        $recoveryBootstrapStage = "decline notice email delivery";
         sendRecoveryDeclinedNotice($recipient, trim($residentName), $requestId);
         respond(200, [
             "success" => true,
@@ -419,6 +424,7 @@ if ($deliveryMethod !== "email") {
 }
 
 try {
+    $recoveryBootstrapStage = "resident lookup and code preparation";
     bb1EnsureSyncRevisionTable($pdo);
     ensureRecoveryResidentCodeSequence($pdo);
     $pdo->beginTransaction();
@@ -509,8 +515,10 @@ try {
     $newCode = createRecoveryResidentCode($pdo, $directoryRecords, $archivedRecords);
 
     // Deliver first so a failed email leaves the previous working code and records unchanged.
+    $recoveryBootstrapStage = "Gmail recovery email delivery";
     sendRecoveryCodeByEmail($destination, trim($firstName . " " . $lastName), $newCode);
 
+    $recoveryBootstrapStage = "resident code update";
     if ($isDatabaseResident) {
         $updateResident = $pdo->prepare("UPDATE residents SET resident_code = ? WHERE id = ?");
         $updateResident->execute([$newCode, $resident["id"]]);
