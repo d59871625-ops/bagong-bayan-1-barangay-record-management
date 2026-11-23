@@ -2128,6 +2128,8 @@ h1 em { color: var(--accent); font-style: normal; }
 .docx-preview-actions .approve-button { border-color: #3c7a45; background: #3c7a45; color: #ffffff; }
 .docx-preview-actions button:disabled { color: #829084; cursor: not-allowed; }
 .docx-preview-print-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border: 1px solid #d5e5d7; border-radius: 10px; background: linear-gradient(110deg, #f7fbf7, #edf6ee); }
+.certificate-preview-output-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.certificate-preview-output-actions button { flex: 0 0 auto; }
 .docx-preview-print-footer > div { display: grid; gap: 4px; }
 .docx-preview-print-footer strong { color: #2b4530; font-size: 12px; }
 .docx-preview-print-footer span { color: #657568; font-size: 10px; }
@@ -2151,6 +2153,9 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-dashboard.dark-mode .docx-preview-toolbar h3 { color: #edf4ed; }
 .official-dashboard.dark-mode .docx-preview-actions button { border-color: #607464; background: #18221b; color: #edf4ed; }
 @media (max-width: 720px) {
+  .docx-preview-print-footer { align-items: stretch; flex-direction: column; }
+  .certificate-preview-output-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .certificate-preview-output-actions button { width: 100%; }
   .approved-document-panel { padding: 13px; }
   .processing-confirmed-information { padding: 14px; }
   .processing-confirmed-heading { align-items: flex-start; flex-direction: column; }
@@ -11560,6 +11565,9 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 }
 
 @media (max-width: 720px) {
+  .docx-preview-print-footer { align-items: stretch; flex-direction: column; }
+  .certificate-preview-output-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .certificate-preview-output-actions button { width: 100%; }
   .document-requests-panel .submission-request-group .request-meta {
     display: grid;
     grid-template-columns: minmax(0, 1fr);

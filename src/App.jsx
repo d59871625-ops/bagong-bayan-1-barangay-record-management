@@ -20,6 +20,7 @@ import {
   scanCertificateTemplateFields,
   updateCertificateTemplateDocx,
 } from './certificateDocuments.js'
+import { PDFDocument } from 'pdf-lib'
 import './App.css'
 
 const isLoopbackApiUrl = (value) => /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(value)
@@ -1231,6 +1232,49 @@ const getCertificateTemplateContent = (blob) => {
   return content
 }
 
+const saveCertificatePagesAsPdf = async (pages, documentName, requestId, copyCount = 1, pageSize = null) => {
+  if (!pages.length) throw new Error('The certificate preview is empty.')
+  const pdf = await PDFDocument.create()
+  const safeCopyCount = Number.isSafeInteger(copyCount) && copyCount > 0 ? copyCount : 1
+  const { default: html2canvas } = await import('html2canvas')
+  for (let copy = 0; copy < safeCopyCount; copy += 1) {
+    for (const page of pages) {
+      const bounds = page.getBoundingClientRect()
+      const width = Math.max(1, Math.round(bounds.width))
+      const height = Math.max(1, Math.round(bounds.height))
+      const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+      const background = page.cloneNode(true)
+      background.style.cssText += `;width:${width}px!important;height:${height}px!important;position:static;margin:0!important;box-shadow:none!important;transform:none!important;`
+      const staging = window.document.createElement('div')
+      staging.style.cssText = `position:fixed;left:-100000px;top:0;width:${width}px;height:${height}px;z-index:-1;pointer-events:none;overflow:hidden;`
+      staging.appendChild(background)
+      window.document.body.appendChild(staging)
+      try {
+        await waitForCertificatePreviewAssets(staging)
+        const rendered = await html2canvas(background, { backgroundColor: '#ffffff', scale, useCORS: true, logging: false, width, height, windowWidth: width })
+        const imageBytes = await new Promise((resolve, reject) => rendered.toBlob((result) => result ? result.arrayBuffer().then(resolve, reject) : reject(new Error('Could not encode the PDF page.')), 'image/png'))
+        const embedded = await pdf.embedPng(imageBytes)
+        const pdfWidth = pageSize?.widthTwips > 0 ? pageSize.widthTwips / 20 : width * 72 / 96
+        const pdfHeight = pageSize?.heightTwips > 0 ? pageSize.heightTwips / 20 : height * 72 / 96
+        const pdfPage = pdf.addPage([pdfWidth, pdfHeight])
+        pdfPage.drawImage(embedded, { x: 0, y: 0, width: pdfPage.getWidth(), height: pdfPage.getHeight() })
+      } finally {
+        staging.remove()
+      }
+    }
+  }
+  const bytes = await pdf.save()
+  const file = new Blob([bytes], { type: 'application/pdf' })
+  const objectUrl = URL.createObjectURL(file)
+  const link = window.document.createElement('a')
+  const safeRequestId = String(requestId || 'certificate').replace(/[^a-z0-9-]+/gi, '-')
+  const safeDocumentName = String(documentName).replace(/[^a-z0-9-]+/gi, '-')
+  link.href = objectUrl
+  link.download = `${safeRequestId}-${safeDocumentName}.pdf`
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500)
+}
+
 const getCertificateHeaderPositions = (images) => images
   .filter((image) => image.partPath.includes('/header') && image.isFloating)
   .map((image) => ({
@@ -1515,12 +1559,13 @@ const matchEditedCertificateFields = (detectedFields, previousFields) => detecte
   }
 })
 
-function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificate, onPrintPdf, savedCertificateDownloadError = '', copyCount = 1, reviewOnly = false, large = false }) {
+function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificate, onDownloadPdf, onPrintPdf, savedCertificateDownloadError = '', copyCount = 1, reviewOnly = false, large = false }) {
   const panelRef = useRef(null)
   const previewContainer = useRef(null)
   const scrollContainer = useRef(null)
   const [previewError, setPreviewError] = useState('')
   const [isRendered, setIsRendered] = useState(false)
+  const [isSavingPdf, setIsSavingPdf] = useState(false)
   const [isPrintingPdf, setIsPrintingPdf] = useState(false)
   const [zoom, setZoom] = useState(100)
   const [isFitToPage, setIsFitToPage] = useState(true)
@@ -1609,7 +1654,7 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
     setIsPrintingPdf(true)
     setPreviewError('')
     try {
-      await onPrintPdf(document)
+      await onPrintPdf(document, previewContainer.current)
     } catch (error) {
       console.error(`Unable to prepare the ${document} PDF for printing.`, error)
       setPreviewError(error instanceof Error ? error.message : 'The certificate PDF could not be prepared for printing.')
@@ -1617,6 +1662,20 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
       setIsPrintingPdf(false)
     }
   }, [document, isPrintingPdf, onPrintPdf])
+
+  const savePdf = useCallback(async () => {
+    if (!onDownloadPdf || isSavingPdf) return
+    setIsSavingPdf(true)
+    setPreviewError('')
+    try {
+      await onDownloadPdf(document, previewContainer.current)
+    } catch (error) {
+      console.error(`Unable to save the ${document} PDF.`, error)
+      setPreviewError(error instanceof Error ? error.message : 'The certificate PDF could not be saved.')
+    } finally {
+      setIsSavingPdf(false)
+    }
+  }, [document, isSavingPdf, onDownloadPdf])
 
   const previewPanel = (
     <section className={`docx-preview-panel${large ? ' certificate-filled-preview-modal certificate-template-preview-modal' : ''}`} ref={panelRef} aria-labelledby="docx-preview-title" role={large ? 'dialog' : undefined} aria-modal={large ? 'true' : undefined}>
@@ -1639,11 +1698,17 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
       <p className="docx-original-template-note">{reviewOnly ? 'This preview uses the saved certificate information and original document template.' : `Preview uses the original certificate template and confirmed information. The request includes ${copyCount} ${copyCount === 1 ? 'copy' : 'copies'}.`}</p>
       <div className="docx-preview-scroll" ref={scrollContainer} style={{ visibility: isRendered ? 'visible' : 'hidden' }}><div className="docx-preview-pages" style={large ? { zoom: zoom / 100 } : undefined} ref={previewContainer} /></div>
       {large && !reviewOnly && <footer className="docx-preview-print-footer">
-        <div><strong>Print at the template’s original size</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Original page dimensions and margins are preserved. Choose Actual size in the print dialog.</span></div>
-        <button type="button" onClick={printPreview} disabled={!isRendered || isPrintingPdf}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3.5h10V8M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4.5 9h15a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H18M7 14h10v6.5H7zM17.5 11.5h.01" /></svg>
-          <span>{isPrintingPdf ? 'Preparing PDF…' : 'Print / Save as PDF'}</span>
-        </button>
+        <div><strong>Save or print at the template’s original size</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Original page dimensions and margins are preserved. Print uses the system print dialog.</span></div>
+        <div className="certificate-preview-output-actions">
+          <button type="button" onClick={savePdf} disabled={!isRendered || isSavingPdf || isPrintingPdf}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
+            <span>{isSavingPdf ? 'Saving PDF…' : 'Save as PDF'}</span>
+          </button>
+          <button type="button" onClick={printPreview} disabled={!isRendered || isPrintingPdf || isSavingPdf}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3.5h10V8M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4.5 9h15a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H18M7 14h10v6.5H7zM17.5 11.5h.01" /></svg>
+            <span>{isPrintingPdf ? 'Preparing print…' : 'Print'}</span>
+          </button>
+        </div>
       </footer>}
     </section>
   )
@@ -3075,7 +3140,7 @@ function ResidentDocumentGuide({ documents, onClose, onAcknowledge, customTempla
   )
 }
 
-function ApprovedCertificateEditor({ request, certificateDownloadError, getCurrentCertificateData, saveCertificateReview, downloadApprovedCertificate, printApprovedCertificatePdf, recordPrintedDocument, initialDocument, customTemplates = [] }) {
+function ApprovedCertificateEditor({ request, certificateDownloadError, getCurrentCertificateData, saveCertificateReview, downloadApprovedCertificate, downloadApprovedCertificatePdf, printApprovedCertificatePdf, recordPrintedDocument, initialDocument, customTemplates = [] }) {
   const certificateDataByDocument = getCurrentCertificateData(request)
   const copyCount = Number.isSafeInteger(Number(request.copyCount)) && Number(request.copyCount) > 0
     ? Number(request.copyCount)
@@ -3232,7 +3297,8 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
         document={previewDocument}
         copyCount={printCopyCount}
         savedCertificateDownloadError={certificateDownloadError}
-        onPrintPdf={(selectedDocument) => printApprovedCertificatePdf(request, selectedDocument)}
+        onDownloadPdf={(selectedDocument, previewNode) => downloadApprovedCertificatePdf(request, selectedDocument, previewNode)}
+        onPrintPdf={(selectedDocument, previewNode) => printApprovedCertificatePdf(request, selectedDocument, previewNode)}
         onClose={() => { setPreviewBlob(null); setPreviewDocument(null); setPreviewCertificateData(null) }}
         large
       />}
@@ -5187,7 +5253,7 @@ function App() {
   const [expandedRecoveryRequestId, setExpandedRecoveryRequestId] = useState(null)
   const [adminRecoveryMessage, setAdminRecoveryMessage] = useState('')
   const [recoveryDeliveryRequest, setRecoveryDeliveryRequest] = useState(null)
-  const [recoveryDeliveryMode, setRecoveryDeliveryMode] = useState('send')
+  const [recoveryDeliveryMode, setRecoveryDeliveryMode] = useState('verify')
   const [isSendingRecoveryCode, setIsSendingRecoveryCode] = useState(false)
   const [isSendingRecoveryNotice, setIsSendingRecoveryNotice] = useState(false)
   const [officialBackendToken, setOfficialBackendTokenState] = useState('')
@@ -9504,8 +9570,8 @@ function App() {
     setRecoveryDeliveryRequest(request)
   }
 
-  const verifyRecoveryResidentWithEmail = async (request) => {
-    if (isSendingRecoveryCode) return
+  const verifyRecoveryResidentRecord = async (request) => {
+    if (isSendingRecoveryCode || request.status !== 'Pending') return
     const { resident, savedEmail } = getRecoveryResidentDetails(request)
     if (!resident) {
       setAdminRecoveryMessage(`No existing resident record matches ${request.fullName}. Do not create a new account through recovery.`)
@@ -9516,37 +9582,18 @@ function App() {
       return
     }
 
-    setIsSendingRecoveryCode(true)
-    setAdminRecoveryMessage('')
-    try {
-      const delivery = await sendRecoveryCodeToSavedEmail(resident.code)
-      const verifiedAt = new Date().toISOString()
-      setResidentCodeRecoveryRequests((requests) => requests.map((candidate) => candidate.id === request.id
-        ? {
-          ...candidate,
-          status: 'Verified',
-          matchedResidentId: resident.id,
-          matchedResidentCode: delivery.resident_code,
-          deliveryMethod: 'email',
-          deliveryDestination: delivery.destination || '',
-          verifiedAt,
-          codeSentAt: verifiedAt,
-        }
-        : candidate))
-      setResidentHistory((history) => [{
-        id: `resident-history-${Date.now()}`,
-        resident: resident.name,
-        action: `Resident login code replaced and emailed for recovery request ${request.id}`,
-        date: verifiedAt,
-      }, ...history])
-      setRecoveryDeliveryRequest(null)
-      setAdminRecoveryMessage(`A new resident login code was emailed to ${delivery.destination}. Resident Records and linked requests now use the new code.`)
-    } catch (error) {
-      console.error('Unable to verify the recovery request and send the resident code.', error)
-      setAdminRecoveryMessage(error instanceof Error ? error.message : 'Unable to send the resident code. Check the backend configuration and try again.')
-    } finally {
-      setIsSendingRecoveryCode(false)
-    }
+    const verifiedAt = new Date().toISOString()
+    setResidentCodeRecoveryRequests((requests) => requests.map((candidate) => candidate.id === request.id
+      ? {
+        ...candidate,
+        status: 'Verified',
+        matchedResidentId: resident.id,
+        matchedResidentCode: resident.code,
+        verifiedAt,
+      }
+      : candidate))
+    setRecoveryDeliveryRequest(null)
+    setAdminRecoveryMessage(`${request.fullName}'s details match the saved resident record. Approve the request to generate and email a replacement login code.`)
   }
 
   const reviewRecoveryRequest = async (request, status) => {
@@ -9556,6 +9603,44 @@ function App() {
     }
     if (!['Approved', 'Declined'].includes(status)) return
     if (status === 'Declined' && !['Pending', 'Verified'].includes(request.status)) return
+    if (status === 'Approved') {
+      if (!request.matchedResidentCode || !officialBackendToken) {
+        setAdminRecoveryMessage('Sign in to the shared database and verify the resident record before approving this recovery request.')
+        return
+      }
+      setIsSendingRecoveryCode(true)
+      setAdminRecoveryMessage('Approving the verified request and emailing a replacement login code…')
+      try {
+        const delivery = await sendRecoveryCodeToSavedEmail(request.matchedResidentCode)
+        const reviewedAt = new Date().toISOString()
+        setResidentCodeRecoveryRequests((requests) => requests.map((candidate) => candidate.id === request.id
+          ? {
+            ...candidate,
+            status: 'Approved',
+            reviewedAt,
+            reviewNote: '',
+            matchedResidentCode: delivery.resident_code,
+            deliveryMethod: 'email',
+            deliveryDestination: delivery.destination || '',
+            codeSentAt: reviewedAt,
+          }
+          : candidate))
+        setResidentHistory((history) => [{
+          id: `resident-history-${Date.now()}`,
+          resident: request.fullName,
+          action: `Resident login code replaced and emailed for recovery request ${request.id}`,
+          date: reviewedAt,
+        }, ...history])
+        setRecoveryDeliveryRequest(null)
+        setAdminRecoveryMessage(`The request was approved. A new login code was emailed to ${delivery.destination}, and the resident record now uses it.`)
+      } catch (error) {
+        console.error('Unable to approve the recovery request and send the replacement code.', error)
+        setAdminRecoveryMessage(error instanceof Error ? error.message : 'The code could not be emailed. The recovery request remains unapproved.')
+      } finally {
+        setIsSendingRecoveryCode(false)
+      }
+      return
+    }
     let declineNotice = null
     if (status === 'Declined' && request.emailAddress) {
       if (!officialBackendToken) {
@@ -9587,51 +9672,9 @@ function App() {
         } : {}),
       }
       : candidate))
-    setAdminRecoveryMessage(status === 'Declined'
-      ? request.emailAddress
-        ? 'The request was declined and an apology notice was emailed. No resident code was sent.'
-        : 'The request was declined, but no email address was provided for a notice. No resident code was sent.'
-      : `${request.fullName}'s recovery request was approved.`)
-  }
-
-  const sendApprovedRecoveryCode = (request) => {
-    if (request.status !== 'Approved' || !request.matchedResidentCode) {
-      setAdminRecoveryMessage('Approve a verified recovery request before sending its resident code.')
-      return
-    }
-    if (!officialBackendToken) {
-      setAdminRecoveryMessage('Sign in with an authorized backend admin account before sending a resident code.')
-      return
-    }
-    setAdminRecoveryMessage('')
-    setRecoveryDeliveryRequest(request)
-    setRecoveryDeliveryMode('send')
-  }
-
-  const sendRecoveredResidentCode = async (request) => {
-    if (!request || isSendingRecoveryCode) return
-    setIsSendingRecoveryCode(true)
-    setAdminRecoveryMessage('')
-    try {
-      const delivery = await sendRecoveryCodeToSavedEmail(request.matchedResidentCode)
-      const codeSentAt = new Date().toISOString()
-      setResidentCodeRecoveryRequests((requests) => requests.map((candidate) => candidate.id === request.id
-        ? { ...candidate, matchedResidentCode: delivery.resident_code, deliveryMethod: 'email', deliveryDestination: delivery.destination || '', codeSentAt }
-        : candidate))
-      setResidentHistory((history) => [{
-        id: `resident-history-${Date.now()}`,
-        resident: request.fullName,
-        action: `Resident login code replaced and emailed for recovery request ${request.id}`,
-        date: codeSentAt,
-      }, ...history])
-      setRecoveryDeliveryRequest(null)
-      setAdminRecoveryMessage(`A new resident login code was emailed to ${delivery.destination}. Resident Records and linked requests now use the new code.`)
-    } catch (error) {
-      console.error('Unable to send a recovered resident code.', error)
-      setAdminRecoveryMessage(error instanceof Error ? error.message : 'Unable to send the resident code. Check the backend connection and try again.')
-    } finally {
-      setIsSendingRecoveryCode(false)
-    }
+    setAdminRecoveryMessage(request.emailAddress
+      ? 'The request was declined and an apology notice was emailed. No resident code was sent.'
+      : 'The request was declined, but no email address was provided for a notice. No resident code was sent.')
   }
 
   const updateResidentAccountBackend = async (residentCode, action, attributes = {}) => {
@@ -12095,14 +12138,30 @@ function App() {
     }
   }
 
-  const printApprovedCertificatePdf = async (request, document) => {
-    const printWindow = window.open('about:blank', '_blank')
-    if (!printWindow) throw new Error('Allow pop-ups to open the certificate for printing.')
+  const saveApprovedCertificatePdf = async (request, document, previewNode) => {
+    const docx = await createFilledCertificateDocx(document, getSubmittedCertificateData(request, document), customCertificateTemplates)
+    const pageSize = (await getCertificateTemplateContent(docx)).pageSize
+    const pages = Array.from(previewNode?.querySelectorAll('section.certificate-docx') || [])
+    if (!pages.length) throw new Error('The certificate preview is not ready. Close and reopen Preview, then try again.')
+    await saveCertificatePagesAsPdf(pages, document, request.id, Number(request.copyCount ?? 1), pageSize)
+    setCertificateDownloadError('')
+    updateStoredRequest(request.id, (currentRequest) => ({
+      ...currentRequest,
+      downloadedPdfs: { ...currentRequest.downloadedPdfs, [document]: true },
+    }))
+  }
+
+  const printApprovedCertificatePdf = async (request, document, previewNode = null) => {
+    let printWindow = null
     try {
       const copyCount = Number(request.copyCount ?? 1)
       if (!Number.isSafeInteger(copyCount) || copyCount < 1) {
         throw new Error('The requested copy count is invalid.')
       }
+      const previewPages = Array.from(previewNode?.querySelectorAll('section.certificate-docx') || [])
+      if (!previewPages.length) throw new Error('The certificate preview is not ready. Close and reopen Preview, then try again.')
+      printWindow = window.open('about:blank', '_blank')
+      if (!printWindow) throw new Error('Allow pop-ups to open the certificate for printing.')
       const docx = await createFilledCertificateDocx(document, getSubmittedCertificateData(request, document), customCertificateTemplates)
       const templateContent = await getCertificateTemplateContent(docx)
       const templatePageSize = templateContent.pageSize
@@ -12117,8 +12176,7 @@ function App() {
       }
       const pageWidthInches = (pageWidthTwips / 1440).toFixed(4)
       const pageHeightInches = (pageHeightTwips / 1440).toFixed(4)
-      const rendered = window.document.createElement('div')
-      const pages = await renderCertificateDocxPages(rendered, docx, document)
+      const pages = previewPages
       if (!pages.length) throw new Error('The certificate template did not render any pages.')
 
       const sourceWrapper = pages[0].parentElement
@@ -12167,7 +12225,7 @@ function App() {
       }))
       return true
     } catch (error) {
-      printWindow.close()
+      printWindow?.close()
       throw error
     }
   }
@@ -12719,6 +12777,7 @@ function App() {
                   getCurrentCertificateData={getCurrentCertificateData}
                   saveCertificateReview={saveCertificateReview}
                   downloadApprovedCertificate={downloadApprovedCertificate}
+                  downloadApprovedCertificatePdf={saveApprovedCertificatePdf}
                   printApprovedCertificatePdf={printApprovedCertificatePdf}
                   recordPrintedDocument={(request, document, certificateData) => {
                     const sourceRequests = (request.processingRequestIds || [request.id])
@@ -14112,22 +14171,20 @@ function App() {
                   </header>
                   <div className="recovery-code-rotation-notice" id="recovery-delivery-note">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4.8 9A7.5 7.5 0 0 1 18 6.8L20 9M4 17v-5h5m10.2 3A7.5 7.5 0 0 1 6 17.2L4 15" /></svg>
-                    <p><strong>{recoveryDeliveryRequest.fullName}'s current code will be replaced.</strong><span>A new code will be sent only to the Gmail saved on the verified resident record. Resident Records and linked requests will update after email delivery succeeds.</span></p>
+                    <p><strong>{recoveryDeliveryMode === 'verify' ? 'Confirm the existing resident record before approval.' : `${recoveryDeliveryRequest.fullName}'s current code will be replaced.`}</strong><span>{recoveryDeliveryMode === 'verify' ? 'No resident code or account details will change at this step. A replacement code can be sent only after the request is approved.' : 'A new code will be sent only to the Gmail saved on the verified resident record. Resident Records and linked requests will update after email delivery succeeds.'}</span></p>
                   </div>
                   <div className="recovery-delivery-recipient"><span>Resident's saved Gmail address</span><strong>{recoveryDeliveryDetails?.savedEmail || 'No email is saved on this resident record.'}</strong></div>
                   <div className="recovery-delivery-options">
-                    <button type="button" autoFocus disabled={isSendingRecoveryCode || !officialBackendToken || !recoveryDeliveryDetails?.savedEmail} onClick={() => (
-                      recoveryDeliveryMode === 'verify'
-                        ? verifyRecoveryResidentWithEmail(recoveryDeliveryRequest)
-                        : sendRecoveredResidentCode(recoveryDeliveryRequest)
-                    )}>
-                      <strong>Generate and email new code</strong><span>The previous code will be replaced; the new code goes only to the saved address above.</span>
+                    <button type="button" autoFocus disabled={isSendingRecoveryCode} onClick={() => verifyRecoveryResidentRecord(recoveryDeliveryRequest)}>
+                      <strong>{recoveryDeliveryMode === 'verify' ? 'Verify resident details' : 'Generate and email new code'}</strong><span>{recoveryDeliveryMode === 'verify' ? 'Compare these saved details with the submitted recovery request. No code will be changed yet.' : 'The previous code will be replaced; the new code goes only to the saved address above.'}</span>
                     </button>
                   </div>
                   {adminRecoveryMessage
                     ? <p className="recovery-delivery-error" role="alert">{adminRecoveryMessage}</p>
-                    : <p className="recovery-delivery-status" role="status" aria-live="polite">{isSendingRecoveryCode
-                      ? 'Generating the replacement code and sending it securely…'
+                    : <p className="recovery-delivery-status" role="status" aria-live="polite">{recoveryDeliveryMode === 'verify'
+                      ? 'Compare the submitted identity details with the existing resident record. The login code stays unchanged until approval.'
+                      : isSendingRecoveryCode
+                        ? 'Generating the replacement code and sending it securely…'
                       : !officialBackendToken
                         ? 'Review the resident details here. Sending requires an authorized backend admin session; sign in again after that account is configured.'
                         : recoveryDeliveryDetails?.savedEmail
@@ -14193,9 +14250,8 @@ function App() {
                       {request.idPhoto?.dataUrl && <figure className="recovery-id-evidence"><a href={request.idPhoto.dataUrl} target="_blank" rel="noreferrer"><img src={request.idPhoto.dataUrl} alt={`ID evidence submitted by ${request.fullName}`} /></a><figcaption>{request.idPhoto.fileName || 'Submitted ID evidence'}</figcaption></figure>}
                       <div className="recovery-request-actions">
                         {request.status === 'Pending' && <button type="button" onClick={() => verifyRecoveryResident(request)}>Verify request</button>}
-                        {request.status === 'Verified' && <button type="button" disabled={isSendingRecoveryNotice} onClick={() => reviewRecoveryRequest(request, 'Approved')}>Approve request</button>}
+                        {request.status === 'Verified' && <button type="button" disabled={isSendingRecoveryCode} onClick={() => reviewRecoveryRequest(request, 'Approved')}>{isSendingRecoveryCode ? 'Approving and emailing code…' : 'Approve and email new code'}</button>}
                         {['Pending', 'Verified'].includes(request.status) && !request.codeSentAt && <button type="button" className="table-delete" disabled={isSendingRecoveryNotice} onClick={() => reviewRecoveryRequest(request, 'Declined')}>{isSendingRecoveryNotice ? 'Sending notice…' : 'Decline request'}</button>}
-                        {request.status === 'Approved' && !request.codeSentAt && <button type="button" className="check-button" onClick={() => sendApprovedRecoveryCode(request)}>Generate and email new code</button>}
                       </div>
                     </div>
                   </td></tr>}
