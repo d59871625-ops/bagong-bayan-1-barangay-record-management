@@ -12417,24 +12417,6 @@ function App() {
     })
   }
 
-  const setAvailabilityDays = (officialId, index, days) => {
-    setOfficialAvailability((currentAvailability) => {
-      const currentOfficial = currentAvailability.find((official) => official.id === officialId)
-      const nextOfficial = currentOfficial
-        ? { ...currentOfficial, days: [...new Set(days)].sort((first, second) => first - second) }
-        : {
-          id: officialId,
-          name: officialProfiles[index]?.name || '',
-          role: officialProfiles[index]?.role || '',
-          days: [...new Set(days)].sort((first, second) => first - second),
-          hours: 'Schedule not set',
-        }
-      return currentOfficial
-        ? currentAvailability.map((official) => official.id === officialId ? nextOfficial : official)
-        : [...currentAvailability, nextOfficial]
-    })
-  }
-
   const updateAvailabilityHours = (officialId, index, hours) => {
     setOfficialAvailability((currentAvailability) => {
       const currentOfficial = currentAvailability.find((official) => official.id === officialId)
@@ -13755,13 +13737,7 @@ function App() {
                 <div className="official-schedule-editor">
                   <strong>Dates &amp; shared time</strong>
                   <small>Choose multiple days, then set their hours once.</small>
-                  <div className="official-schedule-presets" role="group" aria-label="Quick select schedule days">
-                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, [1, 2, 3, 4, 5])}>Weekdays</button>
-                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, [0, 6])}>Weekend</button>
-                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, weekDaysMondayFirst.map(({ day }) => day))}>Every day</button>
-                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, [])}>Clear</button>
-                  </div>
-                  <div className="day-selector" role="group" aria-label={`${official.role || official.name} available days`}>
+                  <div className="day-selector" role="group" aria-label={`${official.role || official.name} available days; select any combination`}>
                     {weekDaysMondayFirst.map(({ label, day }) => <label key={label}><input type="checkbox" checked={Boolean(schedule?.days?.includes(day))} onChange={() => toggleAvailabilityDay(availabilityId, day)} /><span>{label}</span></label>)}
                   </div>
                   <label className="official-schedule-hours"><span>Shared time for selected days</span><input type="text" value={schedule?.hours === 'Schedule not set' ? '' : schedule?.hours || ''} onChange={(event) => updateAvailabilityHours(availabilityId, index, event.target.value)} placeholder="e.g. 8:00 AM - 5:00 PM" /></label>

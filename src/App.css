@@ -483,9 +483,6 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-schedule-editor { display: grid; justify-items: center; gap: 8px; width: 100%; padding-top: 12px; border-top: 1px solid #d5e4d6; }
 .official-schedule-editor > strong { color: #286334; font: 700 11px var(--heading); }
 .official-schedule-editor > small { color: var(--muted); font-size: 10px; }
-.official-schedule-presets { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; width: 100%; }
-.official-schedule-presets button { min-height: 28px; padding: 5px 8px; border: 1px solid #d1e0d2; border-radius: 7px; background: #fff; color: #315d38; font: 650 9px var(--sans); cursor: pointer; }
-.official-schedule-presets button:hover { border-color: #78a77d; background: #edf6ec; }
 .official-schedule-editor .day-selector { gap: 3px; }
 .official-schedule-editor .day-selector span { width: 27px; height: 27px; font-size: 9px; }
 .official-schedule-hours { display: grid; gap: 5px; width: 100%; color: #526357; font: 600 10px var(--sans); }
@@ -1956,8 +1953,6 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-dashboard.dark-mode .official-admin-card { border-color: #425746; background: linear-gradient(160deg, #26372a 0%, #202d23 100%); }
 .official-dashboard.dark-mode .official-schedule-editor { border-color: #425746; }
 .official-dashboard.dark-mode .official-schedule-editor > strong { color: #b7dfbc; }
-.official-dashboard.dark-mode .official-schedule-presets button { border-color: #506b53; background: #314235; color: #d8ebd3; }
-.official-dashboard.dark-mode .official-schedule-presets button:hover { background: #3b5140; }
 .official-dashboard.dark-mode .official-schedule-preview { border-color: #425746; background: #2b3b2e; }
 .official-dashboard.dark-mode .official-schedule-preview span { color: #b6c2b7; }
 .official-dashboard.dark-mode .official-schedule-preview strong { color: #b7dfbc; }
@@ -5137,9 +5132,9 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   .topbar-note { display: none; }
   .is-home-page .welcome-content {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto;
-    align-content: center;
-    gap: 16px;
+    grid-template-rows: auto auto auto minmax(230px, 1fr) auto;
+    align-content: stretch;
+    gap: 10px;
     width: min(460px, calc(100% - 32px));
     min-height: calc(100svh - 120px);
     box-sizing: border-box;
@@ -5147,18 +5142,14 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
     padding: 14px 0;
   }
   .is-home-page .intro-block {
-    display: flex;
-    grid-row: 1;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
+    display: contents;
   }
-  .is-home-page .welcome-eyebrow { order: 0; justify-content: center; margin-bottom: 12px; }
-  .is-home-page .welcome-content h1 { order: 1; }
-  .is-home-page .welcome-service-highlights { order: 2; width: 100%; }
-  .is-home-page .intro-copy { order: 3; }
+  .is-home-page .welcome-eyebrow { grid-row: 1; justify-content: center; margin: 0 0 2px; text-align: center; }
+  .is-home-page .welcome-content h1 { grid-row: 2; justify-self: center; text-align: center; }
+  .is-home-page .intro-copy { grid-row: 3; justify-self: center; text-align: center; }
+  .is-home-page .welcome-service-highlights { grid-row: 5; width: 100%; margin-top: 0; }
   .is-home-page .role-panel {
-    grid-row: 2;
+    grid-row: 4;
     justify-self: center;
     align-self: center;
     width: 100%;
