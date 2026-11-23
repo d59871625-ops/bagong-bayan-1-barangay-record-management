@@ -5,14 +5,16 @@ use PHPMailer\PHPMailer\PHPMailer;
 header("Content-Type: application/json; charset=UTF-8");
 header("Cache-Control: no-store");
 ob_start();
-register_shutdown_function(static function (): void {
+$recoveryBootstrapStage = "composer autoloader";
+register_shutdown_function(static function () use (&$recoveryBootstrapStage): void {
     $error = error_get_last();
     if (!$error || !in_array($error["type"], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
         return;
     }
 
     error_log(sprintf(
-        "Resident code recovery bootstrap fatal: type=%d file=%s line=%d message=%s",
+        "Resident code recovery bootstrap fatal: stage=%s type=%d file=%s line=%d message=%s",
+        $recoveryBootstrapStage,
         $error["type"],
         basename((string) ($error["file"] ?? "unknown")),
         (int) ($error["line"] ?? 0),
@@ -32,12 +34,23 @@ register_shutdown_function(static function (): void {
 });
 
 try {
-    require_once __DIR__ . "/vendor/autoload.php";
+    $recoveryAutoloadPath = __DIR__ . "/vendor/autoload.php";
+    if (!is_file($recoveryAutoloadPath)) {
+        throw new RuntimeException("Composer autoload.php is missing from the deployed backend.");
+    }
+    require_once $recoveryAutoloadPath;
+    $recoveryBootstrapStage = "database connection";
     require_once __DIR__ . "/db.php";
+    $recoveryBootstrapStage = "admin authentication and request storage";
     require_once __DIR__ . "/auth.php";
     require_once __DIR__ . "/resident-request-storage.php";
 } catch (Throwable $error) {
-    error_log("Resident code recovery bootstrap error: " . get_class($error) . " " . $error->getMessage());
+    error_log(sprintf(
+        "Resident code recovery bootstrap error: stage=%s type=%s message=%s",
+        $recoveryBootstrapStage,
+        get_class($error),
+        preg_replace('/[\r\n]+/', ' ', $error->getMessage())
+    ));
     while (ob_get_level() > 0) {
         ob_end_clean();
     }

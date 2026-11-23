@@ -5265,6 +5265,7 @@ function App() {
   const [registrationResidentViewCode, setRegistrationResidentViewCode] = useState('')
   const [registrationDecisionModalOpen, setRegistrationDecisionModalOpen] = useState(false)
   const [registrationQueueSearch, setRegistrationQueueSearch] = useState('')
+  const [paymentTrackingSearch, setPaymentTrackingSearch] = useState('')
   const [registrationSyncError, setRegistrationSyncError] = useState('')
   const [registrationActionError, setRegistrationActionError] = useState('')
   const [registrationAdminNote, setRegistrationAdminNote] = useState('')
@@ -5683,8 +5684,11 @@ function App() {
   const [requestDocumentFilter, setRequestDocumentFilter] = useState('all')
   const [historySearch, setHistorySearch] = useState('')
   const [historyStatusFilter, setHistoryStatusFilter] = useState('all')
+  const [residentMyRequestsSearch, setResidentMyRequestsSearch] = useState('')
+  const [residentPaymentTrackingSearch, setResidentPaymentTrackingSearch] = useState('')
   const [residentRecordsTab, setResidentRecordsTab] = useState('active')
   const [residentRecordsSearch, setResidentRecordsSearch] = useState('')
+  const [recoveryRequestSearch, setRecoveryRequestSearch] = useState('')
   const [highlightedResidentId, setHighlightedResidentId] = useState('')
   const [officialAvailability, setOfficialAvailability] = useState(initialAvailability)
   const [officialPhotos, setOfficialPhotos] = useState({})
@@ -6657,6 +6661,16 @@ function App() {
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const residentPaymentRecords = groupPaymentRequests(residentPaymentRequests)
+  const residentPaymentTrackingQuery = residentPaymentTrackingSearch.trim().toLowerCase()
+  const filteredResidentPaymentRecords = residentPaymentRecords.filter((payment) => {
+    const paymentDate = payment.paymentSubmittedAt || payment.paymentVerifiedAt || payment.requestedAt || payment.paymentDraftedAt || ''
+    return [
+      ...(payment.documents || []),
+      ...((payment.requests || []).flatMap((request) => request.documents || [])),
+      paymentDate ? new Date(paymentDate).toLocaleDateString('en-PH', { dateStyle: 'medium' }) : '',
+      paymentDate,
+    ].some((value) => String(value || '').toLowerCase().includes(residentPaymentTrackingQuery))
+  })
   const unpaidResidentPaymentRequests = residentPaymentRequests.filter((request) => (
     request.status !== 'Cancelled'
     && !['Paid', 'Pending verification'].includes(request.paymentStatus || 'Unpaid')
@@ -6993,13 +7007,15 @@ function App() {
     request.name,
     request.fullName,
     request.full_name,
-    request.id,
-    request.address,
+    request.residentCode,
+    request.resident_code,
     request.assignedResidentCode,
     request.data?.firstName,
     request.data?.middleName,
     request.data?.lastName,
     request.data?.residentCode,
+    request.data?.resident_code,
+    request.data?.code,
   ].some((value) => String(value || '').toLowerCase().includes(registrationSearchQuery)))
   const pendingRegistrationCount = pendingRegistrationRequests.length
   const pendingRegistrationCountLabel = officialBackendToken && !hasLoadedPendingRegistrations
@@ -7007,12 +7023,27 @@ function App() {
     : pendingRegistrationCount
   const activeRegistrationReviewRequest = pendingRegistrationRequests.find((request) => request.id === expandedRegistrationId) || null
   const pendingRecoveryRequestCount = residentCodeRecoveryRequests.filter((request) => request.status === 'Pending').length
+  const recoveryRequestQuery = recoveryRequestSearch.trim().toLowerCase()
+  const filteredRecoveryRequests = residentCodeRecoveryRequests.filter((request) => [
+    request.fullName,
+    request.emailAddress,
+    request.email,
+  ].some((value) => String(value || '').toLowerCase().includes(recoveryRequestQuery)))
   const adminPaymentRecords = groupPaymentRequests(residentRequests.filter((request) => Number(request.feeAmount || 0) > 0))
   const activePaymentRecords = adminPaymentRecords
   const paymentAssessmentRecords = activePaymentRecords.filter((payment) => (
     payment.paymentStatus === 'Pending verification'
       && payment.requests.some((request) => request.status !== 'Cancelled')
   ))
+  const paymentTrackingQuery = paymentTrackingSearch.trim().toLowerCase()
+  const searchablePaymentAssessmentRecords = paymentAssessmentRecords.filter((payment) => {
+    const paymentDate = payment.paymentSubmittedAt || ''
+    const displayDate = paymentDate && !Number.isNaN(new Date(paymentDate).getTime())
+      ? new Date(paymentDate).toLocaleDateString('en-PH', { dateStyle: 'medium' })
+      : paymentDate
+    return [payment.resident, payment.residentCode, paymentDate, displayDate]
+      .some((value) => String(value || '').toLowerCase().includes(paymentTrackingQuery))
+  })
   const paymentHistoryRecords = groupPaymentRequests(allDocumentRequests
     .filter((request) => Number(request.feeAmount || 0) > 0 && request.paymentStatus === 'Paid'))
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
@@ -7203,11 +7234,8 @@ function App() {
       || (documentQueueFilter === 'release' && request.status === 'Ready for release')
     const matchesDocument = requestDocumentFilter === 'all' || (request.documents || []).includes(requestDocumentFilter)
     return matchesQueue && [
-    request.id,
     request.resident,
-    request.residentCode || '',
     (request.documents || []).join(' '),
-    request.status,
     ].some((value) => value.toLowerCase().includes(requestSearch.trim().toLowerCase())) && matchesDocument
   })
   const requestListEntries = (() => {
@@ -7375,9 +7403,9 @@ function App() {
     resident.firstName,
     resident.middleName,
     resident.lastName,
-    resident.code,
-    resident.residentCode,
-    resident.resident_code,
+    resident.emailAddress,
+    resident.email,
+    resident.gmail,
   ].some((value) => String(value || '').toLowerCase().includes(residentRecordsQuery)))
   const filteredDeclinedRegistrationRequests = declinedRegistrationRequests.filter((request) => [
     request.name,
@@ -13094,7 +13122,7 @@ function App() {
               <div className="request-search-panel-controls">
                 <label className="request-search">
                   <span>Search requests</span>
-                  <input type="search" value={requestSearch} onChange={(event) => setRequestSearch(event.target.value)} placeholder="Resident, request ID, document, or status" />
+                  <input type="search" value={requestSearch} onChange={(event) => setRequestSearch(event.target.value)} placeholder="Search resident or document" />
                 </label>
                 <label className="request-document-filter">Document type
                   <select value={requestDocumentFilter} onChange={(event) => setRequestDocumentFilter(event.target.value)}>
@@ -13681,7 +13709,7 @@ function App() {
             <section className="registration-list-panel" aria-labelledby="registration-pending-title">
               <header className="registration-list-heading">
                 <div><span className="section-number">INCOMING</span><h3 id="registration-pending-title">Pending applications <span>{pendingRegistrationCountLabel}</span></h3><p>Open an application to review it step by step.</p></div>
-                <label className="registration-page-search"><span aria-hidden="true">⌕</span><span className="sr-only">Search applications</span><input value={registrationQueueSearch} onChange={(event) => setRegistrationQueueSearch(event.target.value)} placeholder="Search name or request ID" /></label>
+                <label className="registration-page-search"><span aria-hidden="true">⌕</span><span className="sr-only">Search applications</span><input value={registrationQueueSearch} onChange={(event) => setRegistrationQueueSearch(event.target.value)} placeholder="Search name or resident code" /></label>
               </header>
               {filteredPendingRegistrationRequests.length
                 ? <div className="registration-pending-list" role="list">{filteredPendingRegistrationRequests.map((request) => <article key={request.id} className={`registration-pending-row${expandedRegistrationId === request.id ? ' is-reviewing' : ''}`} role="listitem">
@@ -13832,7 +13860,7 @@ function App() {
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
               <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
-              <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id}>
+              <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                 <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
@@ -13905,8 +13933,9 @@ function App() {
                   <div><span className="section-number">ACTION REQUIRED</span><h3 id="payment-assessment-title">Payment assessment</h3><p>Check the resident’s proof, then record the verified official receipt number.</p></div>
                   <span className="admin-panel-count">{paymentAssessmentRecords.length}</span>
                 </header>
+                <label className="payment-tracking-search"><span className="sr-only">Search payment tracking by resident name, code, or date</span><input type="search" value={paymentTrackingSearch} onChange={(event) => setPaymentTrackingSearch(event.target.value)} placeholder="Search resident, code, or date" /></label>
                 <div className="payment-assessment-list">
-                  {paymentAssessmentRecords.map((payment) => <article className={`payment-assessment-item${paymentReviewRequestId === payment.id ? ' is-expanded' : ''}`} key={payment.id}>
+                  {searchablePaymentAssessmentRecords.map((payment) => <article className={`payment-assessment-item${paymentReviewRequestId === payment.id ? ' is-expanded' : ''}`} key={payment.id}>
                     <div className="payment-assessment-summary">
                       <div className="payment-assessment-resident"><strong>{payment.resident}</strong><span>{payment.residentCode || 'Resident code not recorded'} · {payment.id}</span></div>
                       <div className="payment-assessment-request"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><span>{payment.requests.length} combined request{payment.requests.length === 1 ? '' : 's'}{payment.cancelledRequestCount > 0 ? ` (${payment.cancelledRequestCount} cancelled)` : ''} · {payment.paymentSubmittedAt ? new Date(payment.paymentSubmittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Submission time not recorded'}</span></div>
@@ -13937,7 +13966,7 @@ function App() {
                       </form>
                     </div>}
                   </article>)}
-                  {!paymentAssessmentRecords.length && <div className="payment-assessment-empty"><span aria-hidden="true">✓</span><strong>All caught up</strong><p>No payment proofs are waiting for assessment.</p></div>}
+                  {!searchablePaymentAssessmentRecords.length && <div className="payment-assessment-empty">{paymentAssessmentRecords.length ? <strong>No payment records match that resident, code, or date.</strong> : <><span aria-hidden="true">✓</span><strong>All caught up</strong><p>No payment proofs are waiting for assessment.</p></>}</div>}
                 </div>
               </section>
               <section className="payment-recipients-panel" aria-labelledby="payment-recipients-title">
@@ -14015,7 +14044,7 @@ function App() {
                     cancelledRequests.length ? `${cancelledRequests.length} of ${payment.requests.length} requests cancelled` : '',
                     refundedAmount > 0 ? `Refunded ₱${refundedAmount.toFixed(2)} · net ₱${Math.max(0, Number(payment.feeAmount || 0) - refundedAmount).toFixed(2)}` : '',
                   ].filter(Boolean).join(' · ')
-                  return <tr key={payment.groupKey} data-search-text={[payment.resident, paymentDate, payment.paymentOrNumber || payment.paymentProofOrNumber].filter(Boolean).join(' ')}>
+                  return <tr key={payment.groupKey} data-search-text={[payment.resident, payment.residentCode, paymentDate].filter(Boolean).join(' ')}>
                     <td><strong>{payment.resident}</strong></td>
                     <td>{payment.residentCode || 'Not recorded'}</td>
                     <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.requests.length > 1 ? `${payment.requests.length} requests · ` : ''}{payment.id}</small></td>
@@ -14127,7 +14156,7 @@ function App() {
               <button type="button" aria-pressed={residentRecordsTab === 'recovery'} className={residentRecordsTab === 'recovery' ? 'active' : ''} onClick={() => { setResidentRecordsTab('recovery'); setAdminRecoveryMessage('') }}>Resident code recovery <span>{pendingRecoveryRequestCount}</span></button>
               <button type="button" aria-pressed={residentRecordsTab === 'rejected'} className={residentRecordsTab === 'rejected' ? 'active' : ''} onClick={() => setResidentRecordsTab('rejected')}>Rejected registrations <span>{declinedRegistrationRequests.length}</span></button>
             </div>
-            {residentRecordsTab !== 'recovery' && <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder={residentRecordsTab === 'rejected' ? 'Search applicant name or resident code' : 'Search resident name or resident code'} /></label>}
+            {residentRecordsTab !== 'recovery' && <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder={residentRecordsTab === 'rejected' ? 'Search applicant name or resident code' : 'Search resident name or Gmail'} /></label>}
             {residentRecordsTab === 'active' ? <section className="resident-record-tab-panel">
               <button type="button" className="resident-add-form-toggle" aria-expanded={residentFormOpen || Boolean(editingResidentId)} disabled={Boolean(editingResidentId)} onClick={() => { setResidentFormOpen((isOpen) => !isOpen); setResidentFormError('') }}>
                 <span aria-hidden="true">{residentFormOpen || editingResidentId ? '−' : '+'}</span>{editingResidentId ? 'Editing resident' : residentFormOpen ? 'Hide resident form' : 'Add resident'}
@@ -14163,7 +14192,7 @@ function App() {
                 const pendingProfileRequests = profileRequests.filter((request) => request.status === 'Pending').length
                 const isRecoveryNameMatch = resident.id === highlightedResidentId
                 const residentAddressLabel = getResidentRecordAddressLabel(resident, registrationRequests)
-                return <tr className={isRecoveryNameMatch ? 'recovery-resident-match' : ''} key={resident.id}>
+                return <tr className={isRecoveryNameMatch ? 'recovery-resident-match' : ''} key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
                   <td><strong>{resident.name}</strong>{isRecoveryNameMatch && <small className="recovery-resident-match-label">Closest name match for recovery request</small>}</td>
                   <td>{residentAddressLabel}</td>
                   <td>{resident.emailAddress || 'Not recorded'}</td>
@@ -14212,8 +14241,9 @@ function App() {
                   <button type="button" className="community-cancel-button" disabled={isSendingRecoveryCode} onClick={() => setRecoveryDeliveryRequest(null)}>Cancel</button>
                 </section>
               </div>}
+              {!expandedRecoveryRequestId && <label className="recovery-request-search"><span className="sr-only">Search recovery requests by resident name or Gmail address</span><input type="search" value={recoveryRequestSearch} onChange={(event) => setRecoveryRequestSearch(event.target.value)} placeholder="Search resident name or Gmail" /></label>}
               <div className="table-scroll"><table className="admin-table"><thead><tr><th>Request</th><th>Resident</th><th>Birthday</th><th>Email address</th><th>Status</th><th>Action</th></tr></thead><tbody>
-                {residentCodeRecoveryRequests.map((request) => {
+                {filteredRecoveryRequests.map((request) => {
                   const closestResident = getClosestResidentRecord(request.fullName, adminResidents)
                   const comparisonResident = adminResidents.find((resident) => resident.id === request.matchedResidentId) || closestResident
                   const comparisonRegistration = comparisonResident && registrationRequests.find((candidate) => (
@@ -14276,7 +14306,7 @@ function App() {
                   </td></tr>}
                 </Fragment>
                 })}
-                {!residentCodeRecoveryRequests.length && <tr><td colSpan="6">No resident code recovery requests have been submitted.</td></tr>}
+                {!filteredRecoveryRequests.length && <tr><td colSpan="6">{residentCodeRecoveryRequests.length ? 'No recovery requests match that name or Gmail address.' : 'No resident code recovery requests have been submitted.'}</td></tr>}
               </tbody></table></div>
             </section> : <section className="resident-record-tab-panel">
               <section className="resident-record-subsection">
@@ -14459,7 +14489,7 @@ function App() {
             <p className="resident-report-note">Each released certificate receives a unique control number and records its date, purpose, OR number, recipient, and issuing officer.</p>
             <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table issued-documents-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th><th>Action</th></tr></thead><tbody>{issuedDocuments.map((entry) => {
               const issuedRequest = historyRequestList.find((request) => request.id === entry.requestId)
-              return <tr key={entry.id} data-search-text={[entry.releasedTo || entry.resident, entry.document, entry.purpose].filter(Boolean).join(' ')}>
+              return <tr key={entry.id} data-search-text={[entry.releasedTo || entry.resident, entry.date, entry.date ? new Date(entry.date).toLocaleDateString('en-PH', { dateStyle: 'medium' }) : '', entry.document, entry.purpose].filter(Boolean).join(' ')}>
                 <td>{entry.controlNumber}</td>
                 <td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td>
                 <td>{entry.releasedTo || entry.resident}</td>
@@ -14856,12 +14886,22 @@ function App() {
             {(() => {
               const requestsByDate = residentInboxRequests.slice().sort((first, second) => new Date(second.requestedAt || second.date).getTime() - new Date(first.requestedAt || first.date).getTime())
               const activeRequests = requestsByDate.filter((request) => request.status !== 'Completed')
+              const myRequestsQuery = residentMyRequestsSearch.trim().toLowerCase()
+              const visibleActiveRequests = activeRequests.filter((request) => {
+                const requestedAt = request.requestedAt || request.date || ''
+                const displayDate = requestedAt && !Number.isNaN(new Date(requestedAt).getTime())
+                  ? new Date(requestedAt).toLocaleDateString('en-PH', { dateStyle: 'medium' })
+                  : requestedAt
+                return [...(request.documents || []), displayDate, requestedAt]
+                  .some((value) => String(value || '').toLowerCase().includes(myRequestsQuery))
+              })
               if (!requestsByDate.length) {
                 return <div className="resident-inbox-no-requests"><h2>{residentCancelledRequests.length ? 'No active requests' : 'No document requests yet'}</h2><p>{residentCancelledRequests.length ? 'Cancelled requests are saved in Drafts & corrections.' : 'After you submit a document request, its status and updates will appear here.'}</p>{residentCancelledRequests.length ? <button type="button" className="resident-history-link" onClick={() => { setResidentDraftsCorrectionsTab('cancelled'); markResidentDashboardSectionRead('drafts-corrections', 'cancelled'); setResidentDashboardSection('drafts-corrections') }}>View cancelled requests</button> : <button type="button" className="check-button" onClick={() => chooseResidentPath('request')}>Start a document request</button>}</div>
               }
               return activeRequests.length ? (
                   <div className="resident-inbox-page-list resident-my-requests-grid">
-                    {activeRequests.map((request) => {
+                    <label className="resident-dashboard-search"><span className="sr-only">Search My Requests by document or date</span><input type="search" value={residentMyRequestsSearch} onChange={(event) => setResidentMyRequestsSearch(event.target.value)} placeholder="Search document or date" /></label>
+                    {visibleActiveRequests.map((request) => {
                       const statusLabel = residentStatusLabels[request.status] || request.status
                       const statusClass = request.status.toLowerCase().replace(/[^a-z]+/g, '-')
                       const requestFeeAmount = Number(request.feeAmount ?? (
@@ -14919,6 +14959,7 @@ function App() {
                         </footer>
                       </article>
                     })}
+                    {!visibleActiveRequests.length && <p className="resident-search-empty">No requests match that document or date.</p>}
                   </div>
                 ) : <div className="resident-inbox-no-requests resident-category-empty"><h2>No active requests</h2><p>{residentCancelledRequests.length ? 'Cancelled requests are saved separately in Drafts & corrections.' : 'All of your submitted requests are in history.'}</p>
                   {requestsByDate.some((request) => ['Completed', 'Declined'].includes(request.status)) && <button type="button" className="resident-history-link" onClick={() => setResidentDashboardSection('history')}>View completed and declined requests in history</button>}
@@ -15146,8 +15187,9 @@ function App() {
                   <div className="resident-payment-side-panels">
                     <section className="resident-payment-records-panel" aria-labelledby="resident-payment-records-title">
                             <header><div><span className="section-number">PAYMENT RECORDS</span><h2 id="resident-payment-records-title">Your payments</h2><p>Review each payment, verification, cancellation, and any recorded refund.</p></div></header>
+                      <label className="resident-dashboard-search"><span className="sr-only">Search payment tracking by document or date</span><input type="search" value={residentPaymentTrackingSearch} onChange={(event) => setResidentPaymentTrackingSearch(event.target.value)} placeholder="Search document or date" /></label>
                       <div className="resident-payment-list">
-                        {residentPaymentRecords.map((request) => {
+                        {filteredResidentPaymentRecords.map((request) => {
                           const status = request.paymentStatus || 'Unpaid'
                           const linkedRequests = request.requests || [request]
                           const relatedPaymentUpdates = residentPaymentUpdateItems.filter((item) => (
@@ -15203,6 +15245,7 @@ function App() {
                             </div>
                           </details>
                         })}
+                        {!filteredResidentPaymentRecords.length && <p className="resident-search-empty">{residentPaymentRecords.length ? 'No payments match that document or date.' : 'No payment records yet.'}</p>}
                         {!residentPaymentRequests.length && <div className="resident-inbox-no-requests"><h2>No payment requests yet</h2><p>Requests with a payment due or proof submitted will appear here. They are sent to the barangay office after you submit payment proof.</p><button type="button" className="check-button" onClick={() => setResidentDashboardSection('request-documents')}>Request a document</button></div>}
                       </div>
                     </section>
@@ -15245,9 +15288,8 @@ function App() {
                             payment.refundStatus === 'Refunded' ? `Refunded ₱${Number(payment.feeAmount || 0).toFixed(2)}` : '',
                           ].filter(Boolean).join(' · ')
                           return <tr key={payment.id} data-search-text={[
-                            [residentName.firstName, residentName.middleName, residentName.lastName, residentName.suffix].filter(Boolean).join(' '),
+                            ...(payment.documents || []),
                             paymentDate,
-                            payment.paymentOrNumber || payment.paymentProofOrNumber,
                           ].filter(Boolean).join(' ')}>
                             <td>{paymentDate}</td>
                             <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.id}</small></td>

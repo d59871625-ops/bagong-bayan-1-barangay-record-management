@@ -11792,6 +11792,79 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .resident-account-shell.resident-dark-mode .resident-account-popover > button:hover { border-color: #68896a; background: #304536; }
 .resident-account-shell.resident-dark-mode .resident-inbox-no-requests { border-color: #3b5140; background: #223128; color: #e5eee6; }
 
+.recovery-request-search,
+.payment-tracking-search,
+.resident-dashboard-search { display: block; width: 100%; min-width: 0; margin: 10px 0; }
+.recovery-request-search input,
+.payment-tracking-search input,
+.resident-dashboard-search input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 42px; padding: 10px 12px; border: 1px solid #c4d9c7; border-radius: 9px; background: #fff; color: #263329; font: 400 14px var(--sans); }
+.resident-search-empty { grid-column: 1 / -1; margin: 0; padding: 14px; border: 1px dashed #b8cdbb; border-radius: 9px; color: #617164; text-align: center; }
+
+@media (max-width: 720px) {
+  .resident-account-shell.resident-dark-mode,
+  .resident-account-shell.resident-dark-mode .resident-dashboard-layout,
+  .resident-account-shell.resident-dark-mode .resident-dashboard-main { background: #17221b; color: #e5eee6; }
+  .resident-account-shell.resident-dark-mode .resident-dashboard-section,
+  .resident-account-shell.resident-dark-mode .resident-payment-main-panel,
+  .resident-account-shell.resident-dark-mode .resident-payment-records-panel,
+  .resident-account-shell.resident-dark-mode .resident-payment-info-panel,
+  .resident-account-shell.resident-dark-mode .resident-payment-side-panels,
+  .resident-account-shell.resident-dark-mode .resident-payment-selection,
+  .resident-account-shell.resident-dark-mode .resident-payment-method-step,
+  .resident-account-shell.resident-dark-mode .resident-payment-selection-item,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-item,
+  .resident-account-shell.resident-dark-mode .resident-inbox-item,
+  .resident-account-shell.resident-dark-mode .resident-payment-pending,
+  .resident-account-shell.resident-dark-mode .resident-payment-security-note,
+  .resident-account-shell.resident-dark-mode .resident-gcash-transfer-details,
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table-wrap,
+  .resident-account-shell.resident-dark-mode .resident-request-history-modal,
+  .resident-account-shell.resident-dark-mode .resident-cancellation-modal,
+  .resident-account-shell.resident-dark-mode .resident-inbox-no-requests {
+    border-color: #3b5140;
+    background-color: #223128;
+    color: #e5eee6;
+  }
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table,
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table tbody tr,
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table td,
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table th { border-color: #3b5140; background-color: #223128; color: #e5eee6; }
+  .resident-account-shell.resident-dark-mode .resident-gcash-recipient-table thead th { background-color: #2b3c30; color: #d8ebd3; }
+  .resident-account-shell.resident-dark-mode .resident-payment-record-summary,
+  .resident-account-shell.resident-dark-mode .resident-my-request-meta,
+  .resident-account-shell.resident-dark-mode .resident-payment-request-information,
+  .resident-account-shell.resident-dark-mode .resident-payment-request-outcomes,
+  .resident-account-shell.resident-dark-mode .resident-payment-proof-display,
+  .resident-account-shell.resident-dark-mode .resident-request-history-dates { border-color: #3b5140; color: #e5eee6; }
+  .resident-account-shell.resident-dark-mode .resident-payment-record-copy strong,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-copy small,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-details,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-details p,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-details span,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-details dt,
+  .resident-account-shell.resident-dark-mode .resident-payment-record-details dd,
+  .resident-account-shell.resident-dark-mode .resident-my-request-meta span,
+  .resident-account-shell.resident-dark-mode .resident-payment-info-panel li span,
+  .resident-account-shell.resident-dark-mode .resident-gcash-transfer-details > div > span,
+  .resident-account-shell.resident-dark-mode .resident-gcash-transfer-details > p { color: #bdcbbf; }
+  .resident-account-shell.resident-dark-mode .resident-payment-info-panel li,
+  .resident-account-shell.resident-dark-mode .resident-payment-info-panel li strong,
+  .resident-account-shell.resident-dark-mode .resident-payment-balance span,
+  .resident-account-shell.resident-dark-mode .resident-payment-selection-total span { color: #d8ebd3; }
+  .resident-account-shell.resident-dark-mode .resident-dashboard-search input,
+  .resident-account-shell.resident-dark-mode .resident-gcash-transfer-details input,
+  .resident-account-shell.resident-dark-mode .resident-payment-selection-list input,
+  .resident-account-shell.resident-dark-mode .resident-payment-method-options input {
+    border-color: #526b57;
+    background: #19271d;
+    color: #e5eee6;
+    color-scheme: dark;
+  }
+  .resident-account-shell.resident-dark-mode .resident-dashboard-search input::placeholder { color: #9baa9d; }
+  .resident-account-shell.resident-dark-mode :is(button, .resident-table-action, .resident-request-list-action, .resident-payment-back-button) { border-color: #526b57; color: #e5eee6; }
+  .resident-account-shell.resident-dark-mode .resident-search-empty { border-color: #526b57; color: #bdcbbf; }
+}
+
 @media (max-width: 760px) {
   .certificate-template-editor-workspace.is-tools-open { grid-template-rows: minmax(0, 0.36fr) minmax(0, 0.64fr); }
 }
