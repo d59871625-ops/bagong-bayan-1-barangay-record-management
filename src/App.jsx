@@ -5102,7 +5102,7 @@ function App() {
   const [registrationFiles, setRegistrationFiles] = useState({ validId: null, proofOfResidence: null })
   const [residentName, setResidentName] = useState({ firstName: '', middleName: '', lastName: '', suffix: '', code: '' })
   const [residentToken, setResidentToken] = useState('')
-  const [, setAuthenticatedResidentProfile] = useState(null)
+  const [authenticatedResidentProfile, setAuthenticatedResidentProfile] = useState(null)
   const [selectedDocuments, setSelectedDocuments] = useState([])
   const [residentStatus, setResidentStatus] = useState('')
   const [residentLoginError, setResidentLoginError] = useState('')
@@ -6622,10 +6622,55 @@ function App() {
   const allDocumentRequests = Array.from(documentRequestsById.values())
     .map((request) => ({ ...request, resident: getRequestResidentName(request) }))
   const residentAccountRequests = allDocumentRequests.filter((request) => residentRecordMatchesAccount(request, residentName))
-  const residentRequestIds = new Set(residentAccountRequests.map((request) => request.id))
+  const residentIdentityIds = new Set([
+    authenticatedResidentProfile?.resident_id,
+    currentResidentRecord?.id,
+  ].filter((value) => value !== undefined && value !== null && String(value).trim()).map(String))
+  const residentIdentityCodes = new Set([
+    residentName.code,
+    currentResidentRecord?.code,
+    currentResidentRecord?.id,
+  ].filter(Boolean).map((value) => normalizeResidentCode(value)))
+  residentCodeRecoveryRequests.forEach((request) => {
+    if (residentIdentityIds.has(String(request.matchedResidentId))) {
+      const linkedCodes = [request.matchedResidentCode, request.residentCode].filter(Boolean)
+      linkedCodes.forEach((code) => residentIdentityCodes.add(normalizeResidentCode(code)))
+    }
+  })
+  const residentIdentityNames = new Set([fullName, currentResidentRecord?.name]
+    .map(getResidentRecordNameKey)
+    .filter(Boolean))
+  const addLinkedResidentNames = (records, getCode) => {
+    records.forEach((record) => {
+      const code = normalizeResidentCode(getCode(record))
+      if (!code || !residentIdentityCodes.has(code)) return
+      const name = getRequestResidentName(record)
+      const nameKey = getResidentRecordNameKey({ name })
+      if (nameKey) residentIdentityNames.add(nameKey)
+    })
+  }
+  addLinkedResidentNames(allDocumentRequests, (request) => request.residentCode || request.resident_code || request.code)
+  addLinkedResidentNames(residentHistory.filter((entry) => entry.type === 'documentRequest'), (entry) => entry.residentCode || entry.resident_code || entry.code)
+  addLinkedResidentNames(registrationRequests.filter((request) => request.status === 'Approved'), (request) => request.assignedResidentCode || request.residentCode || request.resident_code)
+  const belongsToResidentAccount = (record) => {
+    if (!record || typeof record !== 'object') return false
+    const recordId = record.residentId ?? record.resident_id ?? record.matchedResidentId
+    if (recordId !== undefined && residentIdentityIds.has(String(recordId))) return true
+    const recordCode = normalizeResidentCode(record.residentCode || record.resident_code || record.code || record.assignedResidentCode)
+    if (recordCode && residentIdentityCodes.has(recordCode)) return true
+    const recordName = record.resident || record.name || record.fullName || record.full_name || ''
+    const nameKey = getResidentRecordNameKey({ name: recordName })
+    return Boolean(nameKey && residentIdentityNames.has(nameKey))
+  }
+  const residentHistoryAccountRequests = allDocumentRequests.filter(belongsToResidentAccount)
+  const residentHistoryRequestCandidates = uniqueResidentRequestsById([
+    ...residentAccountRequests,
+    ...residentHistoryAccountRequests,
+  ])
+  const residentRequestIds = new Set(residentHistoryRequestCandidates.map((request) => request.id))
   const completedRequestsFromIssuedDocuments = new Map()
   issuedDocuments
-    .filter((document) => document.requestId && residentRecordMatchesAccount(document, residentName))
+    .filter((document) => document.requestId && belongsToResidentAccount(document))
     .forEach((document) => {
       const requestId = String(document.requestId)
       if (residentRequestIds.has(requestId)) return
@@ -7326,7 +7371,7 @@ function App() {
       } : {}),
     }
     : null
-  const residentHistoryRequests = [...residentAccountRequests, ...residentCompletedIssuedRequests]
+  const residentHistoryRequests = [...residentHistoryRequestCandidates, ...residentCompletedIssuedRequests]
     .filter((request) => ['Completed', 'Released', 'Declined', 'Cancelled'].includes(request.status))
     .sort((first, second) => new Date(second.releasedAt || second.cancelledAt || second.statusHistory?.slice(-1)[0]?.changedAt || second.requestedAt || second.date || 0).getTime()
       - new Date(first.releasedAt || first.cancelledAt || first.statusHistory?.slice(-1)[0]?.changedAt || first.requestedAt || first.date || 0).getTime())
@@ -11644,6 +11689,7 @@ function App() {
         id: `${request.id}-${document.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
         controlNumber: `${yearPrefix}${String(nextSequence).padStart(6, '0')}`,
         requestId: request.id,
+        residentId: authenticatedResidentProfile?.resident_id || currentResidentRecord?.id || '',
         resident: request.resident,
         residentCode: request.residentCode || '',
         document,
