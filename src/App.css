@@ -2852,6 +2852,79 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 }
 .resident-dashboard-nav button[aria-current="page"],
 .admin-nav-group > button[aria-current="page"] { font-weight: 750; }
+
+/* Keep request review headings above the review content on narrow and phone screens. */
+@media (max-width: 900px) {
+  .official-dashboard .admin-content:has(.request-review-page-item) { padding-right: 8px; padding-left: 8px; }
+  .official-dashboard .document-request-workspace:has(.request-review-page-item) {
+    width: calc(100% + 8px);
+    margin-left: -4px;
+    padding: 8px;
+    gap: 9px;
+  }
+  .official-dashboard .document-request-workspace:has(.request-review-page-item) .document-requests-panel {
+    width: 100%;
+    min-width: 0;
+    padding: 12px;
+    gap: 12px;
+  }
+  .official-dashboard .document-request-workspace:has(.request-review-page-item) .document-requests-panel > .requests-heading {
+    display: block;
+    width: 100%;
+    padding-bottom: 8px;
+  }
+  .official-dashboard .document-request-workspace:has(.request-review-page-item) .requests-heading .section-number { font-size: 9px; }
+  .official-dashboard .document-request-workspace:has(.request-review-page-item) .requests-heading h2 {
+    margin-top: 2px;
+    font-size: 18px;
+    line-height: 1.25;
+  }
+  .official-dashboard .document-requests-panel .request-item.is-open.request-review-page-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) !important;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    overflow: visible;
+  }
+  .official-dashboard .document-requests-panel .request-review-page-item > .request-detail {
+    display: grid;
+    grid-column: 1 / -1 !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    width: 100%;
+    min-width: 0;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+  }
+  .official-dashboard .request-review-page-heading {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 10px;
+  }
+  .official-dashboard .request-review-page-heading > div { min-width: 0; }
+  .official-dashboard .request-review-page-heading h3 { font-size: 18px; line-height: 1.3; overflow-wrap: anywhere; }
+  .official-dashboard .request-review-content { grid-template-columns: minmax(0, 1fr) !important; gap: 12px; }
+  .official-dashboard .request-review-main,
+  .official-dashboard .request-review-sidebar,
+  .official-dashboard .incoming-request-preview,
+  .official-dashboard .incoming-request-panel { width: 100%; min-width: 0; max-width: 100%; }
+}
+
+.recovery-success-note-backdrop { position: fixed; inset: 0; z-index: 2200; display: grid; place-items: center; padding: 18px; background: rgba(14, 31, 20, .34); backdrop-filter: blur(3px); }
+.recovery-success-note { display: grid; grid-template-columns: 42px minmax(0, 1fr) 34px; align-items: start; gap: 13px; width: min(480px, 100%); padding: 20px; border: 1px solid #b8d5bb; border-radius: 16px; background: #fbfefb; box-shadow: 0 22px 65px rgba(11, 36, 17, .25); color: #2b4931; }
+.recovery-success-note-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 13px; background: #e3f2e3; color: #2f7137; font-size: 21px; font-weight: 800; }
+.recovery-success-note strong { display: block; margin: 2px 0 5px; color: #275c32; font: 700 17px var(--heading); }
+.recovery-success-note p { margin: 0; color: #536b57; font-size: 13px; line-height: 1.55; }
+.recovery-success-note button { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #d4e3d5; border-radius: 9px; background: #fff; color: #45694a; cursor: pointer; font: 400 23px/1 var(--sans); }
+.recovery-success-note button:hover { background: #edf7ed; }
+@media (max-width: 480px) { .recovery-success-note { grid-template-columns: 34px minmax(0, 1fr) 30px; gap: 9px; padding: 15px; } .recovery-success-note-icon { width: 34px; height: 34px; } .recovery-success-note p { font-size: 12px; } }
+
 @media (max-width: 720px) {
   .welcome-page:not(.is-dashboard-page) {
     height: 100svh;

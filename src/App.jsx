@@ -5257,6 +5257,7 @@ function App() {
   const [processingRegistrationId, setProcessingRegistrationId] = useState('')
   const [expandedRecoveryRequestId, setExpandedRecoveryRequestId] = useState(null)
   const [adminRecoveryMessage, setAdminRecoveryMessage] = useState('')
+  const [adminRecoverySuccessNotice, setAdminRecoverySuccessNotice] = useState('')
   const [recoveryDeliveryRequest, setRecoveryDeliveryRequest] = useState(null)
   const [recoveryDeliveryMode, setRecoveryDeliveryMode] = useState('verify')
   const [isSendingRecoveryCode, setIsSendingRecoveryCode] = useState(false)
@@ -9680,6 +9681,7 @@ function App() {
 
   const verifyRecoveryResident = (request) => {
     setAdminRecoveryMessage('')
+    setAdminRecoverySuccessNotice('')
     setRecoveryDeliveryMode('verify')
     setRecoveryDeliveryRequest(request)
   }
@@ -9746,9 +9748,11 @@ function App() {
           date: reviewedAt,
         }, ...history])
         setRecoveryDeliveryRequest(null)
-        setAdminRecoveryMessage(`The request was approved. A new login code was emailed to ${delivery.destination}, and the resident record now uses it.`)
+        setAdminRecoveryMessage('')
+        setAdminRecoverySuccessNotice(`The request was approved. A new login code was emailed to ${delivery.destination}, and the resident record now uses it.`)
       } catch (error) {
         console.error('Unable to approve the recovery request and send the replacement code.', error)
+        setAdminRecoverySuccessNotice('')
         setAdminRecoveryMessage(error instanceof Error ? error.message : 'The code could not be emailed. The recovery request remains unapproved.')
       } finally {
         setIsSendingRecoveryCode(false)
@@ -12302,6 +12306,12 @@ function App() {
 
       const printDocument = printWindow.document
       printDocument.title = `${request.id} - ${document}`.replace(/[\\/:*?"<>|]+/g, '-')
+      const viewport = printDocument.createElement('meta')
+      viewport.name = 'viewport'
+      viewport.content = 'width=device-width, initial-scale=1, viewport-fit=cover'
+      printDocument.head.appendChild(viewport)
+      const screenWidth = window.visualViewport?.width || window.document.documentElement.clientWidth || window.innerWidth
+      printWrapper.style.setProperty('--screen-fit-scale', String(Math.min(1, screenWidth / (pageWidthTwips / 15))))
       window.document.querySelectorAll('link[rel="stylesheet"], style').forEach((styleNode) => {
         const clone = styleNode.cloneNode(true)
         if (clone instanceof HTMLLinkElement) clone.href = styleNode.href
@@ -12310,11 +12320,12 @@ function App() {
       const printStyles = printDocument.createElement('style')
       printStyles.textContent = `
         @page { size: ${pageWidthInches}in ${pageHeightInches}in; margin: 0; }
-        html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
-        .docx-wrapper { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+        html, body { width: 100%; min-height: 100%; margin: 0 !important; padding: 0 !important; overflow-x: hidden; background: #fff !important; }
+        .docx-wrapper { margin: 0 auto !important; padding: 0 !important; background: #fff !important; }
         .docx-wrapper > section.certificate-docx { margin: 0 !important; box-shadow: none !important; break-after: page; page-break-after: always; }
         .docx-wrapper > section.certificate-docx:last-child { break-after: auto; page-break-after: auto; }
-        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+        @media screen { .docx-wrapper { zoom: var(--screen-fit-scale, 1); } }
+        @media print { html, body { width: auto; overflow: visible; } .docx-wrapper { zoom: 1 !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
       `
       printDocument.head.appendChild(printStyles)
       printDocument.body.replaceChildren(printWrapper)
@@ -14277,6 +14288,13 @@ function App() {
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
               <div className="requests-heading"><div><span className="section-number">EXISTING RESIDENT ACCESS</span><h3>Resident code recovery requests</h3><p>Verify against an existing resident record. Recovery never creates a new resident account.</p></div><span className="request-notification">{pendingRecoveryRequestCount} pending</span></div>
               {adminRecoveryMessage && <p className="recovery-admin-message" role="status">{adminRecoveryMessage}</p>}
+              {adminRecoverySuccessNotice && createPortal(<div className="recovery-success-note-backdrop">
+                <section className="recovery-success-note" role="status" aria-live="polite" aria-labelledby="recovery-success-note-title">
+                  <span className="recovery-success-note-icon" aria-hidden="true">✓</span>
+                  <div><strong id="recovery-success-note-title">Gmail sent</strong><p>{adminRecoverySuccessNotice}</p></div>
+                  <button type="button" aria-label="Close Gmail sent note" onClick={() => setAdminRecoverySuccessNotice('')}>×</button>
+                </section>
+              </div>, document.body)}
               {!officialBackendToken && <p className="recovery-admin-warning">Admin local sign-in is enough to review requests, but sending a resident code requires an authorized backend admin login and a running resident database service.</p>}
               {recoveryDeliveryRequest && <div className="recovery-delivery-backdrop">
                 <section className="recovery-delivery-dialog" role="dialog" aria-modal="true" aria-labelledby="recovery-delivery-title" aria-describedby="recovery-delivery-note">
