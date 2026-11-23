@@ -83,10 +83,10 @@ function respond(int $status, array $data): void
 
 function sendRecoveryEmail(string $recipient, string $recipientName, string $subject, string $body): void
 {
-    $username = trim((string) backendEnv("BRGY_GMAIL_USERNAME"));
+    $username = "airi55877@gmail.com";
     $appPassword = preg_replace('/\s+/', '', (string) backendEnv("BRGY_GMAIL_APP_PASSWORD"));
-    if ($username === "" || $appPassword === "") {
-        throw new RecoveryDeliveryException("Email delivery is not configured on the backend.", 503);
+    if ($appPassword === "") {
+        throw new RecoveryDeliveryException("Gmail app password is not configured on the backend.", 503);
     }
 
     $senderName = trim((string) backendEnv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I";

@@ -108,14 +108,6 @@ const readJsonResponse = async (response, endpointName) => {
 
 const ADMIN_NAVIGATION_READ_STORAGE_KEY = 'bb1-admin-navigation-read-v1'
 const RESIDENT_NOTIFICATION_READ_STORAGE_KEY = 'bb1-resident-notification-read-v1'
-const RESIDENT_DARK_MODE_STORAGE_KEY = 'bb1-resident-dark-mode-v1'
-const readResidentDarkMode = () => {
-  try {
-    return window.localStorage.getItem(RESIDENT_DARK_MODE_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
 const readBrowserReadState = (key) => {
   try {
     const saved = JSON.parse(window.localStorage.getItem(key) || 'null')
@@ -5028,7 +5020,6 @@ function App() {
   const [cancellationGcashError, setCancellationGcashError] = useState('')
   const [residentDashboardSection, setResidentDashboardSection] = useState('community')
   const [residentMobileMenuOpen, setResidentMobileMenuOpen] = useState(false)
-  const [residentDarkMode, setResidentDarkMode] = useState(readResidentDarkMode)
   const [residentCommunityTab, setResidentCommunityTab] = useState('announcements')
   const [residentDraftsCorrectionsTab, setResidentDraftsCorrectionsTab] = useState('drafts')
   const [residentDocumentGuideOpen, setResidentDocumentGuideOpen] = useState(false)
@@ -5182,13 +5173,6 @@ function App() {
   const [residentRequests, setResidentRequests] = useState([])
   const [residentNotificationReadState, setResidentNotificationReadState] = useState(() => readBrowserReadState(RESIDENT_NOTIFICATION_READ_STORAGE_KEY))
   const [adminNavigationReadState, setAdminNavigationReadState] = useState(() => readBrowserReadState(ADMIN_NAVIGATION_READ_STORAGE_KEY))
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(RESIDENT_DARK_MODE_STORAGE_KEY, String(residentDarkMode))
-    } catch (error) {
-      console.warn('Could not save resident appearance preference.', error)
-    }
-  }, [residentDarkMode])
   const [documentWorkflowViewedState, setDocumentWorkflowViewedState] = useState({})
   const documentWorkflowViewedStateRef = useRef(documentWorkflowViewedState)
   useEffect(() => {
@@ -14673,7 +14657,7 @@ function App() {
           </div>}
         </section>
       ) : showResidentInboxPage ? (
-        <section className={`resident-inbox-page resident-account-shell${residentDarkMode ? ' resident-dark-mode' : ''}`}>
+        <section className="resident-inbox-page resident-account-shell">
           <header className="resident-account-header">
             <div className="resident-account-header-top">
               <div className="resident-account-header-brand">
@@ -14683,11 +14667,6 @@ function App() {
                 {!registrationCommunityOnlyAccess && <button type="button" className="resident-account-new-request" onClick={() => chooseResidentPath('request')}><span aria-hidden="true">＋</span>New request</button>}
                 {!registrationCommunityOnlyAccess && <button type="button" className="resident-account-icon-button" aria-label="About Barangay Bagong Bayan I" title="About" onClick={openAboutPage}>
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 7.5h.01" /></svg>
-                </button>}
-                {!registrationCommunityOnlyAccess && <button type="button" className="resident-account-icon-button resident-theme-toggle" aria-label={residentDarkMode ? 'Switch to light mode' : 'Switch to dark mode'} title={residentDarkMode ? 'Light mode' : 'Dark mode'} aria-pressed={residentDarkMode} onClick={() => setResidentDarkMode((enabled) => !enabled)}>
-                  {residentDarkMode
-                    ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></svg>
-                    : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 14.2A8.5 8.5 0 0 1 9.8 3.2 8.8 8.8 0 1 0 20.8 14.2Z" /></svg>}
                 </button>}
                 {!registrationCommunityOnlyAccess && <div className="resident-account-menu-wrap">
                   <button type="button" className="resident-account-icon-button notification-button" aria-label={`Notifications (${residentNotificationUnreadCount} unread)`} aria-expanded={notificationsOpen} onClick={() => {
