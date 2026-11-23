@@ -290,7 +290,7 @@ function createRecoveryResidentCode(PDO $pdo, array $directoryRecords, array $ar
     throw new RecoveryDeliveryException("A unique resident code could not be generated. Try approving this request again.", 409);
 }
 
-function updateResidentCodeInAppState(PDO $pdo, string $previousCode, string $newCode): void
+function updateResidentCodeInAppState(PDO $pdo, string $previousCode, string $newCode, bool $requireResidentDirectory = false): void
 {
     $stateFields = [
         "bb1-resident-records" => ["code", "residentCode", "resident_code"],
@@ -309,23 +309,47 @@ function updateResidentCodeInAppState(PDO $pdo, string $previousCode, string $ne
     $select = $pdo->prepare("SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN ($placeholders) FOR UPDATE");
     $select->execute($keys);
     $update = $pdo->prepare("UPDATE bb1_app_state SET data_value = ? WHERE data_key = ?");
+    $residentDirectoryFound = false;
 
     foreach ($select->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $records = json_decode((string) $row["data_value"], true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($records)) {
-            throw new RuntimeException("Saved resident records are not a list.");
+        $dataKey = (string) $row["data_key"];
+        $isResidentDirectory = $dataKey === "bb1-resident-records";
+        $residentDirectoryFound = $residentDirectoryFound || $isResidentDirectory;
+        try {
+            $records = json_decode((string) $row["data_value"], true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($records)) {
+                throw new RuntimeException("Saved records are not a list.");
+            }
+            if ($isResidentDirectory && !residentCodeExistsInRecords($records, $previousCode)) {
+                if ($requireResidentDirectory) {
+                    throw new RuntimeException("The current login code was not found in the resident directory.");
+                }
+                continue;
+            }
+            $records = replaceResidentCodeFields(
+                $records,
+                $previousCode,
+                $newCode,
+                $stateFields[$dataKey],
+                $isResidentDirectory ? date(DATE_ATOM) : null
+            );
+            if ($isResidentDirectory && $requireResidentDirectory && !residentCodeExistsInRecords($records, $newCode)) {
+                throw new RuntimeException("The new login code was not saved in the resident directory.");
+            }
+            $update->execute([
+                json_encode($records, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+                $dataKey,
+            ]);
+        } catch (Throwable $error) {
+            error_log("Resident recovery app-state update failed for {$dataKey}: " . $error->getMessage());
+            if ($isResidentDirectory) {
+                throw new RuntimeException("The resident directory could not be updated with the new login code.", 0, $error);
+            }
         }
-        $records = replaceResidentCodeFields(
-            $records,
-            $previousCode,
-            $newCode,
-            $stateFields[$row["data_key"]],
-            $row["data_key"] === "bb1-resident-records" ? date(DATE_ATOM) : null
-        );
-        $update->execute([
-            json_encode($records, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-            $row["data_key"],
-        ]);
+    }
+
+    if ($requireResidentDirectory && !$residentDirectoryFound) {
+        throw new RuntimeException("The resident directory record is missing.");
     }
 }
 
@@ -518,35 +542,50 @@ try {
     $recoveryBootstrapStage = "Gmail recovery email delivery";
     sendRecoveryCodeByEmail($destination, trim($firstName . " " . $lastName), $newCode);
 
-    $recoveryBootstrapStage = "resident code update";
+    $recoveryBootstrapStage = "database resident code write";
     if ($isDatabaseResident) {
         $updateResident = $pdo->prepare("UPDATE residents SET resident_code = ? WHERE id = ?");
         $updateResident->execute([$newCode, $resident["id"]]);
+        if ($updateResident->rowCount() !== 1) {
+            throw new RuntimeException("The database did not confirm the new resident login code.");
+        }
     }
-    updateResidentCodeInAppState($pdo, $previousCode, $newCode);
+    $recoveryBootstrapStage = "resident directory code write";
+    updateResidentCodeInAppState($pdo, $previousCode, $newCode, !$isDatabaseResident);
 
     if ($isDatabaseResident) {
-        $historyStmt = $pdo->prepare("
-            INSERT INTO resident_history (
-                resident_id,
-                user_id,
-                transaction_type,
-                description,
-                reference_type,
-                reference_id
-            )
-            VALUES (?, ?, ?, ?, ?, NULL)
-        ");
-        $historyStmt->execute([
-            $resident["id"],
-            $admin["id"],
-            "resident_code_recovery",
-            "Resident login code was replaced and emailed to the saved address during an admin-verified recovery request.",
-            "resident_code_recovery_request",
-        ]);
+        try {
+            $recoveryBootstrapStage = "optional recovery history write";
+            $historyStmt = $pdo->prepare("
+                INSERT INTO resident_history (
+                    resident_id,
+                    user_id,
+                    transaction_type,
+                    description,
+                    reference_type,
+                    reference_id
+                )
+                VALUES (?, ?, ?, ?, ?, NULL)
+            ");
+            $historyStmt->execute([
+                $resident["id"],
+                $admin["id"],
+                "resident_code_recovery",
+                "Resident login code was replaced and emailed to the saved address during an admin-verified recovery request.",
+                "resident_code_recovery_request",
+            ]);
+        } catch (Throwable $historyError) {
+            error_log("Resident recovery history write failed: " . $historyError->getMessage());
+        }
     }
 
-    bb1BumpSyncRevision($pdo);
+    try {
+        $recoveryBootstrapStage = "sync revision update";
+        bb1BumpSyncRevision($pdo);
+    } catch (Throwable $revisionError) {
+        error_log("Resident recovery sync revision update failed: " . $revisionError->getMessage());
+    }
+    $recoveryBootstrapStage = "resident code commit";
     $pdo->commit();
     respond(200, [
         "success" => true,
@@ -568,6 +607,10 @@ try {
     respond($error->httpStatus, ["success" => false, "message" => $error->getMessage()]);
 } catch (Throwable $error) {
     if ($pdo->inTransaction()) $pdo->rollBack();
-    error_log("Resident code recovery error: " . get_class($error) . " " . $error->getMessage());
-    respond(500, ["success" => false, "message" => "Unable to send the resident login code. Please try again."]);
+    error_log("Resident code recovery error at {$recoveryBootstrapStage}: " . get_class($error) . " " . $error->getMessage());
+    respond(500, [
+        "success" => false,
+        "stage" => $recoveryBootstrapStage,
+        "message" => "The email was sent, but the new code could not be saved during {$recoveryBootstrapStage}. The previous code remains active; retry the recovery approval.",
+    ]);
 }
