@@ -21,7 +21,6 @@ const fields = {
   civilStatus: { key: 'civilStatus', label: 'Civil status', options: ['Married', 'Single', 'Widowed'] },
   dateIssued: { key: 'dateIssued', label: 'Date issued', type: 'date' },
   businessName: { key: 'businessName', label: 'Business name' },
-  businessAddress: { key: 'businessAddress', label: 'Business address' },
   businessType: { key: 'businessType', label: 'Application type', options: ['NEW', 'RENEWAL'] },
   closureDate: { key: 'closureDate', label: 'Business closure date', type: 'date' },
   appearanceAddress: {
@@ -105,8 +104,8 @@ const templates = {
   },
   'Business Clearance': {
     file: businessClearanceUrl,
-    fields: [fields.fullName, fields.businessAddress, fields.businessName, fields.businessType, fields.dateIssued],
-    blanks: [{ paragraph: 7, values: { fullName: 0, businessAddress: 1 } }, { paragraph: 8, values: { businessName: 0 } }, { paragraph: 15, values: { dateIssued: [{ slot: 0, part: 'day' }, { slot: 3, part: 'month' }] } }],
+    fields: [fields.fullName, fields.businessName, fields.businessType, fields.dateIssued],
+    blanks: [{ paragraph: 7, values: { fullName: 0 } }, { paragraph: 8, values: { businessName: 0 } }, { paragraph: 15, values: { dateIssued: [{ slot: 0, part: 'day' }, { slot: 3, part: 'month' }] } }],
     replacements: [{ paragraph: 15, from: '2026', value: () => '', allowEmpty: true, removeFollowingSpace: true }],
     checkboxes: [{ paragraph: 9, value: 'businessType', choices: ['NEW'] }, { paragraph: 10, value: 'businessType', choices: ['RENEWAL'] }],
   },

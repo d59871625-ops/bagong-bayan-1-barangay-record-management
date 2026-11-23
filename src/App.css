@@ -8372,6 +8372,63 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 }
 .official-dashboard.dark-mode .request-review-outside-heading h2 { color: var(--ink); }
 .official-dashboard.dark-mode .request-review-flow-title { border-color: #435b47; color: var(--ink); }
+
+/* Keep the community post editor stable once the updates list grows. */
+.admin-announcement-management .community-update-list:has(> .community-update-item:nth-of-type(5)) {
+  max-height: 540px;
+  overflow-y: auto;
+  align-content: start;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 8px;
+}
+.admin-announcement-management .community-update-list:has(> .community-update-item:nth-of-type(5)) > .community-update-item {
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .official-dashboard .request-review-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) !important;
+    width: 100%;
+    min-width: 0;
+  }
+  .official-dashboard .request-review-sidebar,
+  .official-dashboard .request-review-sidebar .processing-area {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .official-dashboard .request-review-sidebar .processing-area {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .official-dashboard .request-review-sidebar .processing-area > :not(.official-processing-heading) {
+    grid-column: 1 / -1;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .official-dashboard .official-processing-heading {
+    grid-template-columns: 38px minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
+  }
+  .official-dashboard .official-processing-heading > div {
+    grid-column: 2;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .official-dashboard .official-processing-heading h4,
+  .official-dashboard .official-processing-heading p,
+  .official-dashboard .request-review-sidebar .request-review-hint {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+}
 .official-dashboard.dark-mode .admin-announcement-workspace {
   border-color: #435b47;
   background: radial-gradient(ellipse at 6% 0%, rgba(72,109,70,.2), transparent 34%), #1e2d23;

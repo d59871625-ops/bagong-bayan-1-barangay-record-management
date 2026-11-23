@@ -1369,8 +1369,10 @@ const positionCertificateHeaderLogos = (page, positions) => {
       paragraph.style.whiteSpace = 'nowrap'
     })
   if (images.length !== positions.length || !positions.length) return
-  const pagePaddingLeft = Number.parseFloat(window.getComputedStyle(page).paddingLeft) || 0
-  const pagePaddingTop = Number.parseFloat(window.getComputedStyle(page).paddingTop) || 0
+  const pageBounds = page.getBoundingClientRect()
+  const headerBounds = header.getBoundingClientRect()
+  const headerLeftOnPage = headerBounds.left - pageBounds.left
+  const headerTopOnPage = headerBounds.top - pageBounds.top
   const logoPositions = positions.filter((position) => !position.isWatermark)
   const taggedRightLogo = logoPositions.find((position) => position.isGreenLogo)
   const rightLogoPosition = taggedRightLogo || (logoPositions.length === 2
@@ -1378,7 +1380,7 @@ const positionCertificateHeaderLogos = (page, positions) => {
     : null)
   const leftLogoPosition = logoPositions.find((position) => position !== rightLogoPosition)
   const redLeft = leftLogoPosition
-    ? leftLogoPosition.horizontal.offset - (leftLogoPosition.horizontal.relativeFrom === 'page' ? pagePaddingLeft : 0)
+    ? leftLogoPosition.horizontal.offset - (leftLogoPosition.horizontal.relativeFrom === 'page' ? headerLeftOnPage : 0)
     : 0
 
   images.forEach((image, index) => {
@@ -1394,9 +1396,9 @@ const positionCertificateHeaderLogos = (page, positions) => {
     anchor.style.float = 'none'
     anchor.style.left = isRightLogo
       ? `${header.clientWidth - redLeft - image.offsetWidth}px`
-      : `${position.horizontal.offset - (position.horizontal.relativeFrom === 'page' ? pagePaddingLeft : 0)}px`
-    anchor.style.top = `${(isRightLogo ? leftLogoPosition?.vertical.offset ?? position.vertical.offset : position.vertical.offset)
-      - (position.vertical.relativeFrom === 'page' ? pagePaddingTop : 0)}px`
+      : `${position.horizontal.offset - (position.horizontal.relativeFrom === 'page' ? headerLeftOnPage : 0)}px`
+    const targetTop = isRightLogo ? leftLogoPosition?.vertical.offset ?? position.vertical.offset : position.vertical.offset
+    anchor.style.top = `${targetTop - (position.vertical.relativeFrom === 'page' ? headerTopOnPage : 0)}px`
     image.draggable = false
   })
 }
