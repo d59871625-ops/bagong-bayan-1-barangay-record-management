@@ -2166,6 +2166,8 @@ h1 em { color: var(--accent); font-style: normal; }
   .docx-preview-actions { justify-content: flex-start; }
   .docx-preview-scroll { padding: 8px; }
 }
+
+
 .certificate-processing-screen { display: flex; flex: 1; flex-direction: column; min-height: 0; width: 100%; overflow: hidden; background: #f3f7f3; }
 .certificate-processing-screen-header { display: flex; flex: 0 0 auto; align-items: center; gap: 16px; padding: 12px clamp(14px, 3vw, 32px); background: linear-gradient(115deg, #23613b, #4d9060 52%, #39794d); color: #ffffff; box-shadow: 0 3px 14px rgba(25, 86, 48, .18); }
 .certificate-processing-screen-header .admin-brand { min-width: 0; }
@@ -11589,4 +11591,118 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
     box-sizing: border-box;
     white-space: normal;
   }
+}
+
+@media (max-width: 720px) {
+  .resident-account-menu-wrap { position: relative; flex: 0 0 auto; }
+  .resident-account-notifications { right: 0; left: auto; width: min(340px, calc(100vw - 24px)); max-width: calc(100vw - 24px); transform: none; }
+  .resident-drafts-workspace { grid-template-columns: minmax(0, 1fr); }
+  .resident-drafts-corrections-tabs { position: static; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 7px; }
+  .resident-drafts-corrections-tabs button { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; justify-items: start; min-height: 78px; padding: 9px 7px; }
+  .resident-drafts-corrections-tabs .resident-drafts-tab-icon { display: none; }
+  .resident-drafts-corrections-tabs .resident-drafts-tab-copy { width: 100%; gap: 4px; padding-right: 12px; }
+  .resident-drafts-tab-copy strong { font-size: 10px; }
+  .resident-drafts-tab-copy small { display: -webkit-box; overflow: hidden; white-space: normal; text-overflow: unset; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 8px; line-height: 1.3; }
+  .resident-drafts-corrections-tabs .resident-drafts-tab-count,
+  .resident-drafts-corrections-tabs button .resident-unread-update-count { position: absolute; top: 5px; right: 5px; min-width: 19px; width: auto; height: 19px; padding: 0 4px; font-size: 8px; }
+  .resident-drafts-content { width: 100%; }
+  .resident-draft-card, .resident-correction-card, .resident-cancelled-card { box-sizing: border-box; width: 100%; max-width: 100%; padding: 12px; }
+  .resident-workspace-card-heading,
+  .resident-workspace-card-heading > div,
+  .resident-draft-purpose,
+  .resident-correction-note,
+  .resident-cancelled-note { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+  .resident-draft-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .resident-draft-actions > button,
+  .resident-correction-card > .resident-table-action { box-sizing: border-box; width: 100%; max-width: 100%; min-height: 40px; white-space: normal; }
+  .resident-cancelled-card dl > div { grid-template-columns: minmax(68px, .35fr) minmax(0, 1fr); }
+  .resident-cancelled-card dd { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+  .resident-account-shell .resident-document-request-section,
+  .resident-account-shell .resident-document-request-section > *,
+  .resident-account-shell .resident-document-request-card,
+  .resident-account-shell .resident-document-request-card-copy,
+  .resident-account-shell .resident-document-selection-summary,
+  .resident-account-shell .resident-document-request-footer { box-sizing: border-box; min-width: 0; max-width: 100%; }
+  .resident-account-shell .resident-document-request-card { grid-template-columns: 36px minmax(0, 1fr) 20px; gap: 8px; width: 100%; padding: 10px; }
+  .resident-account-shell .resident-document-request-card-copy strong,
+  .resident-account-shell .resident-document-request-card-copy > span,
+  .resident-account-shell .resident-document-request-card-copy small { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+  .resident-account-shell .resident-document-request-card-copy > span { display: flex; flex-wrap: wrap; }
+  .resident-account-shell .resident-document-request-actions > button,
+  .resident-account-shell .resident-request-guide-button { box-sizing: border-box; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+}
+
+@media (max-width: 390px) {
+  .resident-drafts-corrections-tabs { gap: 4px; padding: 5px; }
+  .resident-drafts-corrections-tabs button { min-height: 74px; padding: 8px 5px; }
+  .resident-drafts-tab-copy strong { font-size: 9px; }
+  .resident-drafts-tab-copy small { font-size: 7px; }
+}
+
+@media (max-width: 760px) {
+  .certificate-template-content-editor { height: 100dvh; max-height: 100dvh; }
+  .certificate-template-editor-workspace { min-height: 0; }
+  .certificate-template-editor-workspace.is-tools-open { grid-template-rows: minmax(0, 0.36fr) minmax(0, 0.64fr); }
+  .certificate-template-editor-tools,
+  .certificate-template-editor-workspace.is-tools-open .certificate-template-editor-tools { display: none; }
+  .certificate-template-editor-workspace.is-tools-open .certificate-template-editor-tools { display: flex; flex-wrap: nowrap; align-items: stretch; gap: 8px; max-height: none; padding: 2px 1px 6px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; }
+  .certificate-template-editor-tools > section,
+  .certificate-template-editor-tools > section:last-child { display: grid; flex: 0 0 min(88vw, 340px); grid-column: auto; grid-row: auto; align-content: start; max-height: 100%; padding: 9px; overflow-y: auto; scroll-snap-align: start; }
+  .certificate-template-editor-paper-area { display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 0; padding: 8px; }
+  .certificate-template-editor-canvas { width: max-content; min-width: 100%; margin: 0 auto; }
+  .certificate-editor-canvas-controls { position: sticky; z-index: 2; top: 0; display: flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 8px; width: max-content; max-width: 100%; padding: 5px 7px; border: 1px solid #d5e5d7; border-radius: 9px; background: rgba(255,255,255,.96); box-shadow: 0 2px 8px rgba(37,76,45,.12); }
+  .certificate-editor-canvas-controls button { min-width: 34px; min-height: 32px; padding: 4px 8px; border: 1px solid #b9d1bc; border-radius: 7px; background: #fff; color: #286334; font: 700 14px var(--sans); }
+  .certificate-editor-canvas-controls > span { color: #344239; font: 700 10px var(--sans); white-space: nowrap; }
+  .certificate-editor-canvas-controls > span small { color: #718074; font-weight: 400; }
+  .certificate-editor-canvas-controls .certificate-editor-fit-button { font-size: 10px; }
+}
+
+.resident-account-shell.resident-dark-mode { color-scheme: dark; background: #17221b; color: #e5eee6; }
+.resident-account-shell.resident-dark-mode .resident-account-header { border-color: #35493a; background: linear-gradient(110deg, #1d2c21, #24372a); color: #e5eee6; }
+.resident-account-shell.resident-dark-mode .resident-account-brand strong,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section h2,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section h3,
+.resident-account-shell.resident-dark-mode .resident-workspace-card-heading h2,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section strong { color: #e5eee6; }
+.resident-account-shell.resident-dark-mode .resident-dashboard-layout { background: #17221b; }
+.resident-account-shell.resident-dark-mode .resident-dashboard-sidebar,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section,
+.resident-account-shell.resident-dark-mode .resident-account-popover,
+.resident-account-shell.resident-dark-mode .resident-request-detail-page,
+.resident-account-shell.resident-dark-mode .resident-document-request-card,
+.resident-account-shell.resident-dark-mode .resident-draft-card,
+.resident-account-shell.resident-dark-mode .resident-correction-card,
+.resident-account-shell.resident-dark-mode .resident-cancelled-card,
+.resident-account-shell.resident-dark-mode .resident-pickup-card,
+.resident-account-shell.resident-dark-mode .resident-document-update-card,
+.resident-account-shell.resident-dark-mode .resident-request-list-item,
+.resident-account-shell.resident-dark-mode .resident-registration-inbox-item,
+.resident-account-shell.resident-dark-mode .resident-workspace-panel { border-color: #3b5140; background: #223128; color: #e5eee6; }
+.resident-account-shell.resident-dark-mode .resident-dashboard-section p,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section small,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section dt,
+.resident-account-shell.resident-dark-mode .resident-dashboard-section dd,
+.resident-account-shell.resident-dark-mode .resident-workspace-card-heading p,
+.resident-account-shell.resident-dark-mode .resident-draft-purpose,
+.resident-account-shell.resident-dark-mode .resident-account-popover > button small,
+.resident-account-shell.resident-dark-mode .resident-account-popover > button time { color: #bdcbbf; }
+.resident-account-shell.resident-dark-mode .resident-account-icon-button { border-color: #526b57; background: #2b3c30; color: #d8ebd3; }
+.resident-account-shell.resident-dark-mode .resident-account-popover > button,
+.resident-account-shell.resident-dark-mode .resident-drafts-corrections-tabs,
+.resident-account-shell.resident-dark-mode .resident-drafts-corrections-tabs button,
+.resident-account-shell.resident-dark-mode .resident-document-request-card-copy,
+.resident-account-shell.resident-dark-mode .resident-request-information,
+.resident-account-shell.resident-dark-mode .resident-update-history { border-color: #3b5140; background: #26372b; color: #e5eee6; }
+.resident-account-shell.resident-dark-mode .resident-drafts-corrections-tabs button.active { border-color: #7fae83; background: #304a36; }
+.resident-account-shell.resident-dark-mode .resident-drafts-tab-copy strong,
+.resident-account-shell.resident-dark-mode .resident-account-popover > button span { color: #d8ebd3; }
+.resident-account-shell.resident-dark-mode .resident-correction-note,
+.resident-account-shell.resident-dark-mode .resident-cancelled-note,
+.resident-account-shell.resident-dark-mode .resident-cancelled-payment-evidence { border-color: #66583a; background: #352f22; color: #e4d7b5; }
+.resident-account-shell.resident-dark-mode :is(input:not([type="checkbox"]):not([type="file"]), select, textarea) { border-color: #526b57; background: #19271d; color: #e5eee6; color-scheme: dark; }
+.resident-account-shell.resident-dark-mode .resident-account-popover > button:hover { border-color: #68896a; background: #304536; }
+.resident-account-shell.resident-dark-mode .resident-inbox-no-requests { border-color: #3b5140; background: #223128; color: #e5eee6; }
+
+@media (max-width: 760px) {
+  .certificate-template-editor-workspace.is-tools-open { grid-template-rows: minmax(0, 0.36fr) minmax(0, 0.64fr); }
 }

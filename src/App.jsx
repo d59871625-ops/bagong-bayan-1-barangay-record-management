@@ -108,6 +108,14 @@ const readJsonResponse = async (response, endpointName) => {
 
 const ADMIN_NAVIGATION_READ_STORAGE_KEY = 'bb1-admin-navigation-read-v1'
 const RESIDENT_NOTIFICATION_READ_STORAGE_KEY = 'bb1-resident-notification-read-v1'
+const RESIDENT_DARK_MODE_STORAGE_KEY = 'bb1-resident-dark-mode-v1'
+const readResidentDarkMode = () => {
+  try {
+    return window.localStorage.getItem(RESIDENT_DARK_MODE_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
 const readBrowserReadState = (key) => {
   try {
     const saved = JSON.parse(window.localStorage.getItem(key) || 'null')
@@ -1988,7 +1996,8 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   const [originalPageSizeId, setOriginalPageSizeId] = useState('short')
   const [pageOrientation, setPageOrientation] = useState('portrait')
   const [editorPageZoom, setEditorPageZoom] = useState(1)
-  const [isEditorToolsOpen, setIsEditorToolsOpen] = useState(false)
+  const [editorZoomMultiplier, setEditorZoomMultiplier] = useState(1)
+  const [isEditorToolsOpen, setIsEditorToolsOpen] = useState(() => window.matchMedia('(max-width: 760px)').matches)
   const [originalPageOrientation, setOriginalPageOrientation] = useState('portrait')
   const [originalPageDimensions, setOriginalPageDimensions] = useState({ widthTwips: 12240, heightTwips: 15840 })
   const [isLoading, setIsLoading] = useState(true)
@@ -2204,9 +2213,9 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       const pageHeight = pageBounds.height / currentZoom
       if (!pageWidth || !pageHeight) return
       const availableWidth = Math.max(0, paperArea.clientWidth - 32)
-      const availableHeight = Math.max(0, paperArea.clientHeight - 32)
-      const zoomAllowance = isEditorToolsOpen ? 1.06 : 1
-      const nextZoom = Math.min(1, (availableWidth / pageWidth) * zoomAllowance, (availableHeight / pageHeight) * zoomAllowance)
+      const availableHeight = Math.max(0, paperArea.clientHeight - 70)
+      const fitZoom = Math.min(1, availableWidth / pageWidth, availableHeight / pageHeight)
+      const nextZoom = Math.min(1.8, fitZoom * editorZoomMultiplier)
       if (!Number.isFinite(nextZoom) || nextZoom <= 0 || Math.abs(nextZoom - currentZoom) < 0.003) return
       editorPageZoomRef.current = nextZoom
       setEditorPageZoom(nextZoom)
@@ -2223,7 +2232,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
       mutationObserver.disconnect()
       window.removeEventListener('resize', fitPageToView)
     }
-  }, [isEditorToolsOpen, isRendered, pageOrientation, pageSizeId])
+  }, [editorZoomMultiplier, isEditorToolsOpen, isRendered, pageOrientation, pageSizeId])
 
   useEffect(() => {
     const closeOnEscape = (event) => {
@@ -2883,6 +2892,12 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
                 </section>
               </aside>
               <main className="certificate-template-editor-paper-area" ref={editorPaperAreaRef}>
+                <div className="certificate-editor-canvas-controls" role="group" aria-label="Document zoom">
+                  <button type="button" aria-label="Zoom out" onClick={() => setEditorZoomMultiplier((zoom) => Math.max(1, Math.round((zoom - 0.1) * 10) / 10))}>−</button>
+                  <span>{Math.round(editorZoomMultiplier * 100)}% <small>of fit</small></span>
+                  <button type="button" aria-label="Zoom in" onClick={() => setEditorZoomMultiplier((zoom) => Math.min(1.8, Math.round((zoom + 0.1) * 10) / 10))}>+</button>
+                  <button type="button" className="certificate-editor-fit-button" onClick={() => setEditorZoomMultiplier(1)}>Fit page</button>
+                </div>
                 <div className="certificate-template-editor-canvas" ref={editorCanvasRef} style={{ zoom: editorPageZoom }} aria-label="Editable certificate page" aria-busy={!isRendered} />
               </main>
             </div>}
@@ -5017,6 +5032,7 @@ function App() {
   const [cancellationGcashError, setCancellationGcashError] = useState('')
   const [residentDashboardSection, setResidentDashboardSection] = useState('community')
   const [residentMobileMenuOpen, setResidentMobileMenuOpen] = useState(false)
+  const [residentDarkMode, setResidentDarkMode] = useState(readResidentDarkMode)
   const [residentCommunityTab, setResidentCommunityTab] = useState('announcements')
   const [residentDraftsCorrectionsTab, setResidentDraftsCorrectionsTab] = useState('drafts')
   const [residentDocumentGuideOpen, setResidentDocumentGuideOpen] = useState(false)
@@ -5170,6 +5186,13 @@ function App() {
   const [residentRequests, setResidentRequests] = useState([])
   const [residentNotificationReadState, setResidentNotificationReadState] = useState(() => readBrowserReadState(RESIDENT_NOTIFICATION_READ_STORAGE_KEY))
   const [adminNavigationReadState, setAdminNavigationReadState] = useState(() => readBrowserReadState(ADMIN_NAVIGATION_READ_STORAGE_KEY))
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RESIDENT_DARK_MODE_STORAGE_KEY, String(residentDarkMode))
+    } catch (error) {
+      console.warn('Could not save resident appearance preference.', error)
+    }
+  }, [residentDarkMode])
   const [documentWorkflowViewedState, setDocumentWorkflowViewedState] = useState({})
   const documentWorkflowViewedStateRef = useRef(documentWorkflowViewedState)
   useEffect(() => {
@@ -14624,7 +14647,7 @@ function App() {
           </div>}
         </section>
       ) : showResidentInboxPage ? (
-        <section className="resident-inbox-page resident-account-shell">
+        <section className={`resident-inbox-page resident-account-shell${residentDarkMode ? ' resident-dark-mode' : ''}`}>
           <header className="resident-account-header">
             <div className="resident-account-header-top">
               <div className="resident-account-header-brand">
@@ -14634,6 +14657,11 @@ function App() {
                 {!registrationCommunityOnlyAccess && <button type="button" className="resident-account-new-request" onClick={() => chooseResidentPath('request')}><span aria-hidden="true">＋</span>New request</button>}
                 {!registrationCommunityOnlyAccess && <button type="button" className="resident-account-icon-button" aria-label="About Barangay Bagong Bayan I" title="About" onClick={openAboutPage}>
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 7.5h.01" /></svg>
+                </button>}
+                {!registrationCommunityOnlyAccess && <button type="button" className="resident-account-icon-button resident-theme-toggle" aria-label={residentDarkMode ? 'Switch to light mode' : 'Switch to dark mode'} title={residentDarkMode ? 'Light mode' : 'Dark mode'} aria-pressed={residentDarkMode} onClick={() => setResidentDarkMode((enabled) => !enabled)}>
+                  {residentDarkMode
+                    ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></svg>
+                    : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 14.2A8.5 8.5 0 0 1 9.8 3.2 8.8 8.8 0 1 0 20.8 14.2Z" /></svg>}
                 </button>}
                 {!registrationCommunityOnlyAccess && <div className="resident-account-menu-wrap">
                   <button type="button" className="resident-account-icon-button notification-button" aria-label={`Notifications (${residentNotificationUnreadCount} unread)`} aria-expanded={notificationsOpen} onClick={() => {
@@ -14941,6 +14969,7 @@ function App() {
                   <button type="button" id="resident-drafts-tab-drafts" aria-pressed={residentDraftsCorrectionsTab === 'drafts'} aria-controls="resident-drafts-panel" className={residentDraftsCorrectionsTab === 'drafts' ? 'active' : ''} onClick={() => setResidentDraftsCorrectionsTab('drafts')}>
                     <span className="resident-drafts-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7zM14 3v6h5M10 13h6M10 17h4" /></svg></span>
                     <span className="resident-drafts-tab-copy"><strong>Drafts</strong><small>Continue saved requests</small></span>
+                    <span className="resident-drafts-tab-count" aria-label={`${residentRequestDrafts.length} saved drafts`}>{residentRequestDrafts.length}</span>
                   </button>
                   <button type="button" id="resident-drafts-tab-corrections" aria-pressed={residentDraftsCorrectionsTab === 'corrections'} aria-controls="resident-drafts-panel" className={residentDraftsCorrectionsTab === 'corrections' ? 'active' : ''} onClick={() => { markResidentDashboardSectionRead('drafts-corrections', 'corrections'); setResidentDraftsCorrectionsTab('corrections') }}>
                     <span className="resident-drafts-tab-icon corrections" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z" /><path d="M12 9v5M12 17.5h.01" /></svg></span>
