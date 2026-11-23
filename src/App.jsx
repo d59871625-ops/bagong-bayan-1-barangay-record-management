@@ -4202,7 +4202,8 @@ const getDocumentWorkflowViewToken = (request) => {
 }
 
 const isDocumentWorkflowUnviewed = (request, viewedState) => (
-  documentWorkflowViewStatuses.has(request.status)
+  (documentWorkflowViewStatuses.has(request.status)
+    || (request.paymentStatus === 'Paid' && request.status !== 'Cancelled'))
   && viewedState[request.id] !== getDocumentWorkflowViewToken(request)
 )
 
@@ -4900,7 +4901,7 @@ function GcashTransferInstructions({ amount, recipients }) {
   return (
     <section className="resident-gcash-transfer-details" aria-label="GCash transfer details">
       <div><strong>Send with GCash</strong><span>Send the exact selected total of ₱{Number(amount || 0).toFixed(2)} and verify the recipient name in GCash before confirming.</span></div>
-      {recipients.length > 0 && <TableSearch label="GCash recipients"><div className="resident-gcash-recipient-table-wrap">
+      {recipients.length > 0 && <div className="resident-gcash-recipient-table-wrap">
         <table className="resident-gcash-recipient-table">
           <thead><tr><th scope="col">Name</th><th scope="col">GCash number</th><th scope="col">QR</th></tr></thead>
           <tbody>{recipients.map((recipient) => (
@@ -4921,7 +4922,7 @@ function GcashTransferInstructions({ amount, recipients }) {
             </tr>
           ))}</tbody>
         </table>
-      </div></TableSearch>}
+      </div>}
       {!recipients.length && <p>GCash payment details are not configured. Please contact the Barangay Hall before sending payment.</p>}
       <p>Open GCash directly on your phone, then verify the recipient and amount before sending. Never share your PIN or OTP. Return here afterward to submit the receipt or reference number.</p>
       {qrRecipient?.qrImage?.dataUrl && <div className="resident-gcash-qr-backdrop" onMouseDown={(event) => {
@@ -5260,7 +5261,6 @@ function App() {
   const [registrationResidentViewCode, setRegistrationResidentViewCode] = useState('')
   const [registrationDecisionModalOpen, setRegistrationDecisionModalOpen] = useState(false)
   const [registrationQueueSearch, setRegistrationQueueSearch] = useState('')
-  const [paymentTrackingSearch, setPaymentTrackingSearch] = useState('')
   const [registrationSyncError, setRegistrationSyncError] = useState('')
   const [registrationActionError, setRegistrationActionError] = useState('')
   const [registrationAdminNote, setRegistrationAdminNote] = useState('')
@@ -5681,7 +5681,6 @@ function App() {
   const [historySearch, setHistorySearch] = useState('')
   const [historyStatusFilter, setHistoryStatusFilter] = useState('all')
   const [residentMyRequestsSearch, setResidentMyRequestsSearch] = useState('')
-  const [residentPaymentTrackingSearch, setResidentPaymentTrackingSearch] = useState('')
   const [residentRecordsTab, setResidentRecordsTab] = useState('active')
   const [residentRecordsSearch, setResidentRecordsSearch] = useState('')
   const [recoveryRequestSearch, setRecoveryRequestSearch] = useState('')
@@ -6657,16 +6656,8 @@ function App() {
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const residentPaymentRecords = groupPaymentRequests(residentPaymentRequests)
-  const residentPaymentTrackingQuery = residentPaymentTrackingSearch.trim().toLowerCase()
-  const filteredResidentPaymentRecords = residentPaymentRecords.filter((payment) => {
-    const paymentDate = payment.paymentSubmittedAt || payment.paymentVerifiedAt || payment.requestedAt || payment.paymentDraftedAt || ''
-    return [
-      ...(payment.documents || []),
-      ...((payment.requests || []).flatMap((request) => request.documents || [])),
-      paymentDate ? new Date(paymentDate).toLocaleDateString('en-PH', { dateStyle: 'medium' }) : '',
-      paymentDate,
-    ].some((value) => String(value || '').toLowerCase().includes(residentPaymentTrackingQuery))
-  })
+    .sort((first, second) => new Date(second.paymentSubmittedAt || second.paymentVerifiedAt || second.requestedAt || second.paymentDraftedAt || 0).getTime()
+      - new Date(first.paymentSubmittedAt || first.paymentVerifiedAt || first.requestedAt || first.paymentDraftedAt || 0).getTime())
   const unpaidResidentPaymentRequests = residentPaymentRequests.filter((request) => (
     request.status !== 'Cancelled'
     && !['Paid', 'Pending verification'].includes(request.paymentStatus || 'Unpaid')
@@ -6925,7 +6916,10 @@ function App() {
       markResidentUpdatesRead('requests', itemIds(residentRequestUpdateItems.filter((item) => item.category === 'requests')))
     }
     if (section === 'pickup') markResidentUpdatesRead('pickup', itemIds(residentPickupUpdateItems))
-    if (section === 'payments') markResidentUpdatesRead('payments', itemIds(residentPaymentUpdateItems))
+    if (section === 'payments') {
+      markResidentUpdatesRead('payments', itemIds(residentPaymentUpdateItems))
+      markPaymentRequestsViewed(residentPaymentRequests.filter((request) => request.paymentStatus === 'Paid'))
+    }
     if (section === 'drafts-corrections' && category === 'cancelled') {
       markResidentUpdatesRead('cancelled', itemIds(residentCancelledUpdateItems))
     }
@@ -7031,15 +7025,9 @@ function App() {
     payment.paymentStatus === 'Pending verification'
       && payment.requests.some((request) => request.status !== 'Cancelled')
   ))
-  const paymentTrackingQuery = paymentTrackingSearch.trim().toLowerCase()
-  const searchablePaymentAssessmentRecords = paymentAssessmentRecords.filter((payment) => {
-    const paymentDate = payment.paymentSubmittedAt || ''
-    const displayDate = paymentDate && !Number.isNaN(new Date(paymentDate).getTime())
-      ? new Date(paymentDate).toLocaleDateString('en-PH', { dateStyle: 'medium' })
-      : paymentDate
-    return [payment.resident, payment.residentCode, paymentDate, displayDate]
-      .some((value) => String(value || '').toLowerCase().includes(paymentTrackingQuery))
-  })
+  const sortedPaymentAssessmentRecords = paymentAssessmentRecords.slice()
+    .sort((first, second) => new Date(second.paymentSubmittedAt || second.requestedAt || 0).getTime()
+      - new Date(first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const paymentHistoryRecords = groupPaymentRequests(allDocumentRequests
     .filter((request) => Number(request.feeAmount || 0) > 0 && request.paymentStatus === 'Paid'))
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
@@ -7062,7 +7050,8 @@ function App() {
   const adminNavigationUnreadItems = {
     overview: [],
     documents: documentInboxRequests
-      .filter((request) => ['New', 'For Verification', 'Returned for edits'].includes(request.status))
+      .filter((request) => ['New', 'For Verification', 'Returned for edits'].includes(request.status)
+        || (request.paymentStatus === 'Paid' && request.status === 'Under review'))
       .map((request) => `document:${getAdminNavigationItemId(request)}`),
     registrations: pendingRegistrationRequests
       .map((request) => `registration:${getAdminNavigationItemId(request)}`),
@@ -7120,7 +7109,15 @@ function App() {
     !(adminNavigationReadState[section] || []).includes(`${prefix}:${getAdminNavigationItemId(item)}`)
   )
   const markAdminNotificationRead = (section, prefix, item) => {
-    markAdminNavigationItemsRead(section, [`${prefix}:${getAdminNavigationItemId(item)}`])
+    const readIds = [`${prefix}:${getAdminNavigationItemId(item)}`]
+    if (section === 'payments' && prefix === 'payment' && item.paymentStatus === 'Paid') {
+      readIds.push(`paid-request:${getAdminNavigationItemId({
+        ...item,
+        id: `paid-request:${item.id}`,
+        updatedAt: item.paymentVerifiedAt || item.updatedAt,
+      })}`)
+    }
+    markAdminNavigationItemsRead(section, readIds)
   }
   const getAdminCommunityUpdateId = (update) => `community:${getAdminNavigationItemId(update)}`
   const isAdminCommunityUpdateUnread = (update) => (
@@ -7164,6 +7161,13 @@ function App() {
   const activeQueueRequests = documentInboxRequests
     .filter((request) => ['New', 'For Verification', 'Returned for edits', 'Under review', 'Approved - scheduling', 'Ready for release'].includes(request.status))
     .map((request) => ({ ...request, resident: getRequestResidentName(request) }))
+    .sort((first, second) => {
+      const firstTimestamp = new Date(first.requestedAt || first.date || 0).getTime() || 0
+      const secondTimestamp = new Date(second.requestedAt || second.date || 0).getTime() || 0
+      const firstPriority = first.status === 'Approved - scheduling' ? 1 : 0
+      const secondPriority = second.status === 'Approved - scheduling' ? 1 : 0
+      return secondPriority - firstPriority || secondTimestamp - firstTimestamp
+    })
   const documentQueueCounts = {
     incoming: activeQueueRequests.filter((request) => ['New', 'For Verification', 'Returned for edits'].includes(request.status)).length,
     review: activeQueueRequests.filter((request) => request.status === 'Under review').length,
@@ -7266,6 +7270,11 @@ function App() {
       return newestFirst.length > 1
       ? [{ type: 'resident', key, requests: newestFirst }]
       : [{ type: 'request', key: newestFirst[0].id, request: newestFirst[0] }]
+    }).sort((first, second) => {
+      const firstRequest = first.type === 'resident' ? first.requests[0] : first.request
+      const secondRequest = second.type === 'resident' ? second.requests[0] : second.request
+      return new Date(secondRequest?.requestedAt || secondRequest?.date || 0).getTime()
+        - new Date(firstRequest?.requestedAt || firstRequest?.date || 0).getTime()
     })
   })()
   const documentReportCounts = new Map()
@@ -7403,6 +7412,7 @@ function App() {
     resident.email,
     resident.gmail,
   ].some((value) => String(value || '').toLowerCase().includes(residentRecordsQuery)))
+    .sort((first, second) => String(first.name || first.fullName || '').localeCompare(String(second.name || second.fullName || ''), 'en', { sensitivity: 'base' }))
   const filteredDeclinedRegistrationRequests = declinedRegistrationRequests.filter((request) => [
     request.name,
     request.fullName,
@@ -7413,6 +7423,7 @@ function App() {
     request.data?.lastName,
     request.data?.residentCode,
   ].some((value) => String(value || '').toLowerCase().includes(residentRecordsQuery)))
+    .sort((first, second) => String(first.name || first.fullName || first.data?.fullName || '').localeCompare(String(second.name || second.fullName || second.data?.fullName || ''), 'en', { sensitivity: 'base' }))
   useEffect(() => {
     const syncCommunityUpdates = (event) => {
       if (event.key !== communityUpdatesStorageKey || !event.newValue) return
@@ -12135,6 +12146,10 @@ function App() {
     setDocumentWorkflowViewedState(nextViewedState)
   }, [])
 
+  const markPaymentRequestsViewed = (requests) => {
+    requests.forEach(markDocumentWorkflowViewed)
+  }
+
   useEffect(() => {
     if (!showOfficialDashboard) return
     if (adminView === 'documents' && selectedRequestId) {
@@ -12972,6 +12987,7 @@ function App() {
                   {residentCodeRecoveryRequests.filter((request) => request.status === 'Pending' && isAdminNotificationUnread('residents', 'recovery', request)).map((request) => <button type="button" key={request.id} onClick={() => { markAdminNotificationRead('residents', 'recovery', request); const closestResident = getClosestResidentRecord(request.fullName, adminResidents); setAdminView('residents'); setResidentRecordsTab('active'); setResidentRecordsSearch(closestResident?.name || request.fullName); setHighlightedResidentId(closestResident?.id || ''); setAdminRecoveryMessage(''); setNotificationsOpen(false) }}><span>Resident code recovery</span><small>{request.fullName} · {request.id}</small></button>)}
                   {residentProfileUpdateRequests.filter((request) => request.status === 'Pending' && isAdminNotificationUnread('residents', 'profile-update', request)).map((request) => <button type="button" key={request.id} onClick={() => { markAdminNotificationRead('residents', 'profile-update', request); setAdminView('residents'); setResidentRecordsTab('active'); setResidentProfileUpdateResidentCode(request.residentCode); setProfileUpdateError(''); setNotificationsOpen(false) }}><span>Profile update request</span><small>{request.resident} · {request.id}</small></button>)}
                   {paymentAssessmentRecords.filter((request) => isAdminNotificationUnread('payments', 'payment', request)).map((request) => <button type="button" key={`payment-${request.id}`} onClick={() => { markAdminNotificationRead('payments', 'payment', request); setAdminView('payments'); setPaymentReviewRequestId(request.id); setNotificationsOpen(false) }}><span>Payment proof to verify</span><small>{request.resident} · {request.documents.join(' · ')}</small></button>)}
+                  {documentInboxRequests.filter((request) => request.paymentStatus === 'Paid' && request.status === 'Under review' && isAdminNotificationUnread('documents', 'document', request)).map((request) => <button type="button" key={`paid-request-${request.id}`} onClick={() => { markAdminNotificationRead('documents', 'document', request); markDocumentWorkflowViewed(request); setAdminView('documents'); setDocumentQueueFilter('review'); setSelectedRequestId(request.id); setNotificationsOpen(false) }}><span>New paid request</span><small>{request.resident} · {request.documents?.join(' · ') || request.id}</small></button>)}
                   {cancelledPaymentRequests.filter((request) => (
                     (request.paymentStatus === 'Pending verification' || request.refundStatus !== 'Refunded')
                       && isAdminNotificationUnread('payments', 'refund', request)
@@ -13252,12 +13268,15 @@ function App() {
                   const firstRequest = requests[0]
                   const isExpanded = selectedResidentGroupId === entry.key
                   const hasUnviewedRequest = requests.some((request) => isDocumentWorkflowUnviewed(request, documentWorkflowViewedState))
+                  const hasUnviewedPaidRequest = requests.some((request) => request.paymentStatus === 'Paid'
+                    && request.status === 'Under review'
+                    && isAdminNotificationUnread('documents', 'document', request))
                   const documents = [...new Set(requests.flatMap((request) => request.documents || []))]
                   const receivedDate = firstRequest.requestedAt
                     ? new Date(firstRequest.requestedAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
                     : firstRequest.date || 'Date not recorded'
                   return (
-                    <article className={`request-item submission-request-group${isExpanded ? ' is-expanded' : ''}${hasUnviewedRequest ? ' is-workflow-unviewed' : ''}`} key={entry.key}>
+                    <article className={`request-item submission-request-group${isExpanded ? ' is-expanded' : ''}${hasUnviewedRequest || hasUnviewedPaidRequest ? ' is-workflow-unviewed' : ''}`} key={entry.key}>
                       <div className="request-meta"><span>{requests.length} requests</span><small>Most recent: {receivedDate}</small></div>
                       <div className="request-resident">
                         <button
@@ -13266,7 +13285,11 @@ function App() {
                           aria-expanded={isExpanded}
                           aria-controls={`resident-requests-${encodeURIComponent(entry.key)}`}
                           onClick={() => {
-                            if (!isExpanded) requests.forEach(markDocumentWorkflowViewed)
+                            if (!isExpanded) {
+                              requests.forEach(markDocumentWorkflowViewed)
+                              requests.filter((request) => request.paymentStatus === 'Paid' && request.status === 'Under review')
+                                .forEach((request) => markAdminNotificationRead('documents', 'document', request))
+                            }
                             setSelectedResidentGroupId(isExpanded ? null : entry.key)
                           }}
                         >
@@ -13285,7 +13308,11 @@ function App() {
                         aria-expanded={isExpanded}
                         aria-controls={`resident-requests-${encodeURIComponent(entry.key)}`}
                         onClick={() => {
-                          if (!isExpanded) requests.forEach(markDocumentWorkflowViewed)
+                          if (!isExpanded) {
+                            requests.forEach(markDocumentWorkflowViewed)
+                            requests.filter((request) => request.paymentStatus === 'Paid' && request.status === 'Under review')
+                              .forEach((request) => markAdminNotificationRead('documents', 'document', request))
+                          }
                           setSelectedResidentGroupId(isExpanded ? null : entry.key)
                         }}
                       >
@@ -13311,6 +13338,9 @@ function App() {
                                 <div className="submission-request-choice-actions">
                                   <button type="button" className="open-request" onClick={() => {
                                     markDocumentWorkflowViewed(request)
+                                    if (request.paymentStatus === 'Paid' && request.status === 'Under review') {
+                                      markAdminNotificationRead('documents', 'document', request)
+                                    }
                                     setSelectedRequestId(request.id)
                                     setSelectedResidentGroupId(null)
                                   }}>
@@ -13951,7 +13981,7 @@ function App() {
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
               <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
-              <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => first.name.localeCompare(second.name)).map((resident) => <tr key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
+              <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => String(first.name || first.fullName || '').localeCompare(String(second.name || second.fullName || ''), 'en', { sensitivity: 'base' })).map((resident) => <tr key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                 <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
@@ -14024,9 +14054,8 @@ function App() {
                   <div><span className="section-number">ACTION REQUIRED</span><h3 id="payment-assessment-title">Payment assessment</h3><p>Check the resident’s proof, then record the verified official receipt number.</p></div>
                   <span className="admin-panel-count">{paymentAssessmentRecords.length}</span>
                 </header>
-                <label className="payment-tracking-search"><span className="sr-only">Search payment tracking by resident name, code, or date</span><input type="search" value={paymentTrackingSearch} onChange={(event) => setPaymentTrackingSearch(event.target.value)} placeholder="Search resident, code, or date" /></label>
                 <div className="payment-assessment-list">
-                  {searchablePaymentAssessmentRecords.map((payment) => <article className={`payment-assessment-item${paymentReviewRequestId === payment.id ? ' is-expanded' : ''}`} key={payment.id}>
+                  {sortedPaymentAssessmentRecords.map((payment) => <article className={`payment-assessment-item${paymentReviewRequestId === payment.id ? ' is-expanded' : ''}`} key={payment.id}>
                     <div className="payment-assessment-summary">
                       <div className="payment-assessment-resident"><strong>{payment.resident}</strong><span>{payment.residentCode || 'Resident code not recorded'} · {payment.id}</span></div>
                       <div className="payment-assessment-request"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><span>{payment.requests.length} combined request{payment.requests.length === 1 ? '' : 's'}{payment.cancelledRequestCount > 0 ? ` (${payment.cancelledRequestCount} cancelled)` : ''} · {payment.paymentSubmittedAt ? new Date(payment.paymentSubmittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Submission time not recorded'}</span></div>
@@ -14057,7 +14086,7 @@ function App() {
                       </form>
                     </div>}
                   </article>)}
-                  {!searchablePaymentAssessmentRecords.length && <div className="payment-assessment-empty">{paymentAssessmentRecords.length ? <strong>No payment records match that resident, code, or date.</strong> : <><span aria-hidden="true">✓</span><strong>All caught up</strong><p>No payment proofs are waiting for assessment.</p></>}</div>}
+                  {!sortedPaymentAssessmentRecords.length && <div className="payment-assessment-empty"><span aria-hidden="true">✓</span><strong>All caught up</strong><p>No payment proofs are waiting for assessment.</p></div>}
                 </div>
               </section>
               <section className="payment-recipients-panel" aria-labelledby="payment-recipients-title">
@@ -14968,6 +14997,7 @@ function App() {
                 <h2>My Requests</h2>
                 <p>Track document requests and see the latest updates from the barangay office.</p>
               </div>
+              <label className="resident-dashboard-search resident-my-requests-search"><span className="sr-only">Search My Requests by document or status</span><input type="search" value={residentMyRequestsSearch} onChange={(event) => setResidentMyRequestsSearch(event.target.value)} placeholder="Search documents or status" /></label>
               <div className="resident-request-heading-summary">
                 <span className="resident-request-count-pill">{residentInboxRequests.filter((request) => request.status !== 'Completed').length} requests</span>
                 {residentRequestUnreadCount > 0 && <span className="resident-request-updates-pill" aria-label={`${residentRequestUnreadCount} unread request updates`}>
@@ -14990,7 +15020,6 @@ function App() {
               }
               return activeRequests.length ? (
                   <div className="resident-inbox-page-list resident-my-requests-grid">
-                    <label className="resident-dashboard-search"><span className="sr-only">Search My Requests by document or status</span><input type="search" value={residentMyRequestsSearch} onChange={(event) => setResidentMyRequestsSearch(event.target.value)} placeholder="Search documents or status" /></label>
                     {visibleActiveRequests.map((request) => {
                       const statusLabel = residentStatusLabels[request.status] || request.status
                       const statusClass = request.status.toLowerCase().replace(/[^a-z]+/g, '-')
@@ -15277,15 +15306,15 @@ function App() {
                   <div className="resident-payment-side-panels">
                     <section className="resident-payment-records-panel" aria-labelledby="resident-payment-records-title">
                             <header><div><span className="section-number">PAYMENT RECORDS</span><h2 id="resident-payment-records-title">Your payments</h2><p>Review each payment, verification, cancellation, and any recorded refund.</p></div></header>
-                      <label className="resident-dashboard-search"><span className="sr-only">Search payment tracking by document or date</span><input type="search" value={residentPaymentTrackingSearch} onChange={(event) => setResidentPaymentTrackingSearch(event.target.value)} placeholder="Search document or date" /></label>
                       <div className="resident-payment-list">
-                        {filteredResidentPaymentRecords.map((request) => {
+                        {residentPaymentRecords.map((request) => {
                           const status = request.paymentStatus || 'Unpaid'
                           const linkedRequests = request.requests || [request]
                           const relatedPaymentUpdates = residentPaymentUpdateItems.filter((item) => (
                             linkedRequests.some((linkedRequest) => linkedRequest.id === item.requestId)
                           ))
                           const hasUnreadPaymentUpdate = relatedPaymentUpdates.some(isResidentUpdateUnread)
+                            || linkedRequests.some((linkedRequest) => isDocumentWorkflowUnviewed(linkedRequest, documentWorkflowViewedState))
                           const cancelledRequests = linkedRequests.filter((linkedRequest) => linkedRequest.status === 'Cancelled')
                           const refundedAmount = linkedRequests
                             .filter((linkedRequest) => linkedRequest.refundStatus === 'Refunded')
@@ -15295,6 +15324,7 @@ function App() {
                           return <details className={`resident-payment-record-item${request.awaitingPaymentSubmission ? ' awaiting-payment-submission' : ''}${hasUnreadPaymentUpdate ? ' has-unread-update' : ''}`} key={request.id} onToggle={(event) => {
                             if (event.currentTarget.open) {
                               markResidentUpdatesRead('payments', relatedPaymentUpdates.map((item) => item.id))
+                              markPaymentRequestsViewed(linkedRequests.filter((linkedRequest) => linkedRequest.paymentStatus === 'Paid'))
                             }
                           }}>
                             <summary className="resident-payment-record-summary">
@@ -15335,7 +15365,7 @@ function App() {
                             </div>
                           </details>
                         })}
-                        {!filteredResidentPaymentRecords.length && <p className="resident-search-empty">{residentPaymentRecords.length ? 'No payments match that document or date.' : 'No payment records yet.'}</p>}
+                        {!residentPaymentRecords.length && <p className="resident-search-empty">No payment records yet.</p>}
                         {!residentPaymentRequests.length && <div className="resident-inbox-no-requests"><h2>No payment requests yet</h2><p>Requests with a payment due or proof submitted will appear here. They are sent to the barangay office after you submit payment proof.</p><button type="button" className="check-button" onClick={() => setResidentDashboardSection('request-documents')}>Request a document</button></div>}
                       </div>
                     </section>
@@ -15708,9 +15738,11 @@ function App() {
               </section>
             ) : (
               <section className="resident-dashboard-section resident-dashboard-help">
-                <article><h2>Barangay office</h2><p>Visit the Barangay Bagong Bayan 1 Hall and ask for the Barangay Secretary.</p><p>Processing hours: {officialAvailability.find((official) => official.id === 'secretary')?.hours || 'Please check the latest barangay schedule.'}</p></article>
-                <article><h2>When contacting the office</h2><ul><li>Provide your full name and resident code.</li><li>Include your request reference number for document concerns.</li><li>For urgent public safety concerns, contact the appropriate local emergency service.</li></ul></article>
-                <p className="resident-profile-note">No phone number or email address is currently listed in the system. Please visit the barangay office for assistance.</p>
+                <article><h2>Contact Information</h2>
+                  {barangayContactInformation.phoneNumber && <p><strong>Phone number:</strong> {barangayContactInformation.phoneNumber}</p>}
+                  {barangayContactInformation.emailAddress && <p><strong>Email address:</strong> {barangayContactInformation.emailAddress}</p>}
+                  {barangayContactInformation.officeAddress && <p><strong>Office address:</strong> {barangayContactInformation.officeAddress}</p>}
+                </article>
               </section>
             )}
           </div>
