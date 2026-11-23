@@ -4149,7 +4149,7 @@ const residentNameFieldsFromFullName = (value) => {
   }
 }
 const residentRecordMatchesAccount = (record, resident) => {
-  const recordCode = normalizeResidentCode(record.residentCode || record.resident_code)
+  const recordCode = normalizeResidentCode(record.residentCode || record.resident_code || record.code)
   const currentCode = normalizeResidentCode(resident.code)
   const registeredName = record.resident || record.name || record.fullName || record.full_name || ''
   return recordCode
@@ -6553,7 +6553,11 @@ function App() {
 
   const archivedDocumentRequests = residentHistory
     .filter((entry) => entry.type === 'documentRequest' && entry.request)
-    .map((entry) => entry.request)
+    .map((entry) => ({
+      ...entry.request,
+      resident: entry.request.resident || entry.resident || '',
+      residentCode: entry.request.residentCode || entry.request.resident_code || entry.residentCode || entry.resident_code || entry.code || '',
+    }))
   const getRequestResidentName = (request) => {
     const certificateDetails = [
       ...Object.values(request.certificateData || {}),
@@ -9614,7 +9618,12 @@ function App() {
     setResidentDrafts((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['residentCode', 'resident_code']))
     setRegistrationRequests((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['assignedResidentCode', 'residentCode', 'resident_code']))
     setResidentProfileUpdateRequests((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['residentCode', 'resident_code']))
-    setResidentHistory((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['residentCode', 'resident_code']))
+    setResidentHistory((records) => records.map((record) => {
+      const updatedRecord = replaceResidentCodeInRecords([record], previousCode, newCode, ['residentCode', 'resident_code', 'code'])[0]
+      return record.request
+        ? { ...updatedRecord, request: replaceResidentCodeInRecords([record.request], previousCode, newCode, ['residentCode', 'resident_code'])[0] }
+        : updatedRecord
+    }))
     setArchivedResidents((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['code', 'residentCode', 'resident_code']))
     setIssuedDocuments((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['residentCode', 'resident_code']))
     setResidentCodeRecoveryRequests((records) => replaceResidentCodeInRecords(records, previousCode, newCode, ['matchedResidentCode', 'residentCode']))
