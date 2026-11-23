@@ -12485,6 +12485,24 @@ function App() {
     })
   }
 
+  const setAvailabilityDays = (officialId, index, days) => {
+    setOfficialAvailability((currentAvailability) => {
+      const currentOfficial = currentAvailability.find((official) => official.id === officialId)
+      const nextOfficial = currentOfficial
+        ? { ...currentOfficial, days: [...new Set(days)].sort((first, second) => first - second) }
+        : {
+          id: officialId,
+          name: officialProfiles[index]?.name || '',
+          role: officialProfiles[index]?.role || '',
+          days: [...new Set(days)].sort((first, second) => first - second),
+          hours: 'Schedule not set',
+        }
+      return currentOfficial
+        ? currentAvailability.map((official) => official.id === officialId ? nextOfficial : official)
+        : [...currentAvailability, nextOfficial]
+    })
+  }
+
   const updateAvailabilityHours = (officialId, index, hours) => {
     setOfficialAvailability((currentAvailability) => {
       const currentOfficial = currentAvailability.find((official) => official.id === officialId)
@@ -13796,11 +13814,18 @@ function App() {
                   <button type="button" className="official-details-toggle" aria-haspopup="dialog" onClick={() => setExpandedOfficialIndex(index)}>Edit details<span aria-hidden="true">↗</span></button>
                 </div>
                 <div className="official-schedule-editor">
-                  <strong>Weekly schedule</strong>
+                  <strong>Dates &amp; shared time</strong>
+                  <small>Choose multiple days, then set their hours once.</small>
+                  <div className="official-schedule-presets" role="group" aria-label="Quick select schedule days">
+                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, [1, 2, 3, 4, 5])}>Weekdays</button>
+                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, [0, 6])}>Weekend</button>
+                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, weekDaysMondayFirst.map(({ day }) => day))}>Every day</button>
+                    <button type="button" onClick={() => setAvailabilityDays(availabilityId, index, [])}>Clear</button>
+                  </div>
                   <div className="day-selector" role="group" aria-label={`${official.role || official.name} available days`}>
                     {weekDaysMondayFirst.map(({ label, day }) => <label key={label}><input type="checkbox" checked={Boolean(schedule?.days?.includes(day))} onChange={() => toggleAvailabilityDay(availabilityId, day)} /><span>{label}</span></label>)}
                   </div>
-                  <label className="official-schedule-hours"><span>Office hours / time</span><input type="text" value={schedule?.hours === 'Schedule not set' ? '' : schedule?.hours || ''} onChange={(event) => updateAvailabilityHours(availabilityId, index, event.target.value)} placeholder="e.g. 8:00 AM - 5:00 PM" /></label>
+                  <label className="official-schedule-hours"><span>Shared time for selected days</span><input type="text" value={schedule?.hours === 'Schedule not set' ? '' : schedule?.hours || ''} onChange={(event) => updateAvailabilityHours(availabilityId, index, event.target.value)} placeholder="e.g. 8:00 AM - 5:00 PM" /></label>
                   <div className="official-schedule-preview" aria-live="polite">
                     <span>Resident-facing schedule</span>
                     <strong>{days || 'Days not set'} · {hours || 'Time not set'}</strong>
@@ -13980,7 +14005,7 @@ function App() {
               </div>
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
-              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident records</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
+              <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident Information</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
               <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => String(first.name || first.fullName || '').localeCompare(String(second.name || second.fullName || ''), 'en', { sensitivity: 'base' })).map((resident) => <tr key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
