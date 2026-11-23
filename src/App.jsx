@@ -1567,13 +1567,12 @@ const matchEditedCertificateFields = (detectedFields, previousFields) => detecte
   }
 })
 
-function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificate, onDownloadPdf, onPrintPdf, savedCertificateDownloadError = '', copyCount = 1, reviewOnly = false, large = false }) {
+function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificate, onPrintPdf, savedCertificateDownloadError = '', copyCount = 1, reviewOnly = false, large = false }) {
   const panelRef = useRef(null)
   const previewContainer = useRef(null)
   const scrollContainer = useRef(null)
   const [previewError, setPreviewError] = useState('')
   const [isRendered, setIsRendered] = useState(false)
-  const [isSavingPdf, setIsSavingPdf] = useState(false)
   const [isPrintingPdf, setIsPrintingPdf] = useState(false)
   const [zoom, setZoom] = useState(100)
   const [isFitToPage, setIsFitToPage] = useState(true)
@@ -1671,20 +1670,6 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
     }
   }, [document, isPrintingPdf, onPrintPdf])
 
-  const savePdf = useCallback(async () => {
-    if (!onDownloadPdf || isSavingPdf) return
-    setIsSavingPdf(true)
-    setPreviewError('')
-    try {
-      await onDownloadPdf(document, previewContainer.current)
-    } catch (error) {
-      console.error(`Unable to save the ${document} PDF.`, error)
-      setPreviewError(error instanceof Error ? error.message : 'The certificate PDF could not be saved.')
-    } finally {
-      setIsSavingPdf(false)
-    }
-  }, [document, isSavingPdf, onDownloadPdf])
-
   const previewPanel = (
     <section className={`docx-preview-panel${large ? ' certificate-filled-preview-modal certificate-template-preview-modal' : ''}`} ref={panelRef} aria-labelledby="docx-preview-title" role={large ? 'dialog' : undefined} aria-modal={large ? 'true' : undefined}>
       <div className="docx-preview-toolbar">
@@ -1706,13 +1691,9 @@ function CertificatePreview({ blob, document, onClose, onDownloadSavedCertificat
       <p className="docx-original-template-note">{reviewOnly ? 'This preview uses the saved certificate information and original document template.' : `Preview uses the original certificate template and confirmed information. The request includes ${copyCount} ${copyCount === 1 ? 'copy' : 'copies'}.`}</p>
       <div className="docx-preview-scroll" ref={scrollContainer} style={{ visibility: isRendered ? 'visible' : 'hidden' }}><div className="docx-preview-pages" style={large ? { zoom: zoom / 100 } : undefined} ref={previewContainer} /></div>
       {large && !reviewOnly && <footer className="docx-preview-print-footer">
-        <div><strong>Save or print at the template’s original size</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Original page dimensions and margins are preserved. Print uses the system print dialog.</span></div>
+        <div><strong>Print at the template’s original size</strong><span>{copyCount} {copyCount === 1 ? 'copy' : 'copies'} · Original page dimensions and margins are preserved. Use Save as PDF in the document output choices to download directly.</span></div>
         <div className="certificate-preview-output-actions">
-          <button type="button" onClick={savePdf} disabled={!isRendered || isSavingPdf || isPrintingPdf}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
-            <span>{isSavingPdf ? 'Saving PDF…' : 'Save as PDF'}</span>
-          </button>
-          <button type="button" onClick={printPreview} disabled={!isRendered || isPrintingPdf || isSavingPdf}>
+          <button type="button" onClick={printPreview} disabled={!isRendered || isPrintingPdf}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3.5h10V8M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4.5 9h15a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H18M7 14h10v6.5H7zM17.5 11.5h.01" /></svg>
             <span>{isPrintingPdf ? 'Preparing print…' : 'Print'}</span>
           </button>
@@ -3194,7 +3175,23 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
   const downloadSelectedOutput = async (document) => {
     if (isPreparingPreview) return
     if (outputFormat === 'pdf') {
-      await preparePreview(document, certificateDataByDocument[document])
+      saveCertificateReview(request)
+      setIsPreparingPreview(true)
+      setPreviewError('')
+      const staging = window.document.createElement('div')
+      staging.style.cssText = 'position:fixed;left:-100000px;top:0;width:max-content;visibility:hidden;pointer-events:none;'
+      window.document.body.appendChild(staging)
+      try {
+        const blob = await createFilledCertificateDocx(document, certificateDataByDocument[document], customTemplates)
+        await renderCertificateDocxPages(staging, blob, document)
+        await downloadApprovedCertificatePdf(request, document, staging)
+      } catch (error) {
+        console.error(`Unable to download the ${document} PDF.`, error)
+        setPreviewError(error instanceof Error ? error.message : 'The certificate PDF could not be saved.')
+      } finally {
+        staging.remove()
+        setIsPreparingPreview(false)
+      }
       return
     }
 
@@ -3249,7 +3246,7 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
             const processingFields = getCertificateTemplateFields(document, customTemplates)
             const missingFields = processingFields.filter((field) => !hasCertificateFieldValue(certificateData, field))
             const fieldsComplete = missingFields.length === 0
-            const outputLabel = outputFormat === 'pdf' ? 'Print / Save as PDF' : 'Download Word document'
+            const outputLabel = outputFormat === 'pdf' ? 'Save as PDF' : 'Download Word document'
 
             return (
               <article className="approved-document" key={document}>
@@ -3266,7 +3263,7 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
                   <label className="certificate-output-format">
                     Output format
                     <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)} disabled={isPreparingPreview}>
-                      <option value="pdf">Print / Save as PDF</option>
+                    <option value="pdf">Save as PDF</option>
                       <option value="word">Download as Word (.docx)</option>
                     </select>
                   </label>
@@ -3275,7 +3272,7 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
                     <strong className="certificate-copy-count-display"><span>{copyCount}</span><small>{copyCount === 1 ? 'copy' : 'copies'} · fixed from request</small></strong>
                   </div>
                 </div>
-                <p className="certificate-output-helper">{outputFormat === 'word' ? 'Word downloads one filled template. The requested copy count remains saved with the request.' : `${copyCount} ${copyCount === 1 ? 'copy' : 'copies'} will open in the browser print dialog. Choose Save as PDF and Actual size to preserve the template.`}</p>
+                <p className="certificate-output-helper">{outputFormat === 'word' ? 'Word downloads one filled template. The requested copy count remains saved with the request.' : `${copyCount} ${copyCount === 1 ? 'copy' : 'copies'} will download directly as a PDF that matches the document preview.`}</p>
                 <div className="certificate-output-actions">
                   <button
                     type="button"
@@ -3312,7 +3309,6 @@ function ApprovedCertificateEditor({ request, certificateDownloadError, getCurre
         document={previewDocument}
         copyCount={printCopyCount}
         savedCertificateDownloadError={certificateDownloadError}
-        onDownloadPdf={(selectedDocument, previewNode) => downloadApprovedCertificatePdf(request, selectedDocument, previewNode)}
         onPrintPdf={(selectedDocument, previewNode) => printApprovedCertificatePdf(request, selectedDocument, previewNode)}
         onClose={() => { setPreviewBlob(null); setPreviewDocument(null); setPreviewCertificateData(null) }}
         large
@@ -9542,7 +9538,7 @@ function App() {
       : Number.isInteger(Number(residentId)) && Number(residentId) > 0
     if (!response.ok || !result.success || !result.data?.delivery_method || result.data?.delivery_status !== 'Sent'
       || !validResidentId
-      || typeof newResidentCode !== 'string' || !/^BB1-[A-Z0-9]{1,8}-\d{3}$/.test(newResidentCode)
+      || typeof newResidentCode !== 'string' || !/^BB1-[A-Z]{2,3}-\d{3}$/.test(newResidentCode)
       || newResidentCode.toUpperCase() === residentCode.trim().toUpperCase()) {
       throw new Error(result.message || 'The resident login code could not be sent.')
     }

@@ -2154,7 +2154,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .official-dashboard.dark-mode .docx-preview-actions button { border-color: #607464; background: #18221b; color: #edf4ed; }
 @media (max-width: 720px) {
   .docx-preview-print-footer { align-items: stretch; flex-direction: column; }
-  .certificate-preview-output-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .certificate-preview-output-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
   .certificate-preview-output-actions button { width: 100%; }
   .approved-document-panel { padding: 13px; }
   .processing-confirmed-information { padding: 14px; }
@@ -11568,7 +11568,7 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 
 @media (max-width: 720px) {
   .docx-preview-print-footer { align-items: stretch; flex-direction: column; }
-  .certificate-preview-output-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .certificate-preview-output-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
   .certificate-preview-output-actions button { width: 100%; }
   .document-requests-panel .submission-request-group .request-meta {
     display: grid;

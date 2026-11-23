@@ -36,42 +36,30 @@ function sendRecoveryEmail(string $recipient, string $recipientName, string $sub
     }
 
     $senderName = trim((string) backendEnv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I";
-    $transportAttempts = [
-        ["smtp.gmail.com", 587, PHPMailer::ENCRYPTION_STARTTLS],
-        ["smtp.gmail.com", 465, PHPMailer::ENCRYPTION_SMTPS],
-    ];
-    $lastError = null;
-    foreach ($transportAttempts as [$host, $port, $secure]) {
-        try {
-            $mail = new PHPMailer(true);
-            $mail->isSMTP();
-            $mail->Host = $host;
-            $mail->SMTPAuth = true;
-            $mail->Username = $username;
-            $mail->Password = $appPassword;
-            $mail->SMTPSecure = $secure;
-            $mail->Port = $port;
-            $mail->Timeout = 12;
-            $mail->SMTPKeepAlive = false;
-            $mail->CharSet = "UTF-8";
-            $mail->setFrom($username, $senderName);
-            $mail->addAddress($recipient, $recipientName);
-            $mail->Subject = $subject;
-            $mail->Body = $body;
-            $mail->send();
-            return;
-        } catch (Throwable $error) {
-            $lastError = $error;
-            error_log("Resident recovery email delivery failed on port {$port}: " . $error->getMessage());
-        }
+    try {
+        $mail = new PHPMailer(true);
+        $mail->isSMTP();
+        $mail->Host = "smtp.gmail.com";
+        $mail->SMTPAuth = true;
+        $mail->Username = $username;
+        $mail->Password = $appPassword;
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+        $mail->Timeout = 20;
+        $mail->SMTPKeepAlive = false;
+        $mail->CharSet = "UTF-8";
+        $mail->setFrom($username, $senderName);
+        $mail->addAddress($recipient, $recipientName);
+        $mail->Subject = $subject;
+        $mail->Body = $body;
+        $mail->send();
+    } catch (Throwable $error) {
+        error_log("Resident recovery email delivery failed on Gmail SMTP port 587: " . $error->getMessage());
+        throw new RecoveryDeliveryException(
+            "Gmail did not accept the recovery email over SMTP port 587. Check the Gmail username and app password configured on the hosting account.",
+            502
+        );
     }
-
-    throw new RecoveryDeliveryException(
-        $lastError instanceof Throwable
-            ? "Gmail could not deliver the recovery email. Check the configured Gmail address and app password."
-            : "Gmail could not deliver the recovery email.",
-        502
-    );
 }
 
 function sendRecoveryCodeByEmail(string $recipient, string $residentName, string $residentCode): void
@@ -197,35 +185,40 @@ function ensureRecoveryResidentCodeSequence(PDO $pdo): void
     $pdo->exec("INSERT IGNORE INTO resident_code_sequence (id, next_number) VALUES (1, 1)");
 }
 
-function createRecoveryResidentCode(PDO $pdo, string $previousCode, array $directoryRecords): string
+function createRecoveryResidentCode(PDO $pdo, array $directoryRecords, array $archivedRecords): string
 {
-    if (!preg_match('/^(BB1-[A-Z0-9]{1,8})-\d{3}$/', $previousCode, $match)) {
-        throw new RecoveryDeliveryException("The existing resident code cannot be replaced safely.", 409);
-    }
-    $prefix = $match[1];
     $sequenceStmt = $pdo->query("SELECT next_number FROM resident_code_sequence WHERE id = 1 FOR UPDATE");
     $number = max(1, (int) $sequenceStmt->fetchColumn());
     $databaseCodes = $pdo->query("SELECT resident_code FROM residents FOR UPDATE")->fetchAll(PDO::FETCH_COLUMN);
     $usedCodes = [];
     foreach ($databaseCodes as $databaseCode) {
         $normalizedCode = strtoupper(trim((string) $databaseCode));
-        if (str_starts_with($normalizedCode, $prefix . "-")) $usedCodes[$normalizedCode] = true;
+        if ($normalizedCode !== "") $usedCodes[$normalizedCode] = true;
     }
-    foreach ($directoryRecords as $record) {
+    foreach (array_merge($directoryRecords, $archivedRecords) as $record) {
         if (is_array($record)) {
             $existingCode = getResidentCodeFromRecord($record);
             if ($existingCode !== "") $usedCodes[$existingCode] = true;
         }
     }
-    for (; $number >= 1 && $number <= 999; $number++) {
-        $candidate = sprintf("%s-%03d", $prefix, $number);
+
+    $number = (($number - 1) % 999) + 1;
+    for ($attempt = 0; $attempt < 5000; $attempt++) {
+        $letterCount = random_int(2, 3);
+        $letters = "";
+        for ($index = 0; $index < $letterCount; $index++) {
+            $letters .= chr(random_int(65, 90));
+        }
+        $candidate = sprintf("BB1-%s-%03d", $letters, $number);
         if (!isset($usedCodes[$candidate])) {
+            $nextNumber = $number === 999 ? 1 : $number + 1;
             $updateSequence = $pdo->prepare("UPDATE resident_code_sequence SET next_number = ? WHERE id = 1");
-            $updateSequence->execute([$number + 1]);
+            $updateSequence->execute([$nextNumber]);
             return $candidate;
         }
+        $number = $number === 999 ? 1 : $number + 1;
     }
-    throw new RecoveryDeliveryException("No unused resident code is available in the current sequence.", 409);
+    throw new RecoveryDeliveryException("A unique resident code could not be generated. Try approving this request again.", 409);
 }
 
 function updateResidentCodeInAppState(PDO $pdo, string $previousCode, string $newCode): void
@@ -382,6 +375,7 @@ try {
     $residentStmt->execute([$residentCode]);
     $resident = $residentStmt->fetch(PDO::FETCH_ASSOC);
     $directoryRecords = loadAppStateRecordsForUpdate($pdo, "bb1-resident-records");
+    $archivedRecords = loadAppStateRecordsForUpdate($pdo, "bb1-archived-residents");
     $isDatabaseResident = is_array($resident);
 
     if ($isDatabaseResident) {
@@ -440,13 +434,11 @@ try {
         $pdo->rollBack();
         respond(409, ["success" => false, "message" => "The resident name is incomplete."]);
     }
-    if (!preg_match('/^(BB1-[A-Z0-9]{1,8})-\d{3}$/', $previousCode, $codePrefixMatch)) {
+    if (!preg_match('/^BB1-[A-Z0-9]{1,8}-\d{3}$/', $previousCode)) {
         $pdo->rollBack();
         respond(409, ["success" => false, "message" => "The existing resident code cannot be rotated safely."]);
     }
-    $codePrefix = $codePrefixMatch[1];
-
-    $newCode = createRecoveryResidentCode($pdo, $previousCode, $directoryRecords);
+    $newCode = createRecoveryResidentCode($pdo, $directoryRecords, $archivedRecords);
 
     // Deliver first so a failed email leaves the previous working code and records unchanged.
     sendRecoveryCodeByEmail($destination, trim($firstName . " " . $lastName), $newCode);
