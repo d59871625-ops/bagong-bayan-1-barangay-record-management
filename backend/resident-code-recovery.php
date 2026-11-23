@@ -1,13 +1,54 @@
 <?php
 
-require_once __DIR__ . "/vendor/autoload.php";
-require_once __DIR__ . "/db.php";
-require_once __DIR__ . "/auth.php";
-require_once __DIR__ . "/resident-request-storage.php";
-
 use PHPMailer\PHPMailer\PHPMailer;
 
+header("Content-Type: application/json; charset=UTF-8");
 header("Cache-Control: no-store");
+ob_start();
+register_shutdown_function(static function (): void {
+    $error = error_get_last();
+    if (!$error || !in_array($error["type"], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+        return;
+    }
+
+    error_log(sprintf(
+        "Resident code recovery bootstrap fatal: type=%d file=%s line=%d message=%s",
+        $error["type"],
+        basename((string) ($error["file"] ?? "unknown")),
+        (int) ($error["line"] ?? 0),
+        preg_replace('/[\r\n]+/', ' ', (string) ($error["message"] ?? "unknown"))
+    ));
+    if (!headers_sent()) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+    }
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    echo json_encode([
+        "success" => false,
+        "message" => "The resident recovery service failed during startup. Check the backend PHP error log.",
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+});
+
+try {
+    require_once __DIR__ . "/vendor/autoload.php";
+    require_once __DIR__ . "/db.php";
+    require_once __DIR__ . "/auth.php";
+    require_once __DIR__ . "/resident-request-storage.php";
+} catch (Throwable $error) {
+    error_log("Resident code recovery bootstrap error: " . get_class($error) . " " . $error->getMessage());
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    http_response_code(500);
+    header("Content-Type: application/json; charset=UTF-8");
+    echo json_encode([
+        "success" => false,
+        "message" => "The resident recovery service could not start. Check the backend PHP error log.",
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
 
 class RecoveryDeliveryException extends RuntimeException
 {
