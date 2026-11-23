@@ -61,7 +61,9 @@ jobs:
           php -l backend/submit-resident-code-recovery.php
           php -l backend/resident-code-recovery.php
           php -l backend/pending-registrations.php
+          php -l backend/approve-registration.php
           php -l backend/submit-resident-registration.php
+          php -l backend/registration-reference.php
           php -l backend/restore-app-state.php
           php -l backend/registration-application-storage.php
 

@@ -27,6 +27,8 @@ require_once __DIR__ . "/registration-application-storage.php";
 $admin = authenticateUser($pdo, ["admin", "official"]);
 
 try {
+    ensureRegistrationApplicationDetailsTable($pdo);
+    ensureRegistrationReferenceAccessTable($pdo);
     $versionStatement = $pdo->query("
         SELECT id, status, created_at, reviewed_at, rejection_reason
         FROM registration_requests
@@ -52,7 +54,6 @@ try {
         exit;
     }
 
-    ensureRegistrationApplicationDetailsTable($pdo);
     $stmt = $pdo->query("
         SELECT
             id,
@@ -94,28 +95,31 @@ try {
 
     $historyStatement = $pdo->query("
         SELECT
-            id,
-            first_name,
-            middle_name,
-            last_name,
-            suffix,
-            email,
-            date_of_birth,
-            sex,
-            civil_status,
-            contact_number,
-            house_no_street,
-            purok,
-            barangay,
-            city_municipality,
-            province,
-            status,
-            created_at,
-            reviewed_at,
-            rejection_reason
+            registration_requests.id,
+            registration_requests.first_name,
+            registration_requests.middle_name,
+            registration_requests.last_name,
+            registration_requests.suffix,
+            registration_requests.email,
+            registration_requests.date_of_birth,
+            registration_requests.sex,
+            registration_requests.civil_status,
+            registration_requests.contact_number,
+            registration_requests.house_no_street,
+            registration_requests.purok,
+            registration_requests.barangay,
+            registration_requests.city_municipality,
+            registration_requests.province,
+            registration_requests.status,
+            registration_requests.created_at,
+            registration_requests.reviewed_at,
+            registration_requests.rejection_reason,
+            reference_access.resident_code AS assigned_resident_code
         FROM registration_requests
-        WHERE status IN ('approved', 'rejected')
-        ORDER BY created_at DESC, id DESC
+        LEFT JOIN registration_reference_access AS reference_access
+            ON reference_access.registration_id = registration_requests.id
+        WHERE registration_requests.status IN ('approved', 'rejected')
+        ORDER BY registration_requests.created_at DESC, registration_requests.id DESC
     ");
     $history = $historyStatement->fetchAll(PDO::FETCH_ASSOC);
 

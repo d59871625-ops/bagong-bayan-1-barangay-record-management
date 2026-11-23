@@ -43,6 +43,16 @@ function ensureRegistrationApplicationDetailsTable(PDO $pdo): void
     ");
 }
 
+function ensureRegistrationReferenceAccessTable(PDO $pdo): void
+{
+    $pdo->exec("CREATE TABLE IF NOT EXISTS registration_reference_access (
+        registration_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        resident_code VARCHAR(32) NULL,
+        declined_notice_acknowledged_at TIMESTAMP NULL DEFAULT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+}
+
 function decodeRegistrationApplicationJson(?string $value, string $field): array
 {
     $decoded = json_decode((string) $value, true);

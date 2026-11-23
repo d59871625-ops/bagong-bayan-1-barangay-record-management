@@ -3860,6 +3860,7 @@ const mapBackendRegistrationRequest = (application) => {
     status: backendStatus === 'approved' ? 'Approved' : ['rejected', 'declined'].includes(backendStatus) ? 'Declined' : 'Pending',
     reviewedAt: application.reviewed_at || '',
     rejectionReason: application.rejection_reason || '',
+    assignedResidentCode: application.assigned_resident_code || '',
     data,
     files: application.application_data
       ? {
@@ -8550,9 +8551,57 @@ function App() {
   }
 
   const checkRegistrationReference = async (enteredCode) => {
+    if (/^DB-REG-/i.test(enteredCode)) {
+      try {
+        const response = await fetchWithTimeout(`${BACKEND_API_URL}/registration-reference.php`, {
+          method: 'POST', cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'lookup', reference: enteredCode, name: {
+            first_name: residentName.firstName,
+            middle_name: residentName.middleName,
+            last_name: residentName.lastName,
+            suffix: residentName.suffix,
+          } }),
+        })
+        const result = await response.json()
+        if (result.data?.status === 'used') {
+          setResidentStatus('registration-reference-used')
+          return true
+        }
+        if (!response.ok || !result.success || !result.data) {
+          if (response.status === 404) {
+            setResidentStatus('not-found')
+            return true
+          }
+          throw new Error(result.message || 'Unable to verify this application reference right now.')
+        }
+        const requestId = result.data.reference
+        if (result.data.status === 'Declined') {
+          setRegistrationReferenceNotice(null)
+          openRegistrationCommunity({ kind: 'declined', requestId, status: 'Declined',
+            message: result.data.rejection_reason || 'Sorry, your registration was not approved. Please contact the barangay office for more information.' })
+          return true
+        }
+        if (result.data.status === 'Approved') {
+          setRegistrationReferenceNotice(null)
+          openRegistrationCommunity({ kind: 'approved', requestId, status: 'Approved',
+            code: result.data.resident_code,
+            message: 'Your registration has been approved. Your assigned resident code is shown below. Use this code to log in.' })
+          return true
+        }
+        openRegistrationCommunity({ kind: 'pending', requestId, status: 'Pending',
+          message: 'Your application is still under review. You can visit Community while you wait; other resident services will be available after approval.' })
+        return true
+      } catch (error) {
+        console.error('Unable to verify the application reference.', error)
+        setResidentLoginError(error.message || 'Unable to verify this application reference right now. Please try again.')
+        return true
+      }
+    }
+
     let availableRequests = registrationRequests
     let refreshFailed = false
-    if (/^(DB-)?REG-/i.test(enteredCode)) {
+    if (/^DB-REG-/i.test(enteredCode)) {
       try {
         const response = await fetchWithTimeout(API_URL, { cache: 'no-store' })
         if (!response.ok) throw new Error(`Registration status refresh failed with status ${response.status}.`)
@@ -8645,11 +8694,45 @@ function App() {
 
   const acknowledgeRegistrationReferenceNotice = async () => {
     if (!registrationReferenceNotice?.requestId) return
+    const closesDeclinedAccount = registrationReferenceNotice.kind === 'declined'
+    if (closesDeclinedAccount && /^DB-REG-/i.test(registrationReferenceNotice.requestId)) {
+      try {
+        const response = await fetchWithTimeout(`${BACKEND_API_URL}/registration-reference.php`, {
+          method: 'POST', cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'acknowledge', reference: registrationReferenceNotice.requestId, name: {
+            first_name: residentName.firstName,
+            middle_name: residentName.middleName,
+            last_name: residentName.lastName,
+            suffix: residentName.suffix,
+          } }),
+        })
+        const result = await response.json()
+        if (!response.ok || !result.success) throw new Error(result.message || 'The notice could not be acknowledged.')
+        setRegistrationReferenceNotice(null)
+        setResidentName((currentName) => ({ ...currentName, code: '' }))
+        setResidentStatus('registration-reference-used')
+        setRegistrationCommunityOnlyAccess(false)
+        setShowResidentInboxPage(false)
+        setShowResidentCheck(true)
+        setInboxAccessMode(false)
+        setShowDocumentOptions(false)
+        resetResidentSyncConnection()
+        setResidentToken('')
+        setAuthenticatedResidentProfile(null)
+        setSelectedInboxRequestId(null)
+        setResidentLoginError('')
+        return
+      } catch (error) {
+        console.error('Unable to persist the declined registration notice.', error)
+        setResidentLoginError(error.message || 'The notice could not be saved. Please try again.')
+        return
+      }
+    }
     if (!isDatabaseConnected || !officialBackendToken) {
       setResidentLoginError('The shared database is unavailable. This notice was not changed; please try again when the connection is restored.')
       return
     }
-    const closesDeclinedAccount = registrationReferenceNotice.kind === 'declined'
     const dismissedAt = new Date().toISOString()
     const nextRequests = registrationRequests.map((request) => request.id === registrationReferenceNotice.requestId
       ? { ...request, referenceNoticeDismissedAt: dismissedAt, updatedAt: dismissedAt }
@@ -9994,7 +10077,7 @@ function App() {
           ...(status === 'Declined' ? { rejectionReason: registrationAdminNote.trim() } : {}),
         }
         : current)
-      if (status === 'Declined') {
+      if (request.backendRegistrationId) {
         await saveDatabaseRecords({
           [registrationRequestsStorageKey]: nextRequests,
         }, officialBackendToken, null, fastSync)

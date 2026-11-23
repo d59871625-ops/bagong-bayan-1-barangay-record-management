@@ -28,6 +28,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/registration-application-storage.php";
 
 $admin = authenticateUser($pdo, ["admin", "official"]);
 
@@ -54,6 +55,7 @@ if (!$registrationId) {
 }
 
 try {
+    ensureRegistrationReferenceAccessTable($pdo);
     $pdo->beginTransaction();
 
     $requestStmt = $pdo->prepare("
@@ -254,6 +256,10 @@ try {
         $admin["id"],
         $registrationId
     ]);
+
+    $referenceAccessStmt = $pdo->prepare("INSERT INTO registration_reference_access (registration_id, resident_code)
+        VALUES (?, ?) ON DUPLICATE KEY UPDATE resident_code = VALUES(resident_code)");
+    $referenceAccessStmt->execute([$registrationId, $residentCode]);
 
     $historyStmt = $pdo->prepare("
         INSERT INTO resident_history (
