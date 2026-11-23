@@ -180,6 +180,8 @@ function residentSyncGetDataEtag(PDO $pdo): string
 {
     $keys = [
         "bb1-resident-history",
+        "bb1-issued-documents",
+        "bb1-resident-records",
         "bb1-resident-request-drafts",
         "bb1-resident-code-recovery-requests",
         "bb1-resident-profile-update-requests",
@@ -217,6 +219,78 @@ function residentSyncGetDataEtag(PDO $pdo): string
     }
 
     return '"' . hash_final($etagContext) . '"';
+}
+
+function residentSyncReadOwnedIssuedDocuments(
+    PDO $pdo,
+    int $residentId,
+    string $residentCode,
+    string $fullName
+): array {
+    $records = residentSyncReadState($pdo, "bb1-issued-documents", []);
+    $residentRecords = residentSyncReadState($pdo, "bb1-resident-records", []);
+    $recoveryRecords = residentSyncReadState($pdo, "bb1-resident-code-recovery-requests", []);
+    if (!is_array($records) || !is_array($residentRecords) || !is_array($recoveryRecords)) {
+        throw new RuntimeException("Saved issued document records are not valid lists.");
+    }
+
+    $identityIds = [(string) $residentId => true];
+    $identityCodes = [strtoupper(trim($residentCode)) => true];
+    $identityNames = [residentSyncNameKey($fullName) => true];
+    foreach ($residentRecords as $profile) {
+        if (!($profile instanceof stdClass)) {
+            continue;
+        }
+        $profileCode = strtoupper(trim((string) ($profile->code ?? $profile->residentCode ?? "")));
+        $profileId = trim((string) ($profile->id ?? ""));
+        if ($profileCode !== strtoupper(trim($residentCode)) && $profileId !== (string) $residentId) {
+            continue;
+        }
+        if ($profileId !== "") {
+            $identityIds[$profileId] = true;
+            $identityCodes[strtoupper($profileId)] = true;
+        }
+        if ($profileCode !== "") {
+            $identityCodes[$profileCode] = true;
+        }
+        $profileName = (string) ($profile->name ?? $profile->fullName ?? "");
+        if (residentSyncNameKey($profileName) !== "") {
+            $identityNames[residentSyncNameKey($profileName)] = true;
+        }
+    }
+    foreach ($recoveryRecords as $recovery) {
+        if (!($recovery instanceof stdClass)) {
+            continue;
+        }
+        $matchedId = trim((string) ($recovery->matchedResidentId ?? ""));
+        $matchedCode = strtoupper(trim((string) ($recovery->matchedResidentCode ?? "")));
+        if (!isset($identityIds[$matchedId]) && !isset($identityCodes[$matchedCode])) {
+            continue;
+        }
+        foreach ([$recovery->matchedResidentCode ?? "", $recovery->residentCode ?? ""] as $alias) {
+            $alias = strtoupper(trim((string) $alias));
+            if ($alias !== "") {
+                $identityCodes[$alias] = true;
+            }
+        }
+    }
+
+    return array_values(array_filter($records, static function ($record) use ($identityIds, $identityCodes, $identityNames): bool {
+        if (!($record instanceof stdClass)) {
+            return false;
+        }
+        $recordId = trim((string) ($record->residentId ?? $record->resident_id ?? ""));
+        if ($recordId !== "" && isset($identityIds[$recordId])) {
+            return true;
+        }
+        $recordCode = strtoupper(trim((string) ($record->residentCode ?? $record->resident_code ?? $record->code ?? "")));
+        if ($recordCode !== "" && isset($identityCodes[$recordCode])) {
+            return true;
+        }
+        $recordName = (string) ($record->resident ?? $record->name ?? $record->fullName ?? "");
+        $nameKey = residentSyncNameKey($recordName);
+        return $nameKey !== "" && isset($identityNames[$nameKey]);
+    }));
 }
 
 function residentSyncPendingSubmissions(
@@ -406,6 +480,7 @@ function residentSyncNewRequest(
     stdClass $incoming,
     string $residentCode,
     string $fullName,
+    int $residentId,
     array $allowedDocuments,
     array $documentFees,
     string $now
@@ -444,6 +519,7 @@ function residentSyncNewRequest(
     $request->submissionId = residentSyncString($incoming, "submissionId", 100) ?: $id;
     $request->resident = $fullName;
     $request->residentCode = $residentCode;
+    $request->residentId = $residentId;
     $request->documents = array_values(array_unique($validatedDocuments));
     $request->copyCount = $copyCount;
     $request->unitFeeAmount = $unitFeeCents / 100;
@@ -500,6 +576,7 @@ function residentSyncNewPaymentDraft(
     stdClass $incoming,
     string $residentCode,
     string $fullName,
+    int $residentId,
     array $allowedDocuments,
     array $documentFees,
     string $now
@@ -513,6 +590,7 @@ function residentSyncNewPaymentDraft(
         $incoming,
         $residentCode,
         $fullName,
+        $residentId,
         $allowedDocuments,
         $documentFees,
         $now
@@ -636,6 +714,7 @@ try {
     bb1EnsureSyncRevisionTable($pdo);
     $residentStatement = $pdo->prepare("
         SELECT
+            r.id AS resident_id,
             r.resident_code,
             r.first_name,
             r.middle_name,
@@ -655,6 +734,7 @@ try {
         residentSyncRespond(404, ["success" => false, "message" => "Active resident profile not found."]);
     }
 
+    $residentId = (int) $resident["resident_id"];
     $residentCode = strtoupper(trim((string) $resident["resident_code"]));
     $fullName = trim((string) $resident["full_name"]);
     if ($residentCode === "" || $fullName === "") {
@@ -674,6 +754,7 @@ try {
         $requestDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-request-drafts", $residentCode, $fullName);
         $recoveryRequests = residentSyncReadOwnedState($pdo, "bb1-resident-code-recovery-requests", $residentCode, $fullName);
         $profileUpdateRequests = residentSyncReadOwnedState($pdo, "bb1-resident-profile-update-requests", $residentCode, $fullName);
+        $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName);
         $requests = residentSyncOwnedRecords(
             bb1MergeResidentRequestChanges(
                 residentSyncReadOwnedState($pdo, "bb1-resident-requests", $residentCode, $fullName),
@@ -692,6 +773,7 @@ try {
                 "recoveryRequests" => $recoveryRequests,
                 "profileUpdateRequests" => $profileUpdateRequests,
                 "history" => $history,
+                "issuedDocuments" => $issuedDocuments,
             ],
         ]);
     }
@@ -1007,6 +1089,7 @@ try {
                 $incoming,
                 $residentCode,
                 $fullName,
+                $residentId,
                 $allowedDocuments,
                 $documentFees,
                 $now
@@ -1041,6 +1124,7 @@ try {
                 $incoming,
                 $residentCode,
                 $fullName,
+                $residentId,
                 $allowedDocuments,
                 $documentFees,
                 $now
@@ -1168,6 +1252,7 @@ try {
             $residentCode,
             $fullName
         );
+        $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName);
         header("ETag: " . residentSyncGetDataEtag($pdo));
         residentSyncRespond(200, [
             "success" => true,
@@ -1178,6 +1263,7 @@ try {
                 "recoveryRequests" => $ownRecoveryRequests,
                 "profileUpdateRequests" => $ownProfileUpdateRequests,
                 "history" => $history,
+                "issuedDocuments" => $issuedDocuments,
             ],
         ]);
     } catch (Throwable $error) {

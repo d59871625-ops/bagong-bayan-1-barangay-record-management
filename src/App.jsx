@@ -5213,6 +5213,7 @@ function App() {
   const [documentFees, setDocumentFees] = useState(initialDocumentFees)
   const [officialProfiles, setOfficialProfiles] = useState(initialOfficialProfiles)
   const [residentHistory, setResidentHistory] = useState([])
+  const [residentIssuedDocuments, setResidentIssuedDocuments] = useState([])
   const residentRequestsRef = useRef(residentRequests)
   const residentHistoryRef = useRef(residentHistory)
   const residentRequestSyncSnapshotRef = useRef(new Map())
@@ -6669,15 +6670,15 @@ function App() {
   ])
   const residentRequestIds = new Set(residentHistoryRequestCandidates.map((request) => request.id))
   const completedRequestsFromIssuedDocuments = new Map()
-  issuedDocuments
+  uniqueResidentRequestsById([...issuedDocuments, ...residentIssuedDocuments])
     .filter((document) => document.requestId && belongsToResidentAccount(document))
     .forEach((document) => {
       const requestId = String(document.requestId)
-      if (residentRequestIds.has(requestId)) return
       const existing = completedRequestsFromIssuedDocuments.get(requestId) || {
         id: requestId,
         resident: document.resident || fullName,
         residentCode: document.residentCode || residentName.code,
+        residentId: document.residentId || authenticatedResidentProfile?.resident_id || '',
         status: 'Completed',
         requestedAt: document.requestedAt || document.date || '',
         releasedAt: document.date || '',
@@ -6691,6 +6692,8 @@ function App() {
       if (Number.isFinite(releaseTime) && (!Number.isFinite(currentReleaseTime) || releaseTime > currentReleaseTime)) {
         existing.releasedAt = document.date
       }
+      existing.orNumber = document.orNumber || existing.orNumber || ''
+      existing.issuingOfficer = document.issuingOfficer || existing.issuingOfficer || ''
       completedRequestsFromIssuedDocuments.set(requestId, existing)
     })
   const residentCompletedIssuedRequests = [...completedRequestsFromIssuedDocuments.values()].map((request) => ({
@@ -7371,7 +7374,26 @@ function App() {
       } : {}),
     }
     : null
-  const residentHistoryRequests = [...residentHistoryRequestCandidates, ...residentCompletedIssuedRequests]
+  const issuedCompletionByRequestId = new Map(residentCompletedIssuedRequests.map((request) => [String(request.id), request]))
+  const residentHistoryRequests = [
+    ...residentHistoryRequestCandidates.map((request) => {
+      const issuedRequest = issuedCompletionByRequestId.get(String(request.id))
+      if (!issuedRequest) return request
+      const completedAt = issuedRequest.releasedAt || request.releasedAt || ''
+      return {
+        ...request,
+        residentId: request.residentId || issuedRequest.residentId,
+        status: 'Completed',
+        releasedAt: completedAt,
+        documents: [...new Set([...(request.documents || []), ...(issuedRequest.documents || [])])],
+        statusHistory: [
+          ...(request.statusHistory || []).filter((entry) => entry.status !== 'Completed'),
+          { status: 'Completed', changedAt: completedAt },
+        ],
+      }
+    }),
+    ...residentCompletedIssuedRequests.filter((request) => !residentRequestIds.has(request.id)),
+  ]
     .filter((request) => ['Completed', 'Released', 'Declined', 'Cancelled'].includes(request.status))
     .sort((first, second) => new Date(second.releasedAt || second.cancelledAt || second.statusHistory?.slice(-1)[0]?.changedAt || second.requestedAt || second.date || 0).getTime()
       - new Date(first.releasedAt || first.cancelledAt || first.statusHistory?.slice(-1)[0]?.changedAt || first.requestedAt || first.date || 0).getTime())
@@ -8284,15 +8306,19 @@ function App() {
           || !Array.isArray(result.data.requests) || !Array.isArray(result.data.drafts)
           || !Array.isArray(result.data.requestDrafts) || !Array.isArray(result.data.recoveryRequests)
           || !Array.isArray(result.data.profileUpdateRequests) || !Array.isArray(result.data.history)
+          || (result.data.issuedDocuments !== undefined && !Array.isArray(result.data.issuedDocuments))
           || !result.data.requests.every((request) => request && typeof request.id === 'string')
           || !result.data.drafts.every((request) => request && typeof request.id === 'string')
           || !result.data.requestDrafts.every((draft) => draft && typeof draft.id === 'string')
           || !result.data.recoveryRequests.every((request) => request && typeof request.id === 'string')
           || !result.data.profileUpdateRequests.every((request) => request && typeof request.id === 'string')
-          || !result.data.history.every((request) => request && typeof request.id === 'string')) {
+          || !result.data.history.every((request) => request && typeof request.id === 'string')
+          || (result.data.issuedDocuments !== undefined && !result.data.issuedDocuments.every((document) => document && typeof document.id === 'string'))) {
           throw new Error(result.message || `Resident request sync failed with status ${response.status}.`)
         }
         residentRequestSyncEtagRef.current = response.headers.get('ETag') || ''
+        const nextIssuedDocuments = Array.isArray(result.data.issuedDocuments) ? result.data.issuedDocuments : []
+        setResidentIssuedDocuments((current) => JSON.stringify(current) === JSON.stringify(nextIssuedDocuments) ? current : nextIssuedDocuments)
 
         const archivedIds = new Set(result.data.history.map((request) => request.id))
         const remoteRequests = splitMultiDocumentRequests(
@@ -8868,6 +8894,7 @@ function App() {
 
   const openResidentDashboard = (profile, token = '') => {
     resetResidentSyncConnection()
+    setResidentIssuedDocuments([])
     setResidentToken(token)
     setAuthenticatedResidentProfile(profile)
     setRegistrationCommunityOnlyAccess(false)
@@ -11689,7 +11716,7 @@ function App() {
         id: `${request.id}-${document.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
         controlNumber: `${yearPrefix}${String(nextSequence).padStart(6, '0')}`,
         requestId: request.id,
-        residentId: authenticatedResidentProfile?.resident_id || currentResidentRecord?.id || '',
+        residentId: request.residentId || authenticatedResidentProfile?.resident_id || currentResidentRecord?.id || '',
         resident: request.resident,
         residentCode: request.residentCode || '',
         document,
