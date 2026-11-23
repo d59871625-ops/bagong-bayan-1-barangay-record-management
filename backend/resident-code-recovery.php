@@ -90,30 +90,44 @@ function sendRecoveryEmail(string $recipient, string $recipientName, string $sub
     }
 
     $senderName = trim((string) backendEnv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I";
-    try {
-        $mail = new PHPMailer(true);
-        $mail->isSMTP();
-        $mail->Host = "smtp.gmail.com";
-        $mail->SMTPAuth = true;
-        $mail->Username = $username;
-        $mail->Password = $appPassword;
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-        $mail->Timeout = 20;
-        $mail->SMTPKeepAlive = false;
-        $mail->CharSet = "UTF-8";
-        $mail->setFrom($username, $senderName);
-        $mail->addAddress($recipient, $recipientName);
-        $mail->Subject = $subject;
-        $mail->Body = $body;
-        $mail->send();
-    } catch (Throwable $error) {
-        error_log("Resident recovery email delivery failed on Gmail SMTP port 587: " . $error->getMessage());
-        throw new RecoveryDeliveryException(
-            "Gmail did not accept the recovery email over SMTP port 587. Check the Gmail username and app password configured on the hosting account.",
-            502
-        );
+    $transportAttempts = [
+        [587, PHPMailer::ENCRYPTION_STARTTLS],
+        [465, PHPMailer::ENCRYPTION_SMTPS],
+    ];
+    $lastError = null;
+
+    foreach ($transportAttempts as [$port, $encryption]) {
+        try {
+            $mail = new PHPMailer(true);
+            $mail->isSMTP();
+            $mail->Host = "smtp.gmail.com";
+            $mail->SMTPAuth = true;
+            $mail->Username = $username;
+            $mail->Password = $appPassword;
+            $mail->SMTPSecure = $encryption;
+            $mail->Port = $port;
+            $mail->Timeout = 20;
+            $mail->SMTPKeepAlive = false;
+            $mail->CharSet = "UTF-8";
+            $mail->setFrom($username, $senderName);
+            $mail->addAddress($recipient, $recipientName);
+            $mail->Subject = $subject;
+            $mail->Body = $body;
+            $mail->AltBody = $body;
+            $mail->send();
+            return;
+        } catch (Throwable $error) {
+            $lastError = $error;
+            error_log("Resident recovery email delivery failed on Gmail SMTP port {$port}: " . $error->getMessage());
+        }
     }
+
+    throw new RecoveryDeliveryException(
+        $lastError instanceof Throwable
+            ? "Gmail could not deliver the recovery email. Check the configured Gmail address and app password."
+            : "Gmail could not deliver the recovery email.",
+        502
+    );
 }
 
 function sendRecoveryCodeByEmail(string $recipient, string $residentName, string $residentCode): void
