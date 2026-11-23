@@ -8367,11 +8367,14 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   grid-column: 1 / -1;
   grid-template-columns: minmax(0, 1fr);
 }
-.document-request-workspace:has(.request-review-page-item) .request-review-content {
-  grid-template-columns: minmax(0, 1fr);
-}
 .official-dashboard.dark-mode .request-review-outside-heading h2 { color: var(--ink); }
 .official-dashboard.dark-mode .request-review-flow-title { border-color: #435b47; color: var(--ink); }
+
+.resident-my-requests-grid > .resident-dashboard-search {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0 0 2px;
+}
 
 /* Keep the community post editor stable once the updates list grows. */
 .admin-announcement-management .community-update-list:has(> .community-update-item:nth-of-type(5)) {

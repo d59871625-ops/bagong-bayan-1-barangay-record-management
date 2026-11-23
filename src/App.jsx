@@ -3417,7 +3417,9 @@ const paidDocumentFeeDefaults = {
 const initialDocumentFees = Object.fromEntries(barangayDocuments.map((document) => [document, paidDocumentFeeDefaults[document] || 0]))
 const normalizeDocumentFees = (fees, documents = barangayDocuments) => Object.fromEntries(documents.map((document) => {
   const amount = Number(fees?.[document])
-  return [document, Number.isFinite(amount) && amount >= 0 ? amount : 0]
+  return [document, Number.isFinite(amount) && amount >= 0 && amount <= 100000
+    ? Math.round(amount * 100) / 100
+    : 0]
 }))
 const migrateDocumentFees = (fees, savedVersion, documents = barangayDocuments) => {
   const normalizedFees = normalizeDocumentFees(fees, documents)
@@ -5794,7 +5796,7 @@ function App() {
       certificateCatalogRef.current.documentFees,
       setDocumentFees,
       (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value)
-        && Object.values(value).every((fee) => Number.isFinite(Number(fee)) && Number(fee) >= 0)),
+        && Object.values(value).every((fee) => Number.isFinite(Number(fee)) && Number(fee) >= 0 && Number(fee) <= 100000)),
       'certificate document fees',
     )
     if (receivedRemoteChanges && isDatabaseConnected) skipNextDatabaseSaveRef.current = true
@@ -11226,8 +11228,8 @@ function App() {
 
   const updateDocumentFee = (document, value) => {
     const amount = Number(value)
-    if (!Number.isFinite(amount) || amount < 0) return
-    setDocumentFees((fees) => ({ ...fees, [document]: amount }))
+    if (!Number.isFinite(amount) || amount < 0 || amount > 100000) return
+    setDocumentFees((fees) => ({ ...fees, [document]: Math.round(amount * 100) / 100 }))
   }
 
   const submitProfileUpdateRequest = async (event) => {
@@ -14544,7 +14546,7 @@ function App() {
                       : template?.custom && <button type="button" className="table-delete" onClick={() => deleteCustomCertificateTemplate(template)}>Delete template</button>}
                   </div>
                 </article>
-                <label className="certificate-template-fee">Fee per copy <span aria-hidden="true">₱</span><input type="number" min="0" step="0.01" value={documentFees[document] ?? 0} onChange={(event) => updateDocumentFee(document, event.target.value)} aria-label={`${document} fee per copy in pesos`} /></label>
+                <label className="certificate-template-fee">Fee per copy <span aria-hidden="true">₱</span><input type="number" min="0" max="100000" step="0.01" value={documentFees[document] ?? 0} onChange={(event) => updateDocumentFee(document, event.target.value)} aria-label={`${document} fee per copy in pesos`} /></label>
               </div>
             })}</div>
             {previewTemplateDocument && <CertificateTemplatePreview document={previewTemplateDocument} onClose={() => setPreviewTemplateDocument(null)} customTemplates={customCertificateTemplates} />}
@@ -14979,11 +14981,8 @@ function App() {
               const activeRequests = requestsByDate.filter((request) => request.status !== 'Completed')
               const myRequestsQuery = residentMyRequestsSearch.trim().toLowerCase()
               const visibleActiveRequests = activeRequests.filter((request) => {
-                const requestedAt = request.requestedAt || request.date || ''
-                const displayDate = requestedAt && !Number.isNaN(new Date(requestedAt).getTime())
-                  ? new Date(requestedAt).toLocaleDateString('en-PH', { dateStyle: 'medium' })
-                  : requestedAt
-                return [...(request.documents || []), displayDate, requestedAt]
+                const statusLabel = residentStatusLabels[request.status] || request.status
+                return [...(request.documents || []), statusLabel, request.status]
                   .some((value) => String(value || '').toLowerCase().includes(myRequestsQuery))
               })
               if (!requestsByDate.length) {
@@ -14991,7 +14990,7 @@ function App() {
               }
               return activeRequests.length ? (
                   <div className="resident-inbox-page-list resident-my-requests-grid">
-                    <label className="resident-dashboard-search"><span className="sr-only">Search My Requests by document or date</span><input type="search" value={residentMyRequestsSearch} onChange={(event) => setResidentMyRequestsSearch(event.target.value)} placeholder="Search document or date" /></label>
+                    <label className="resident-dashboard-search"><span className="sr-only">Search My Requests by document or status</span><input type="search" value={residentMyRequestsSearch} onChange={(event) => setResidentMyRequestsSearch(event.target.value)} placeholder="Search documents or status" /></label>
                     {visibleActiveRequests.map((request) => {
                       const statusLabel = residentStatusLabels[request.status] || request.status
                       const statusClass = request.status.toLowerCase().replace(/[^a-z]+/g, '-')
@@ -15050,7 +15049,7 @@ function App() {
                         </footer>
                       </article>
                     })}
-                    {!visibleActiveRequests.length && <p className="resident-search-empty">No requests match that document or date.</p>}
+                    {!visibleActiveRequests.length && <p className="resident-search-empty">No requests match that document or status.</p>}
                   </div>
                 ) : <div className="resident-inbox-no-requests resident-category-empty"><h2>No active requests</h2><p>{residentCancelledRequests.length ? 'Cancelled requests are saved separately in Drafts & corrections.' : 'All of your submitted requests are in history.'}</p>
                   {requestsByDate.some((request) => ['Completed', 'Declined'].includes(request.status)) && <button type="button" className="resident-history-link" onClick={() => setResidentDashboardSection('history')}>View completed and declined requests in history</button>}

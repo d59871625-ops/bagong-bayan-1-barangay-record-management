@@ -426,7 +426,7 @@ function residentSyncNewRequest(
     }
 
     $validatedDocuments = [];
-    $unitFeeAmount = 0.0;
+    $unitFeeCents = 0;
     foreach ($documents as $document) {
         if (!is_string($document) || trim($document) === "" || strlen($document) > 160) {
             throw new InvalidArgumentException("A requested document name is invalid.");
@@ -436,7 +436,7 @@ function residentSyncNewRequest(
             throw new InvalidArgumentException("A requested document is not enabled.");
         }
         $validatedDocuments[] = $document;
-        $unitFeeAmount += (float) ($documentFees[$document] ?? 0);
+        $unitFeeCents += (int) round((float) ($documentFees[$document] ?? 0) * 100, 0, PHP_ROUND_HALF_UP);
     }
 
     $request = new stdClass();
@@ -446,8 +446,8 @@ function residentSyncNewRequest(
     $request->residentCode = $residentCode;
     $request->documents = array_values(array_unique($validatedDocuments));
     $request->copyCount = $copyCount;
-    $request->unitFeeAmount = round($unitFeeAmount, 2);
-    $request->feeAmount = round($unitFeeAmount * $copyCount, 2);
+    $request->unitFeeAmount = $unitFeeCents / 100;
+    $request->feeAmount = ($unitFeeCents * $copyCount) / 100;
     $request->requestedAt = $now;
     $request->status = "New";
     $request->statusHistory = [["status" => "New", "changedAt" => $now]];
