@@ -3401,10 +3401,10 @@ const groupPaymentRequests = (requests) => {
     }
   })
 }
+const createResidentProfileUpdateId = () => `PU-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`
 const initialGcashRecipients = [
   { id: 'gcash-recipient-1', displayName: 'Crizzia Mae Famenial', mobileNumber: '09531765764' },
 ]
-const createResidentProfileUpdateId = () => `PU-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`
 const initialEnabledCertificateTypes = [...barangayDocuments]
 const paidDocumentFeeDefaults = {
   'Barangay Clearance': 50,
@@ -5530,57 +5530,39 @@ function App() {
   const [darkMode, setDarkMode] = useState(false)
   const [fontSize, setFontSize] = useState('standard')
   const [autoLogoutMinutes, setAutoLogoutMinutes] = useState(30)
-  const [adminInvitations, setAdminInvitations] = useState([])
-  const [newAdminEmail, setNewAdminEmail] = useState('')
-  const [adminInvitationMessage, setAdminInvitationMessage] = useState('')
-  const [adminInvitationError, setAdminInvitationError] = useState('')
-  const [isLoadingAdminInvitations, setIsLoadingAdminInvitations] = useState(false)
-  const [isSendingAdminInvitation, setIsSendingAdminInvitation] = useState(false)
+  const [adminMailAccount, setAdminMailAccount] = useState({ emailAddress: '', senderName: '' })
+  const [adminMailAccountError, setAdminMailAccountError] = useState('')
+  const [isLoadingAdminMailAccount, setIsLoadingAdminMailAccount] = useState(false)
   useEffect(() => {
     if (!isStorageLoaded || !showOfficialDashboard || adminView !== 'security' || !officialBackendToken) {
       return undefined
     }
     const controller = new AbortController()
-    let requestPending = false
-    const loadInvitations = async () => {
-      if (document.visibilityState !== 'visible' || requestPending) return
-      requestPending = true
-      setIsLoadingAdminInvitations(true)
+    const loadAdminMailAccount = async () => {
+      setIsLoadingAdminMailAccount(true)
       try {
-        const response = await fetchWithTimeout(`${BACKEND_API_URL}/admin-invitations.php`, {
+        const response = await fetchWithTimeout(`${BACKEND_API_URL}/admin-mail-settings.php`, {
           cache: 'no-store',
           headers: { Authorization: `Bearer ${officialBackendToken}` },
           signal: controller.signal,
         })
-        const result = await response.json()
-        if (!response.ok || !result.success || !Array.isArray(result.data)) {
-          throw new Error(result.message || 'Admin invitations could not be loaded.')
+        const result = await readJsonResponse(response, 'Admin Gmail settings')
+        if (!response.ok || !result.success || !result.data?.emailAddress) {
+          throw new Error(result.message || 'The configured Gmail account could not be loaded.')
         }
-        setAdminInvitations(result.data)
-        setAdminInvitationError('')
+        setAdminMailAccount(result.data)
+        setAdminMailAccountError('')
       } catch (error) {
         if (error.name !== 'AbortError') {
-          console.error('Unable to load admin invitations.', error)
-          setAdminInvitationError(error.message || 'Admin invitations could not be loaded.')
+          console.error('Unable to load the configured admin Gmail account.', error)
+          setAdminMailAccountError(error.message || 'The configured Gmail account could not be loaded.')
         }
       } finally {
-        requestPending = false
-        if (!controller.signal.aborted) setIsLoadingAdminInvitations(false)
+        if (!controller.signal.aborted) setIsLoadingAdminMailAccount(false)
       }
     }
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === 'visible') loadInvitations()
-    }
-    loadInvitations()
-    const refreshTimer = window.setInterval(loadInvitations, DATABASE_REFRESH_INTERVAL_MS)
-    window.addEventListener('focus', loadInvitations)
-    window.addEventListener('online', loadInvitations)
-    document.addEventListener('visibilitychange', refreshWhenVisible)
+    loadAdminMailAccount()
     return () => {
-      window.clearInterval(refreshTimer)
-      window.removeEventListener('focus', loadInvitations)
-      window.removeEventListener('online', loadInvitations)
-      document.removeEventListener('visibilitychange', refreshWhenVisible)
       controller.abort()
     }
   }, [adminView, isStorageLoaded, officialBackendToken, showOfficialDashboard])
@@ -5591,9 +5573,6 @@ function App() {
   const [residentAccountMessage, setResidentAccountMessage] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
   const [passwordFields, setPasswordFields] = useState({ current: '', next: '', confirm: '' })
-  const [adminPassword, setAdminPassword] = useState(
-    import.meta.env.DEV ? import.meta.env.VITE_ADMIN_PASSWORD || '' : '',
-  )
   const [officialCredentials, setOfficialCredentials] = useState({ username: '', password: '' })
   const [officialPasswordResetOpen, setOfficialPasswordResetOpen] = useState(false)
   const [officialPasswordResetStep, setOfficialPasswordResetStep] = useState('request')
@@ -6640,7 +6619,10 @@ function App() {
     .map((request) => ({ ...request, resident: getRequestResidentName(request) }))
   const residentAccountRequests = allDocumentRequests.filter((request) => residentRecordMatchesAccount(request, residentName))
   const residentCancellationRequest = residentAccountRequests.find((request) => request.id === residentCancellationRequestId)
-  const residentInboxRequests = residentAccountRequests.filter(isRequestSubmittedToAdmin)
+  const residentInboxRequests = residentAccountRequests.filter((request) => (
+    isRequestSubmittedToAdmin(request)
+    && !['Completed', 'Released', 'Declined', 'Cancelled'].includes(request.status)
+  ))
   const residentCorrectionRequests = residentInboxRequests.filter((request) => request.status === 'Returned for edits')
   const residentCancelledRequests = residentAccountRequests.filter((request) => request.status === 'Cancelled')
   const residentPendingPaymentRequests = residentPaymentDrafts.filter((request) => (
@@ -10121,66 +10103,36 @@ function App() {
     }
   }
 
-  const submitPasswordChange = (event) => {
+  const submitPasswordChange = async (event) => {
     event.preventDefault()
-    if (passwordFields.current !== adminPassword) {
-      setPasswordMessage('Current password does not match.')
+    if (!officialBackendToken) {
+      setPasswordMessage('Sign in with an active backend admin account to change the saved password.')
       return
     }
-    if (passwordFields.next.length < 8) {
-      setPasswordMessage('New password must be at least 8 characters.')
+    if (passwordFields.next.length < 12) {
+      setPasswordMessage('New password must be at least 12 characters.')
       return
     }
     if (passwordFields.next !== passwordFields.confirm) {
       setPasswordMessage('New passwords do not match.')
       return
     }
-    setAdminPassword(passwordFields.next)
-    setPasswordFields({ current: '', next: '', confirm: '' })
-    setPasswordMessage('Password changed for this session only. It is not stored in the browser or account database.')
-  }
-
-  const addAdminEmail = async (event) => {
-    event.preventDefault()
-    const email = newAdminEmail.trim().toLowerCase()
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setAdminInvitationError('Enter a valid email address.')
-      return
-    }
-    if (!officialBackendToken) {
-      setAdminInvitationError('Sign in with an active backend administrator account before inviting another admin.')
-      return
-    }
-    setAdminInvitationError('')
-    setAdminInvitationMessage('')
-    setIsSendingAdminInvitation(true)
     try {
-      const response = await fetch(`${BACKEND_API_URL}/admin-invitations.php`, {
+      setPasswordMessage('Updating the saved account password…')
+      const response = await fetch(`${BACKEND_API_URL}/change-password.php`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${officialBackendToken}`,
-        },
-        body: JSON.stringify({ action: 'invite', email }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officialBackendToken}` },
+        body: JSON.stringify({ currentPassword: passwordFields.current, newPassword: passwordFields.next }),
       })
-      const result = await response.json()
-      if (!response.ok || !result.success || !result.invitation) {
-        throw new Error(result.message || 'The admin invitation could not be sent.')
+      const result = await readJsonResponse(response, 'Password change')
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'The account password could not be updated.')
       }
-      setAdminInvitations((invitations) => [
-        result.invitation,
-        ...invitations.filter((invitation) => invitation.id !== result.invitation.id),
-      ])
-      setNewAdminEmail('')
-      const linkNotice = result.invitationUrlConfigured
-        ? ' They can accept using the link in the email.'
-        : ' The link uses this backend address; the recipient can accept only if their device can reach it. Set BRGY_ADMIN_INVITATION_URL for remote access.'
-      setAdminInvitationMessage(`Gmail accepted the invitation for delivery to ${email}. If it is not in the inbox, check Spam.${linkNotice} Admin access is granted only after they accept.`)
+      setPasswordFields({ current: '', next: '', confirm: '' })
+      setPasswordMessage('Admin account password updated successfully.')
     } catch (error) {
-      console.error(`Unable to send an admin invitation to ${email}.`, error)
-      setAdminInvitationError(error.message || 'The admin invitation could not be sent.')
-    } finally {
-      setIsSendingAdminInvitation(false)
+      console.error('Unable to change the admin account password.', error)
+      setPasswordMessage(error.message || 'The account password could not be updated.')
     }
   }
 
@@ -11254,32 +11206,14 @@ function App() {
       setProfileUpdateError('Sign in to your resident account before submitting profile changes.')
       return
     }
-    const request = {
-      id: createResidentProfileUpdateId(),
-      resident: fullName,
-      residentCode: residentName.code.trim().toUpperCase(),
-      proposedChanges,
-      status: 'Pending',
-      submittedAt: new Date().toISOString(),
-    }
-    const residentAccount = {
-      code: residentName.code,
-      firstName: residentName.firstName,
-      middleName: residentName.middleName,
-      lastName: residentName.lastName,
-      suffix: residentName.suffix,
-    }
-    const pendingRequests = residentProfileUpdateRequests.filter((current) => (
-      current.status === 'Pending' && residentRecordMatchesAccount(current, residentAccount)
-    ))
+    const request = { id: createResidentProfileUpdateId(), resident: fullName, residentCode: residentName.code.trim().toUpperCase(), proposedChanges, status: 'Pending', submittedAt: new Date().toISOString() }
+    const residentAccount = { code: residentName.code, firstName: residentName.firstName, middleName: residentName.middleName, lastName: residentName.lastName, suffix: residentName.suffix }
+    const pendingRequests = residentProfileUpdateRequests.filter((current) => current.status === 'Pending' && residentRecordMatchesAccount(current, residentAccount))
     try {
       const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
         method: 'POST',
         cache: 'no-store',
-        headers: {
-          Authorization: `Bearer ${residentToken}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { Authorization: `Bearer ${residentToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ profileUpdateRequests: [...pendingRequests, request] }),
       }, DATABASE_REQUEST_TIMEOUT_MS)
       const result = await readJsonResponse(response, 'Resident profile update request')
@@ -11291,9 +11225,7 @@ function App() {
         ...current.filter((item) => !residentRecordMatchesAccount(item, residentAccount)),
         ...remoteRequests,
       ])
-      residentProfileUpdateSyncSnapshotRef.current = JSON.stringify(
-        remoteRequests.filter((item) => item.status === 'Pending'),
-      )
+      residentProfileUpdateSyncSnapshotRef.current = JSON.stringify(remoteRequests.filter((item) => item.status === 'Pending'))
       setProfileUpdateError('')
       setProfileUpdateFormOpen(false)
     } catch (error) {
@@ -12720,35 +12652,42 @@ function App() {
                     <AboutHistoryIcon type="contact" />
                     <div><p className="section-number">BARANGAY DETAILS</p><h2 id="barangay-contact-title">Contact Information</h2></div>
                   </div>
-                  <div className="about-history-contact-fields">
-                    <label htmlFor="barangay-contact-phone">Phone number<input id="barangay-contact-phone" type="tel" value={(barangayContactInformationDraft ?? barangayContactInformation).phoneNumber} onChange={(event) => {
-                      setBarangayContactInformationDraft({ ...(barangayContactInformationDraft ?? barangayContactInformation), phoneNumber: event.target.value })
-                      setBarangayContactInformationError('')
-                      setBarangayContactInformationStatus('')
-                    }} /></label>
-                    <label htmlFor="barangay-contact-email">Email address<input id="barangay-contact-email" type="email" value={(barangayContactInformationDraft ?? barangayContactInformation).emailAddress} onChange={(event) => {
-                      setBarangayContactInformationDraft({ ...(barangayContactInformationDraft ?? barangayContactInformation), emailAddress: event.target.value })
-                      setBarangayContactInformationError('')
-                      setBarangayContactInformationStatus('')
-                    }} /></label>
-                    <label className="about-history-contact-address" htmlFor="barangay-contact-address">Office address<input id="barangay-contact-address" type="text" value={(barangayContactInformationDraft ?? barangayContactInformation).officeAddress} onChange={(event) => {
-                      setBarangayContactInformationDraft({ ...(barangayContactInformationDraft ?? barangayContactInformation), officeAddress: event.target.value })
-                      setBarangayContactInformationError('')
-                      setBarangayContactInformationStatus('')
-                    }} /></label>
-                  </div>
-                  {barangayContactInformationError && <p className="about-history-contact-error" role="alert">{barangayContactInformationError}</p>}
-                  <div className="about-history-contact-actions">
-                    <p role="status" aria-live="polite">{barangayContactInformationStatus}</p>
-                    <div>
-                      {barangayContactInformationDraft !== null && <button type="button" className="about-history-contact-cancel" onClick={() => {
-                        setBarangayContactInformationDraft(null)
+                  {showOfficialDashboard ? <>
+                    <div className="about-history-contact-fields">
+                      <label htmlFor="barangay-contact-phone">Phone number<input id="barangay-contact-phone" type="tel" value={(barangayContactInformationDraft ?? barangayContactInformation).phoneNumber} onChange={(event) => {
+                        setBarangayContactInformationDraft({ ...(barangayContactInformationDraft ?? barangayContactInformation), phoneNumber: event.target.value })
                         setBarangayContactInformationError('')
                         setBarangayContactInformationStatus('')
-                      }}>Cancel</button>}
-                      <button type="button" className="about-history-contact-save" disabled={barangayContactInformationDraft === null || ['phoneNumber', 'emailAddress', 'officeAddress'].every((field) => barangayContactInformationDraft[field] === barangayContactInformation[field])} onClick={saveBarangayContactInformation}>Save</button>
+                      }} /></label>
+                      <label htmlFor="barangay-contact-email">Email address<input id="barangay-contact-email" type="email" value={(barangayContactInformationDraft ?? barangayContactInformation).emailAddress} onChange={(event) => {
+                        setBarangayContactInformationDraft({ ...(barangayContactInformationDraft ?? barangayContactInformation), emailAddress: event.target.value })
+                        setBarangayContactInformationError('')
+                        setBarangayContactInformationStatus('')
+                      }} /></label>
+                      <label className="about-history-contact-address" htmlFor="barangay-contact-address">Office address<input id="barangay-contact-address" type="text" value={(barangayContactInformationDraft ?? barangayContactInformation).officeAddress} onChange={(event) => {
+                        setBarangayContactInformationDraft({ ...(barangayContactInformationDraft ?? barangayContactInformation), officeAddress: event.target.value })
+                        setBarangayContactInformationError('')
+                        setBarangayContactInformationStatus('')
+                      }} /></label>
                     </div>
-                  </div>
+                    {barangayContactInformationError && <p className="about-history-contact-error" role="alert">{barangayContactInformationError}</p>}
+                    <div className="about-history-contact-actions">
+                      <p role="status" aria-live="polite">{barangayContactInformationStatus}</p>
+                      <div>
+                        {barangayContactInformationDraft !== null && <button type="button" className="about-history-contact-cancel" onClick={() => {
+                          setBarangayContactInformationDraft(null)
+                          setBarangayContactInformationError('')
+                          setBarangayContactInformationStatus('')
+                        }}>Cancel</button>}
+                        <button type="button" className="about-history-contact-save" disabled={barangayContactInformationDraft === null || ['phoneNumber', 'emailAddress', 'officeAddress'].every((field) => barangayContactInformationDraft[field] === barangayContactInformation[field])} onClick={saveBarangayContactInformation}>Save</button>
+                      </div>
+                    </div>
+                  </> : <dl className="about-history-contact-readonly">
+                    {barangayContactInformation.phoneNumber && <div><dt>Phone number</dt><dd>{barangayContactInformation.phoneNumber}</dd></div>}
+                    {barangayContactInformation.emailAddress && <div><dt>Email address</dt><dd>{barangayContactInformation.emailAddress}</dd></div>}
+                    {barangayContactInformation.officeAddress && <div><dt>Office address</dt><dd>{barangayContactInformation.officeAddress}</dd></div>}
+                    {!barangayContactInformation.phoneNumber && !barangayContactInformation.emailAddress && !barangayContactInformation.officeAddress && <p>Contact information has not been added yet.</p>}
+                  </dl>}
                 </section>
               </div>
             </div>
@@ -14734,42 +14673,22 @@ function App() {
               <p className="admin-security-notice">This setting is a browser-side safety feature, not a replacement for server-managed authentication or device/session revocation.</p>
             </section>
             <section className="admin-account-card">
-              <div className="admin-account-card-heading"><span className="admin-account-card-icon email" aria-hidden="true">@</span><div><h3>Admin invitations</h3><p>Invite a Gmail address. It only becomes an admin account after the recipient accepts the emailed invitation.</p></div></div>
-              <form className="admin-email-add-form" onSubmit={addAdminEmail}>
-                <label htmlFor="new-admin-email">Invite by email</label>
-                <div><input id="new-admin-email" type="email" value={newAdminEmail} onChange={(event) => { setNewAdminEmail(event.target.value); setAdminInvitationError(''); setAdminInvitationMessage('') }} placeholder="name@gmail.com" required /><button type="submit" className="admin-email-action primary" disabled={isSendingAdminInvitation || !officialBackendToken}>{isSendingAdminInvitation ? 'Sending…' : 'Send invitation'}</button></div>
-              </form>
-              {!officialBackendToken && <p className="admin-security-notice">Sign in with an active backend administrator account to send invitations.</p>}
-              {adminInvitationError && <p className="admin-invitation-error" role="alert">{adminInvitationError}</p>}
-              {adminInvitationMessage && <p className="admin-settings-saved-note" role="status">{adminInvitationMessage}</p>}
-              <div className="admin-invitation-list-heading"><strong>Invitation history</strong>{isLoadingAdminInvitations && <small>Refreshing…</small>}</div>
-              <ul className="admin-account-email-list admin-invitation-list">
-                {adminInvitations.map((invitation) => {
-                  const statusLabel = {
-                    pending: 'Awaiting response',
-                    accepted: 'Accepted',
-                    declined: 'Declined',
-                    expired: 'Expired',
-                  }[invitation.status] || invitation.status
-                  return <li key={invitation.id}>
-                    <div><strong>{invitation.email}</strong><small>Sent {invitation.createdAt ? new Date(invitation.createdAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'date unavailable'}</small></div>
-                    <span className={`admin-invitation-status is-${invitation.status}`}>{statusLabel}</span>
-                  </li>
-                })}
-                {!adminInvitations.length && !isLoadingAdminInvitations && <li><span className="admin-account-email-address">No invitations yet.</span></li>}
-              </ul>
+              <div className="admin-account-card-heading"><span className="admin-account-card-icon email" aria-hidden="true">@</span><div><h3>Configured Gmail account</h3><p>This is the email account the backend uses for password recovery messages.</p></div></div>
+              <div className="admin-account-setting-row"><div><strong>Current Gmail</strong><small>{adminMailAccount.senderName || 'Barangay Bagong Bayan I'}</small></div><strong className="admin-account-email-address">{isLoadingAdminMailAccount ? 'Loading…' : adminMailAccount.emailAddress || 'Not configured'}</strong></div>
+              {!officialBackendToken && <p className="admin-security-notice">Sign in with an active backend administrator account to view the configured Gmail address.</p>}
+              {adminMailAccountError && <p className="admin-invitation-error" role="alert">{adminMailAccountError}</p>}
             </section>
             <section className="admin-account-card admin-security-password-card">
-              <div className="admin-account-card-heading"><span className="admin-account-card-icon password" aria-hidden="true">⌑</span><div><h3>Change admin password</h3><p>Update the configured password for this running session.</p></div></div>
+              <div className="admin-account-card-heading"><span className="admin-account-card-icon password" aria-hidden="true">⌑</span><div><h3>Change admin password</h3><p>Save a new password to your admin account.</p></div></div>
               <form className="password-change-form admin-security-password-form" onSubmit={submitPasswordChange}>
                 <label htmlFor="current-admin-password">Current password</label>
                 <input id="current-admin-password" type="password" value={passwordFields.current} onChange={(event) => setPasswordFields({ ...passwordFields, current: event.target.value })} autoComplete="current-password" required />
                 <label htmlFor="new-admin-password">New password</label>
-                <input id="new-admin-password" type="password" value={passwordFields.next} onChange={(event) => setPasswordFields({ ...passwordFields, next: event.target.value })} autoComplete="new-password" required />
+                <input id="new-admin-password" type="password" value={passwordFields.next} onChange={(event) => setPasswordFields({ ...passwordFields, next: event.target.value })} autoComplete="new-password" minLength={12} required />
                 <label htmlFor="confirm-admin-password">Confirm new password</label>
-                <input id="confirm-admin-password" type="password" value={passwordFields.confirm} onChange={(event) => setPasswordFields({ ...passwordFields, confirm: event.target.value })} autoComplete="new-password" required />
+                <input id="confirm-admin-password" type="password" value={passwordFields.confirm} onChange={(event) => setPasswordFields({ ...passwordFields, confirm: event.target.value })} autoComplete="new-password" minLength={12} required />
                 <button type="submit">Update password</button>
-                <p className="admin-security-notice" role="status">{passwordMessage || 'Password changes apply only for this running session. Use server-side authentication to securely store account credentials.'}</p>
+                <p className="admin-security-notice" role="status">{passwordMessage || 'Use at least 12 characters. Your change is stored securely on the server.'}</p>
               </form>
             </section>
           </section>}

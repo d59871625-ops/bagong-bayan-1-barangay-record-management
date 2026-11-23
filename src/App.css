@@ -156,6 +156,11 @@ h1 em { color: var(--accent); font-style: normal; }
 .about-history-contact-fields label { display: grid; gap: 4px; min-width: 0; color: #465749; font: 700 10px var(--sans); }
 .about-history-contact-fields input { width: 100%; min-width: 0; min-height: 34px; box-sizing: border-box; padding: 7px 8px; border: 1px solid #c4d9c7; border-radius: 7px; background: #fff; color: #344239; font: 400 11px var(--sans); }
 .about-history-contact-fields input:focus-visible { border-color: #3c7a45; outline: 2px solid rgba(60, 122, 69, .2); outline-offset: 1px; }
+.about-history-contact-readonly { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0; }
+.about-history-contact-readonly > div { min-width: 0; padding: 9px 10px; border: 1px solid #d6e6d8; border-radius: 8px; background: #f7fbf7; }
+.about-history-contact-readonly dt { color: #608068; font: 700 9px var(--sans); }
+.about-history-contact-readonly dd { margin: 3px 0 0; color: #344239; font: 500 12px/1.45 var(--sans); overflow-wrap: anywhere; }
+.about-history-contact-readonly > p { grid-column: 1 / -1; margin: 0; color: #68746a; font-size: 11px; }
 .about-history-contact-address { grid-column: 1 / -1; }
 .about-history-contact-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .about-history-contact-actions > p, .about-history-contact-error { margin: 0; color: #34774a; font-size: 10px; line-height: 1.4; }
@@ -258,6 +263,9 @@ h1 em { color: var(--accent); font-style: normal; }
 .welcome-page.is-about-page .about-history-contact-panel { border-color: rgba(232, 245, 227, .2); background: rgba(238, 248, 235, .1); box-shadow: none; }
 .welcome-page.is-about-page .about-history-contact-heading h2 { color: #fff; }
 .welcome-page.is-about-page .about-history-contact-fields label { color: #e6f0e2; }
+.welcome-page.is-about-page .about-history-contact-readonly > div { border-color: rgba(232, 245, 227, .2); background: rgba(12, 50, 31, .34); }
+.welcome-page.is-about-page .about-history-contact-readonly dt { color: #c8dfc4; }
+.welcome-page.is-about-page .about-history-contact-readonly dd, .welcome-page.is-about-page .about-history-contact-readonly > p { color: #f0f7ec; }
 .welcome-page.is-about-page .about-history-contact-actions > p { color: #d3e8c7; }
 .welcome-page.is-about-page .about-history-zone-guide-section { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); gap: 20px; }
 .welcome-page.is-about-page .about-history-zone-guide-section .startup-map-details-label { color: #d3e8c7; }

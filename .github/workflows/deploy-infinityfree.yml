@@ -66,6 +66,9 @@ jobs:
           php -l backend/registration-reference.php
           php -l backend/restore-app-state.php
           php -l backend/registration-application-storage.php
+          php -l backend/admin-mail-settings.php
+          php -l backend/change-password.php
+          php -l backend/admin-invitations.php
 
       - name: Prepare production files
         run: |
