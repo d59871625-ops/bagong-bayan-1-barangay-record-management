@@ -44,6 +44,7 @@ function sendRecoveryEmail(string $recipient, string $recipientName, string $sub
         $mail->Password = $appPassword;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
+        $mail->Timeout = 15;
         $mail->CharSet = "UTF-8";
         $mail->setFrom($username, trim((string) backendEnv("BRGY_GMAIL_FROM_NAME")) ?: "Barangay Bagong Bayan I");
         $mail->addAddress($recipient, $recipientName);

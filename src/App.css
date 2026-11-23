@@ -643,6 +643,7 @@ h1 em { color: var(--accent); font-style: normal; }
   .incoming-request-steps { grid-template-columns: minmax(0, 1fr); gap: 9px; }
   .incoming-request-steps small { font-size: 9px; }
 }
+
 .request-review-page-item .resident-details { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 9px; }
 .request-review-page-item .resident-details > div { min-width: 0; padding: 10px; border: 1px solid #dfe8df; border-radius: 8px; background: #fff; }
 .request-review-page-item .resident-details dt { color: #68746a; font-size: 10px; text-transform: capitalize; }
@@ -11556,4 +11557,28 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   .certificate-template-editor-tools { gap: 7px; }
   .certificate-template-editor-workspace.is-tools-open .certificate-template-editor-tools { grid-template-columns: minmax(0, 1fr); }
   .certificate-editor-tool-section { padding: 9px; }
+}
+
+@media (max-width: 720px) {
+  .document-requests-panel .submission-request-group .request-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    justify-content: start;
+  }
+  .document-requests-panel .submission-request-group .request-meta > * {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .document-requests-panel .submission-request-group > .open-request {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    justify-self: stretch;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    white-space: normal;
+  }
 }

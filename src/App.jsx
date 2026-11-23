@@ -105,6 +105,17 @@ const readJsonResponse = async (response, endpointName) => {
   }
 }
 
+const ADMIN_NAVIGATION_READ_STORAGE_KEY = 'bb1-admin-navigation-read-v1'
+const RESIDENT_NOTIFICATION_READ_STORAGE_KEY = 'bb1-resident-notification-read-v1'
+const readBrowserReadState = (key) => {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(key) || 'null')
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+  } catch {
+    return {}
+  }
+}
+
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 120000) => {
   const { signal: externalSignal, ...requestOptions } = options
   const controller = new AbortController()
@@ -5091,10 +5102,24 @@ function App() {
   const [isLoadingAdminDatabaseCounts, setIsLoadingAdminDatabaseCounts] = useState(false)
   const [adminFastSync, setAdminFastSync] = useState(null)
   const [residentRequests, setResidentRequests] = useState([])
-  const [residentNotificationReadState, setResidentNotificationReadState] = useState({})
-  const [adminNavigationReadState, setAdminNavigationReadState] = useState({})
+  const [residentNotificationReadState, setResidentNotificationReadState] = useState(() => readBrowserReadState(RESIDENT_NOTIFICATION_READ_STORAGE_KEY))
+  const [adminNavigationReadState, setAdminNavigationReadState] = useState(() => readBrowserReadState(ADMIN_NAVIGATION_READ_STORAGE_KEY))
   const [documentWorkflowViewedState, setDocumentWorkflowViewedState] = useState({})
   const documentWorkflowViewedStateRef = useRef(documentWorkflowViewedState)
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RESIDENT_NOTIFICATION_READ_STORAGE_KEY, JSON.stringify(residentNotificationReadState))
+    } catch (error) {
+      console.warn('Could not save resident notification read state.', error)
+    }
+  }, [residentNotificationReadState])
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ADMIN_NAVIGATION_READ_STORAGE_KEY, JSON.stringify(adminNavigationReadState))
+    } catch (error) {
+      console.warn('Could not save admin navigation read state.', error)
+    }
+  }, [adminNavigationReadState])
   const residentDashboardContentRef = useRef(null)
   const [residentPaymentDrafts, setResidentPaymentDrafts] = useState([])
   const residentPaymentDraftsRef = useRef(residentPaymentDrafts)
@@ -6800,10 +6825,21 @@ function App() {
     })
   }
   const markResidentDashboardSectionRead = (section, category = residentDraftsCorrectionsTab) => {
-    if (section === 'drafts-corrections' && category === 'cancelled') {
-      markResidentUpdatesRead('cancelled', residentCancelledUpdateItems.map((item) => item.id))
+    const itemIds = (items) => items.map((item) => item.id)
+    if (section === 'requests') {
+      markResidentUpdatesRead('requests', itemIds(residentRequestUpdateItems.filter((item) => item.category === 'requests')))
     }
-    if (section === 'profile') markResidentUpdatesRead('profile', residentProfileUpdateItems.map((item) => item.id))
+    if (section === 'pickup') markResidentUpdatesRead('pickup', itemIds(residentPickupUpdateItems))
+    if (section === 'payments') markResidentUpdatesRead('payments', itemIds(residentPaymentUpdateItems))
+    if (section === 'drafts-corrections' && category === 'cancelled') {
+      markResidentUpdatesRead('cancelled', itemIds(residentCancelledUpdateItems))
+    }
+    if ((section === 'drafts-corrections' && category === 'corrections') || section === 'requests') {
+      markResidentUpdatesRead('corrections', itemIds(residentCorrectionUpdateItems))
+    }
+    if (section === 'history') markResidentUpdatesRead('history', itemIds(residentHistoryUpdateItems))
+    if (section === 'community') markResidentUpdatesRead('community', itemIds(residentCommunityUpdateItems))
+    if (section === 'profile') markResidentUpdatesRead('profile', itemIds(residentProfileUpdateItems))
   }
   const residentDashboardSectionUnreadCounts = {
     requests: residentRequestUnreadCount,
@@ -9401,7 +9437,7 @@ function App() {
   }
 
   const sendRecoveryCodeToSavedEmail = async (residentCode) => {
-    const response = await fetch(`${BACKEND_API_URL}/resident-code-recovery.php`, {
+    const response = await fetchWithTimeout(`${BACKEND_API_URL}/resident-code-recovery.php`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -9409,7 +9445,7 @@ function App() {
       },
       body: JSON.stringify({ action: 'rotate_code', resident_code: residentCode, delivery_method: 'email' }),
     })
-    const result = await response.json()
+    const result = await readJsonResponse(response, 'Resident code recovery')
     const newResidentCode = result.data?.resident_code
     const residentId = result.data?.resident_id
     const validResidentId = result.data?.resident_source === 'shared'
@@ -9426,7 +9462,7 @@ function App() {
   }
 
   const sendRecoveryDeclinedNotice = async (request) => {
-    const response = await fetch(`${BACKEND_API_URL}/resident-code-recovery.php`, {
+    const response = await fetchWithTimeout(`${BACKEND_API_URL}/resident-code-recovery.php`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -9439,7 +9475,7 @@ function App() {
         resident_name: request.fullName,
       }),
     })
-    const result = await response.json()
+    const result = await readJsonResponse(response, 'Recovery decline notice')
     if (!response.ok || !result.success || result.data?.delivery_status !== 'Sent') {
       throw new Error(result.message || 'The decline notice could not be sent.')
     }
