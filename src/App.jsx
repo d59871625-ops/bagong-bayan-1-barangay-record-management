@@ -6556,7 +6556,7 @@ function App() {
     .map((entry) => ({
       ...entry.request,
       resident: entry.request.resident || entry.resident || '',
-      residentCode: entry.request.residentCode || entry.request.resident_code || entry.residentCode || entry.resident_code || entry.code || '',
+      residentCode: entry.residentCode || entry.resident_code || entry.code || entry.request.residentCode || entry.request.resident_code || '',
     }))
   const getRequestResidentName = (request) => {
     const certificateDetails = [
@@ -6622,6 +6622,36 @@ function App() {
   const allDocumentRequests = Array.from(documentRequestsById.values())
     .map((request) => ({ ...request, resident: getRequestResidentName(request) }))
   const residentAccountRequests = allDocumentRequests.filter((request) => residentRecordMatchesAccount(request, residentName))
+  const residentRequestIds = new Set(residentAccountRequests.map((request) => request.id))
+  const completedRequestsFromIssuedDocuments = new Map()
+  issuedDocuments
+    .filter((document) => document.requestId && residentRecordMatchesAccount(document, residentName))
+    .forEach((document) => {
+      const requestId = String(document.requestId)
+      if (residentRequestIds.has(requestId)) return
+      const existing = completedRequestsFromIssuedDocuments.get(requestId) || {
+        id: requestId,
+        resident: document.resident || fullName,
+        residentCode: document.residentCode || residentName.code,
+        status: 'Completed',
+        requestedAt: document.requestedAt || document.date || '',
+        releasedAt: document.date || '',
+        documents: [],
+        activity: [],
+        statusHistory: [],
+      }
+      if (document.document && !existing.documents.includes(document.document)) existing.documents.push(document.document)
+      const releaseTime = Date.parse(document.date || '')
+      const currentReleaseTime = Date.parse(existing.releasedAt || '')
+      if (Number.isFinite(releaseTime) && (!Number.isFinite(currentReleaseTime) || releaseTime > currentReleaseTime)) {
+        existing.releasedAt = document.date
+      }
+      completedRequestsFromIssuedDocuments.set(requestId, existing)
+    })
+  const residentCompletedIssuedRequests = [...completedRequestsFromIssuedDocuments.values()].map((request) => ({
+    ...request,
+    statusHistory: [{ status: 'Completed', changedAt: request.releasedAt }],
+  }))
   const residentCancellationRequest = residentAccountRequests.find((request) => request.id === residentCancellationRequestId)
   const residentInboxRequests = residentAccountRequests.filter((request) => (
     isRequestSubmittedToAdmin(request)
@@ -7296,7 +7326,7 @@ function App() {
       } : {}),
     }
     : null
-  const residentHistoryRequests = residentAccountRequests
+  const residentHistoryRequests = [...residentAccountRequests, ...residentCompletedIssuedRequests]
     .filter((request) => ['Completed', 'Released', 'Declined', 'Cancelled'].includes(request.status))
     .sort((first, second) => new Date(second.releasedAt || second.cancelledAt || second.statusHistory?.slice(-1)[0]?.changedAt || second.requestedAt || second.date || 0).getTime()
       - new Date(first.releasedAt || first.cancelledAt || first.statusHistory?.slice(-1)[0]?.changedAt || first.requestedAt || first.date || 0).getTime())
