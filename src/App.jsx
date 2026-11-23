@@ -693,10 +693,16 @@ const createRegistrationEvidence = async (file) => {
   if (!file) throw new Error('Upload both a valid ID and proof of residence.')
   if (file.type.startsWith('image/')) {
     const evidence = await createCommunityUpdateImage(file)
-    if (evidence.dataUrl.length > 500000) {
+    const optimizedDataUrl = await compressStoredImageDataUrl(evidence.dataUrl, 900)
+    const optimizedEvidence = {
+      ...evidence,
+      mediaType: optimizedDataUrl.match(/^data:([^;,]+)/)?.[1] || evidence.mediaType,
+      dataUrl: optimizedDataUrl,
+    }
+    if (optimizedEvidence.dataUrl.length > 280000) {
       throw new Error(`${file.name} is too large to store with the registration. Choose a smaller image.`)
     }
-    return evidence
+    return optimizedEvidence
   }
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
     throw new Error(`${file.name} is not a supported image or PDF file.`)
@@ -13212,11 +13218,13 @@ function App() {
                 {(requestSearch || requestDocumentFilter !== 'all') && <button type="button" className="request-filter-reset" onClick={() => { setRequestSearch(''); setRequestDocumentFilter('all') }}>Clear filters</button>}
               </div>
             </div>}
+            {selectedRequestId && <header className="request-review-outside-heading">
+              <button type="button" className="open-request request-review-back" onClick={() => setSelectedRequestId(null)}>← Back to resident requests</button>
+            </header>}
             <section className="requests-panel document-requests-panel">
-            <div className="requests-heading">
-              <div><span className="section-number">{selectedRequestId ? 'REQUEST REVIEW' : 'DOCUMENT INBOX'}</span><h2>{selectedRequestId ? 'Review resident request' : 'Active request queue'}</h2></div>
-            </div>
-            {selectedRequestId && <button type="button" className="open-request request-review-back" onClick={() => setSelectedRequestId(null)}>← Back to resident requests</button>}
+            {!selectedRequestId && <div className="requests-heading">
+              <div><span className="section-number">DOCUMENT INBOX</span><h2>Active request queue</h2></div>
+            </div>}
             {!selectedRequestId && <>
             <div className="document-queue-stats" aria-label="Filter requests by category">
               {[
@@ -13397,6 +13405,7 @@ function App() {
                       {requestEvidenceError?.requestId === request.id
                         && <p className="community-update-error" role="alert">{requestEvidenceError.message}</p>}
                       <div className="request-review-page-heading"><div><p className="detail-label">Resident request</p><h3>{request.resident}</h3><span>{request.id} · {request.requestedAt ? new Date(request.requestedAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : request.date || 'Date not recorded'}</span></div><span className={`compliance-status ${isPaymentVerificationPending ? 'pending' : request.status.toLowerCase().replace(/[^a-z]+/g, '-')}`}>{isPaymentVerificationPending ? 'Payment verification pending' : residentStatusLabels[request.status] || request.status}</span></div>
+                      <h2 className="request-review-flow-title">Review resident request</h2>
                       {isIncomingRequest ? (
                         <section className="incoming-request-preview" aria-label="Incoming request summary">
                           <header className="incoming-request-intro">
@@ -13887,13 +13896,13 @@ function App() {
                           </div>
                           {currentStage === 'residencyInformation' && <div className="registration-review-file-row">
                             <span>Valid ID upload</span>
-                            {!request.backendRegistrationId && request.files?.validId
+                            {request.files?.validId
                               ? <RegistrationEvidencePreview evidence={request.files.validId} label="Valid ID" />
                               : <p>No ID image was attached to this request.</p>}
                           </div>}
                           {currentStage === 'photoReview' && <div className="registration-review-file-row">
                             <span>Proof of residence upload</span>
-                            {!request.backendRegistrationId && request.files?.proofOfResidence
+                            {request.files?.proofOfResidence
                               ? <RegistrationEvidencePreview evidence={request.files.proofOfResidence} label="Proof of residence" />
                               : <p>No proof-of-residence file was attached to this request.</p>}
                           </div>}
