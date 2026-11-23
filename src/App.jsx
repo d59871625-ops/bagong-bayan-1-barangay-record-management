@@ -14212,7 +14212,7 @@ function App() {
                   <button type="button" className="community-cancel-button" disabled={isSendingRecoveryCode} onClick={() => setRecoveryDeliveryRequest(null)}>Cancel</button>
                 </section>
               </div>}
-              <TableSearch label="resident code recovery requests"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Request</th><th>Resident</th><th>Birthday</th><th>Email address</th><th>Status</th><th>Action</th></tr></thead><tbody>
+              <div className="table-scroll"><table className="admin-table"><thead><tr><th>Request</th><th>Resident</th><th>Birthday</th><th>Email address</th><th>Status</th><th>Action</th></tr></thead><tbody>
                 {residentCodeRecoveryRequests.map((request) => {
                   const closestResident = getClosestResidentRecord(request.fullName, adminResidents)
                   const comparisonResident = adminResidents.find((resident) => resident.id === request.matchedResidentId) || closestResident
@@ -14247,7 +14247,7 @@ function App() {
                       </dl>
                       {comparisonResident ? <section className="recovery-record-comparison" aria-label="Compare recovery form with resident record">
                         <div><h4>{request.matchedResidentId ? 'Verified resident record' : 'Closest resident record for comparison'}</h4><p>Compare the submitted information with the saved record before verifying. The closest name is only a suggestion; confirm identity from the details.</p></div>
-                        <TableSearch label="recovery record comparison"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Information</th><th>Submitted in recovery form</th><th>Saved resident record</th><th>Comparison</th></tr></thead><tbody>
+                        <div className="table-scroll"><table className="admin-table"><thead><tr><th>Information</th><th>Submitted in recovery form</th><th>Saved resident record</th><th>Comparison</th></tr></thead><tbody>
                           {[
                             ['Full name', request.fullName, comparisonResident.name, (value) => normalizeRecoveryIdentity(value)],
                             ['Date of birth', request.birthDate, savedBirthDate, (value) => normalizeRecoveryDate(value)],
@@ -14264,7 +14264,7 @@ function App() {
                             </tr>
                           })}
                           <tr><th scope="row">Resident code</th><td>Not requested on this form</td><td>{comparisonResident.code || 'Not recorded'}</td><td><span className="recovery-comparison-status is-unavailable">Staff reference</span></td></tr>
-                        </tbody></table></div></TableSearch>
+                        </tbody></table></div>
                       </section> : <p className="recovery-admin-warning">No existing resident record is available for comparison. Do not approve this recovery request until the resident is matched to an existing record.</p>}
                       {request.idPhoto?.dataUrl && <figure className="recovery-id-evidence"><a href={request.idPhoto.dataUrl} target="_blank" rel="noreferrer"><img src={request.idPhoto.dataUrl} alt={`ID evidence submitted by ${request.fullName}`} /></a><figcaption>{request.idPhoto.fileName || 'Submitted ID evidence'}</figcaption></figure>}
                       <div className="recovery-request-actions">
@@ -14277,7 +14277,7 @@ function App() {
                 </Fragment>
                 })}
                 {!residentCodeRecoveryRequests.length && <tr><td colSpan="6">No resident code recovery requests have been submitted.</td></tr>}
-              </tbody></table></div></TableSearch>
+              </tbody></table></div>
             </section> : <section className="resident-record-tab-panel">
               <section className="resident-record-subsection">
                 <div className="requests-heading"><div><span className="section-number">REGISTRATION DECISIONS</span><h3>Rejected registration applications</h3><p>Review declined applications and the reason recorded for each decision.</p></div><span className="request-notification">{filteredDeclinedRegistrationRequests.length} of {declinedRegistrationRequests.length}</span></div>

@@ -11632,6 +11632,95 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
   .resident-account-shell .resident-request-guide-button { box-sizing: border-box; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 }
 
+/* Keep mobile request cards and recipient tables inside their own panels. */
+@media (max-width: 720px) {
+  .official-dashboard .document-request-workspace,
+  .official-dashboard .document-requests-panel,
+  .official-dashboard .document-requests-panel .request-list,
+  .official-dashboard .document-requests-panel .request-item,
+  .official-dashboard .document-requests-panel .request-item > * {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .official-dashboard .document-requests-panel .request-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-auto-flow: row;
+    gap: 10px;
+    overflow: hidden;
+  }
+  .official-dashboard .document-requests-panel .request-item .request-meta,
+  .official-dashboard .document-requests-panel .request-item .request-resident,
+  .official-dashboard .document-requests-panel .request-item .request-status,
+  .official-dashboard .document-requests-panel .request-item > .open-request,
+  .official-dashboard .document-requests-panel .submission-request-chooser {
+    grid-column: 1 / -1 !important;
+    grid-row: auto !important;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    justify-self: stretch;
+  }
+  .official-dashboard .document-requests-panel .request-item .request-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+    align-items: start;
+  }
+  .official-dashboard .document-requests-panel .request-item .request-resident,
+  .official-dashboard .document-requests-panel .request-item .request-document-tags,
+  .official-dashboard .document-requests-panel .request-item .request-document-tags > *,
+  .official-dashboard .document-requests-panel .request-item .request-resident small,
+  .official-dashboard .document-requests-panel .request-item .request-meta > * {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .official-dashboard .document-requests-panel .request-item .request-document-tags {
+    display: flex;
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .official-dashboard .document-requests-panel .request-item > .open-request {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .official-dashboard .header-menu-wrap:has(> .notification-button) { position: static; }
+  .official-dashboard .notification-popover {
+    position: fixed;
+    inset: 70px auto auto 50%;
+    z-index: 1000;
+    box-sizing: border-box;
+    width: min(420px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 86px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    transform: translateX(-50%);
+  }
+
+  .resident-account-shell .resident-gcash-transfer-details,
+  .resident-account-shell .resident-gcash-transfer-details > *,
+  .resident-account-shell .resident-gcash-recipient-table-wrap {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .resident-account-shell .resident-gcash-recipient-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .resident-account-shell .resident-gcash-recipient-table {
+    width: 100%;
+    min-width: 350px;
+    max-width: none;
+  }
+}
+
 @media (max-width: 390px) {
   .resident-drafts-corrections-tabs { gap: 4px; padding: 5px; }
   .resident-drafts-corrections-tabs button { min-height: 74px; padding: 8px 5px; }
