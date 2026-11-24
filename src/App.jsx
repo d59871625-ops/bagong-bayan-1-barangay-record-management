@@ -3868,6 +3868,7 @@ const mapBackendRegistrationRequest = (application) => {
     name,
     address,
     submittedAt: application.created_at || '',
+    updatedAt: application.updated_at || application.created_at || '',
     status: backendStatus === 'approved' ? 'Approved' : ['rejected', 'declined'].includes(backendStatus) ? 'Declined' : 'Pending',
     referenceAccessStatus: String(application.reference_access_note || '').trim() ? 'Paused' : '',
     referenceAccessNote: application.reference_access_note || '',
@@ -9495,7 +9496,7 @@ function App() {
       let nextRequests = existingRequest
         ? requestsToUpdate.map((current) => current.id === requestId ? request : current)
         : [request, ...registrationRequests]
-      if (existingRequest && (!isDatabaseConnected || !officialBackendToken)) {
+      if (existingRequest && !existingRequest.backendRegistrationId && (!isDatabaseConnected || !officialBackendToken)) {
         throw new Error('The shared database is unavailable. Your application changes were not saved; please try again when the connection is restored.')
       }
       if (!existingRequest) {
@@ -9523,26 +9524,32 @@ function App() {
           registrationSource: 'resident-application',
         }
         nextRequests = [persistedRequest, ...registrationRequests.filter((current) => current.id !== requestId)]
+      } else if (existingRequest.backendRegistrationId) {
+        const response = await fetchWithTimeout(`${BACKEND_API_URL}/update-resident-registration.php`, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reference: requestId,
+            name: {
+              first_name: existingRequest.data?.firstName || '',
+              middle_name: existingRequest.data?.middleName || '',
+              last_name: existingRequest.data?.lastName || '',
+              suffix: existingRequest.data?.suffix || '',
+            },
+            data: submittedRegistrationData,
+            files: { validId, proofOfResidence },
+          }),
+        }, DATABASE_REQUEST_TIMEOUT_MS)
+        const result = await readJsonResponse(response, 'Registration edit')
+        if (!response.ok || !result.success || Number(result.data?.registration_id) !== Number(existingRequest.backendRegistrationId)) {
+          throw new Error(result.message || 'The corrected application could not be sent back to the barangay for review.')
+        }
       } else {
         await queueDatabaseRecords(databaseSaveQueueRef, { [registrationRequestsStorageKey]: nextRequests }, officialBackendToken, null, fastSyncRef.current)
         databaseRecordsRef.current = {
           ...(databaseRecordsRef.current || {}),
           [registrationRequestsStorageKey]: nextRequests,
-        }
-        if (existingRequest.backendRegistrationId) {
-          const savedData = existingRequest.data || {}
-          const response = await fetchWithTimeout(`${BACKEND_API_URL}/registration-reference.php`, {
-            method: 'POST', cache: 'no-store',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'resume', reference: requestId, name: {
-              first_name: savedData.firstName || '',
-              middle_name: savedData.middleName || '',
-              last_name: savedData.lastName || '',
-              suffix: savedData.suffix || '',
-            } }),
-          })
-          const result = await response.json()
-          if (!response.ok || !result.success) throw new Error(result.message || 'The edit request was saved, but its returned status could not be cleared. Please contact the barangay office.')
         }
       }
       setRegistrationRequests(nextRequests)
@@ -14704,7 +14711,7 @@ function App() {
                     {profileRequests.map((request) => <article key={request.id}>
                       <div className="resident-profile-update-request-heading"><div><strong>{request.id}</strong><span>Submitted {request.submittedAt ? new Date(request.submittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</span></div><span className={`compliance-status ${request.status.toLowerCase()}`}>{request.status}</span></div>
                       <h3>Requested changes</h3>
-                      <dl className="registration-data-grid">{Object.entries(request.proposedChanges || {}).map(([field, value]) => <div key={field}><dt>{({ fullName: 'Full name', birthDate: 'Date of birth', contactNumber: 'Contact number', emailAddress: 'Email address', address: 'Home address' })[field] || field}</dt><dd>{value || 'Not provided'}</dd></div>)}</dl>
+      <dl className="registration-data-grid">{Object.entries(request.proposedChanges || {}).filter(([, value]) => String(value || '').trim()).map(([field, value]) => <div key={field}><dt>{({ fullName: 'Full name', birthDate: 'Date of birth', contactNumber: 'Contact number', emailAddress: 'Email address', address: 'Home address' })[field] || field}</dt><dd>{value}</dd></div>)}</dl>
                       {request.reviewedAt && <p className="resident-profile-update-reviewed">Reviewed {new Date(request.reviewedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>}
                       {request.status === 'Pending' && <div className="resident-profile-update-request-actions"><button type="button" onClick={() => reviewProfileUpdateRequest(request, 'Approved')}>Approve changes</button><button type="button" className="table-delete" onClick={() => reviewProfileUpdateRequest(request, 'Declined')}>Decline</button></div>}
                     </article>)}

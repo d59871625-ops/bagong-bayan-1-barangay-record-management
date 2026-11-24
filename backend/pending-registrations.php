@@ -30,9 +30,11 @@ try {
     ensureRegistrationApplicationDetailsTable($pdo);
     ensureRegistrationReferenceAccessTable($pdo);
     $versionStatement = $pdo->query("
-        SELECT r.id, r.status, r.created_at, r.reviewed_at, r.rejection_reason, access.paused_note
+        SELECT r.id, r.status, r.created_at, r.reviewed_at, r.rejection_reason,
+            access.paused_note, details.updated_at AS application_updated_at
         FROM registration_requests AS r
         LEFT JOIN registration_reference_access AS access ON access.registration_id = r.id
+        LEFT JOIN registration_application_details AS details ON details.registration_id = r.id
         ORDER BY r.created_at ASC, r.id ASC
     ");
     $versionRows = $versionStatement->fetchAll(PDO::FETCH_ASSOC);
@@ -46,6 +48,7 @@ try {
                 . (string) ($versionRow["reviewed_at"] ?? "") . "\0"
                 . (string) ($versionRow["rejection_reason"] ?? "") . "\0"
                 . (string) ($versionRow["paused_note"] ?? "") . "\0"
+                . (string) ($versionRow["application_updated_at"] ?? "") . "\0"
         );
     }
     $etag = '"' . hash_final($etagContext) . '"';
@@ -75,6 +78,7 @@ try {
             province,
             status,
             registration_requests.created_at,
+            details.updated_at AS updated_at,
             details.application_data,
             details.valid_id,
             details.proof_of_residence,

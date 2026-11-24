@@ -38,9 +38,19 @@ function ensureRegistrationApplicationDetailsTable(PDO $pdo): void
             application_data LONGTEXT NOT NULL,
             valid_id LONGTEXT NOT NULL,
             proof_of_residence LONGTEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+
+    $updatedAtColumnStmt = $pdo->prepare("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'registration_application_details'
+          AND COLUMN_NAME = 'updated_at' LIMIT 1");
+    $updatedAtColumnStmt->execute();
+    if (!$updatedAtColumnStmt->fetchColumn()) {
+        $pdo->exec("ALTER TABLE registration_application_details
+            ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+    }
 }
 
 function ensureRegistrationReferenceAccessTable(PDO $pdo): void

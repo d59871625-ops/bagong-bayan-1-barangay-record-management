@@ -32,7 +32,7 @@ if (!in_array($action, ["update_profile", "set_status"], true)) {
 try {
     $pdo->beginTransaction();
     $residentStmt = $pdo->prepare("
-        SELECT r.id, r.user_id, r.first_name, r.middle_name, r.last_name, r.suffix
+        SELECT r.id, r.user_id, r.first_name, r.middle_name, r.last_name, r.suffix, u.email
         FROM residents r
         INNER JOIN users u ON u.id = r.user_id
         WHERE r.resident_code = ?
@@ -77,6 +77,22 @@ try {
 
         $residentChanges = [];
         $userChanges = [];
+        $fieldLimits = [
+            "first_name" => 100,
+            "middle_name" => 100,
+            "last_name" => 100,
+            "suffix" => 30,
+            "date_of_birth" => 10,
+            "contact_number" => 40,
+            "email" => 190,
+            "address" => 190,
+        ];
+        foreach ($changes as $field => $value) {
+            if (!is_scalar($value) || strlen(trim((string) $value)) > $fieldLimits[$field]) {
+                $pdo->rollBack();
+                respond(422, ["success" => false, "message" => "The requested profile field is too long or invalid."]);
+            }
+        }
         $columnMap = [
             "first_name" => "first_name",
             "middle_name" => "middle_name",
@@ -99,11 +115,19 @@ try {
         }
         if (array_key_exists("email", $changes)) {
             $email = strtolower(trim((string) $changes["email"]));
-            if ($email !== "" && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            if ($email !== "" && (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190)) {
                 $pdo->rollBack();
                 respond(422, ["success" => false, "message" => "Enter a valid email address."]);
             }
-            if ($email !== "") $userChanges["email"] = $email;
+            if ($email !== "" && strcasecmp($email, (string) ($resident["email"] ?? "")) !== 0) {
+                $duplicateEmail = $pdo->prepare("SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND id <> ? LIMIT 1");
+                $duplicateEmail->execute([$email, $resident["user_id"]]);
+                if ($duplicateEmail->fetchColumn() !== false) {
+                    $pdo->rollBack();
+                    respond(409, ["success" => false, "message" => "This Gmail address is already linked to another account. Use a different email address."]);
+                }
+                $userChanges["email"] = $email;
+            }
         }
         if (array_key_exists("date_of_birth", $changes) && !empty($residentChanges["date_of_birth"])) {
             $date = DateTime::createFromFormat("Y-m-d", $residentChanges["date_of_birth"]);
