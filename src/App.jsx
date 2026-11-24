@@ -7166,7 +7166,10 @@ function App() {
     request.emailAddress,
     request.email,
   ].some((value) => String(value || '').toLowerCase().includes(recoveryRequestQuery)))
-  const adminPaymentRecords = groupPaymentRequests(residentRequests.filter((request) => Number(request.feeAmount || 0) > 0))
+  const notIssuedPaymentRequest = (request) => !issuedAdminRequestIds.has(String(request.id))
+  const adminPaymentRecords = groupPaymentRequests(residentRequests.filter((request) => (
+    Number(request.feeAmount || 0) > 0 && notIssuedPaymentRequest(request)
+  )))
   const activePaymentRecords = adminPaymentRecords
   const paymentAssessmentRecords = activePaymentRecords.filter((payment) => (
     payment.paymentStatus === 'Pending verification'
@@ -7176,7 +7179,9 @@ function App() {
     .sort((first, second) => new Date(second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const paymentHistoryRecords = groupPaymentRequests(allDocumentRequests
-    .filter((request) => Number(request.feeAmount || 0) > 0 && request.paymentStatus === 'Paid'))
+    .filter((request) => Number(request.feeAmount || 0) > 0
+      && request.paymentStatus === 'Paid'
+      && notIssuedPaymentRequest(request)))
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const getPaymentResidentContactNumber = (request) => {
@@ -7193,6 +7198,7 @@ function App() {
     request.status === 'Cancelled'
     && ['Pending verification', 'Paid'].includes(request.paymentStatus)
     && Number(request.feeAmount || 0) > 0
+    && notIssuedPaymentRequest(request)
   )).sort((first, second) => new Date(second.cancelledAt || 0).getTime() - new Date(first.cancelledAt || 0).getTime())
   const adminNavigationUnreadItems = {
     overview: [],
