@@ -30,9 +30,10 @@ try {
     ensureRegistrationApplicationDetailsTable($pdo);
     ensureRegistrationReferenceAccessTable($pdo);
     $versionStatement = $pdo->query("
-        SELECT id, status, created_at, reviewed_at, rejection_reason
-        FROM registration_requests
-        ORDER BY created_at ASC, id ASC
+        SELECT r.id, r.status, r.created_at, r.reviewed_at, r.rejection_reason, access.paused_note
+        FROM registration_requests AS r
+        LEFT JOIN registration_reference_access AS access ON access.registration_id = r.id
+        ORDER BY r.created_at ASC, r.id ASC
     ");
     $versionRows = $versionStatement->fetchAll(PDO::FETCH_ASSOC);
     $etagContext = hash_init("sha256");
@@ -44,6 +45,7 @@ try {
                 . (string) $versionRow["created_at"] . "\0"
                 . (string) ($versionRow["reviewed_at"] ?? "") . "\0"
                 . (string) ($versionRow["rejection_reason"] ?? "") . "\0"
+                . (string) ($versionRow["paused_note"] ?? "") . "\0"
         );
     }
     $etag = '"' . hash_final($etagContext) . '"';
@@ -75,10 +77,13 @@ try {
             registration_requests.created_at,
             details.application_data,
             details.valid_id,
-            details.proof_of_residence
+            details.proof_of_residence,
+            reference_access.paused_note AS reference_access_note
         FROM registration_requests
         LEFT JOIN registration_application_details AS details
             ON details.registration_id = registration_requests.id
+        LEFT JOIN registration_reference_access AS reference_access
+            ON reference_access.registration_id = registration_requests.id
         WHERE status = 'pending'
         ORDER BY registration_requests.created_at ASC
     ");

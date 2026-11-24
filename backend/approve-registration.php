@@ -258,7 +258,7 @@ try {
     ]);
 
     $referenceAccessStmt = $pdo->prepare("INSERT INTO registration_reference_access (registration_id, resident_code)
-        VALUES (?, ?) ON DUPLICATE KEY UPDATE resident_code = VALUES(resident_code)");
+        VALUES (?, ?) ON DUPLICATE KEY UPDATE resident_code = VALUES(resident_code), paused_note = NULL");
     $referenceAccessStmt->execute([$registrationId, $residentCode]);
 
     $historyStmt = $pdo->prepare("

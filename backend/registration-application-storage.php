@@ -48,9 +48,18 @@ function ensureRegistrationReferenceAccessTable(PDO $pdo): void
     $pdo->exec("CREATE TABLE IF NOT EXISTS registration_reference_access (
         registration_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
         resident_code VARCHAR(32) NULL,
+        paused_note TEXT NULL,
         declined_notice_acknowledged_at TIMESTAMP NULL DEFAULT NULL,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $columnStmt = $pdo->prepare("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'registration_reference_access'
+          AND COLUMN_NAME = 'paused_note' LIMIT 1");
+    $columnStmt->execute();
+    if (!$columnStmt->fetchColumn()) {
+        $pdo->exec("ALTER TABLE registration_reference_access ADD COLUMN paused_note TEXT NULL AFTER resident_code");
+    }
 }
 
 function decodeRegistrationApplicationJson(?string $value, string $field): array

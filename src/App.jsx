@@ -3347,7 +3347,7 @@ const isRequestReadyForDocumentProcessing = (request) => (
   && (Number(request.feeAmount || 0) <= 0 || request.paymentStatus === 'Paid')
 )
 const isRequestSubmittedToAdmin = (request) => (
-  request.status !== 'Cancelled'
+  !['Completed', 'Released', 'Declined', 'Cancelled'].includes(request.status)
   && (Number(request.feeAmount || 0) <= 0 || ['Pending verification', 'Paid'].includes(request.paymentStatus))
 )
 const groupPaymentRequests = (requests) => {
@@ -3869,6 +3869,8 @@ const mapBackendRegistrationRequest = (application) => {
     address,
     submittedAt: application.created_at || '',
     status: backendStatus === 'approved' ? 'Approved' : ['rejected', 'declined'].includes(backendStatus) ? 'Declined' : 'Pending',
+    referenceAccessStatus: String(application.reference_access_note || '').trim() ? 'Paused' : '',
+    referenceAccessNote: application.reference_access_note || '',
     reviewedAt: application.reviewed_at || '',
     rejectionReason: application.rejection_reason || '',
     assignedResidentCode: application.assigned_resident_code || '',
@@ -6701,22 +6703,30 @@ function App() {
     ...request,
     statusHistory: [{ status: 'Completed', changedAt: request.releasedAt }],
   }))
+  const completedIssuedRequestIds = new Set(residentCompletedIssuedRequests.map((request) => String(request.id)))
+  const terminalResidentRequestStatuses = ['Completed', 'Released', 'Declined', 'Cancelled']
+  const activeResidentAccountRequests = residentAccountRequests.filter((request) => (
+    !terminalResidentRequestStatuses.includes(request.status)
+    && !completedIssuedRequestIds.has(String(request.id))
+  ))
   const residentCancellationRequest = residentAccountRequests.find((request) => request.id === residentCancellationRequestId)
-  const residentInboxRequests = residentAccountRequests.filter((request) => (
+  const residentInboxRequests = activeResidentAccountRequests.filter((request) => (
     isRequestSubmittedToAdmin(request)
-    && !['Completed', 'Released', 'Declined', 'Cancelled'].includes(request.status)
   ))
   const residentCorrectionRequests = residentInboxRequests.filter((request) => request.status === 'Returned for edits')
   const residentCancelledRequests = residentAccountRequests.filter((request) => request.status === 'Cancelled')
   const residentPendingPaymentRequests = residentPaymentDrafts.filter((request) => (
-    request.awaitingPaymentSubmission && residentRecordMatchesAccount(request, residentName)
+    request.awaitingPaymentSubmission
+    && residentRecordMatchesAccount(request, residentName)
+    && !terminalResidentRequestStatuses.includes(request.status)
+    && !completedIssuedRequestIds.has(String(request.id))
   ))
   const residentPaymentRequests = [
-    ...residentAccountRequests.filter((request) => Number(request.feeAmount || 0) > 0),
+    ...activeResidentAccountRequests.filter((request) => Number(request.feeAmount || 0) > 0),
     ...residentPendingPaymentRequests,
   ].sort((first, second) => new Date(second.requestedAt || second.paymentDraftedAt || 0).getTime()
     - new Date(first.requestedAt || first.paymentDraftedAt || 0).getTime())
-  const residentPaymentHistoryRequests = residentPaymentRequests
+  const residentPaymentHistoryRequests = residentAccountRequests
     .filter((request) => Number(request.feeAmount || 0) > 0 && request.paymentStatus === 'Paid')
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
@@ -8144,8 +8154,8 @@ function App() {
       },
       onStatus: (message, failed, phase) => {
         if (phase === 'save') {
-          if (failed) console.error(message)
           setAdminFastSync(fastSync.isActive() ? fastSync : null)
+          if (failed) console.error(message)
           return
         }
         if (failed) {
@@ -8697,6 +8707,11 @@ function App() {
           openRegistrationCommunity({ kind: 'approved', requestId, status: 'Approved',
             code: result.data.resident_code,
             message: 'Your registration has been approved. Your assigned resident code is shown below. Use this code to log in.' })
+          return true
+        }
+        if (result.data.status === 'Paused') {
+          openRegistrationCommunity({ kind: 'paused', requestId, status: 'Pending',
+            message: result.data.reference_access_note || 'The barangay office returned your application for edits. Open My Registration to review and resubmit the requested information.' })
           return true
         }
         openRegistrationCommunity({ kind: 'pending', requestId, status: 'Pending',
@@ -9443,6 +9458,21 @@ function App() {
           ...(databaseRecordsRef.current || {}),
           [registrationRequestsStorageKey]: nextRequests,
         }
+        if (existingRequest.backendRegistrationId) {
+          const savedData = existingRequest.data || {}
+          const response = await fetchWithTimeout(`${BACKEND_API_URL}/registration-reference.php`, {
+            method: 'POST', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'resume', reference: requestId, name: {
+              first_name: savedData.firstName || '',
+              middle_name: savedData.middleName || '',
+              last_name: savedData.lastName || '',
+              suffix: savedData.suffix || '',
+            } }),
+          })
+          const result = await response.json()
+          if (!response.ok || !result.success) throw new Error(result.message || 'The edit request was saved, but its returned status could not be cleared. Please contact the barangay office.')
+        }
       }
       setRegistrationRequests(nextRequests)
       setRegistrationStorageWarning(existingRequest
@@ -10072,15 +10102,30 @@ function App() {
     setRegistrationDecisionModalOpen(false)
   }
 
-  const pauseRegistrationApplication = (request) => {
+  const pauseRegistrationApplication = async () => {
+    const request = activeRegistrationReviewRequest
+    if (!request) return
     if (request.status !== 'Pending') return
     const note = registrationAdminNote.trim()
     if (!note) {
       setRegistrationActionError('Enter a note for the applicant before pausing this application.')
       return
     }
-    const updatedAt = new Date().toISOString()
-    setRegistrationRequests((requests) => requests.map((current) => current.id === request.id
+    setProcessingRegistrationId(request.id)
+    setRegistrationActionError('')
+    try {
+      if (request.backendRegistrationId) {
+        if (!officialBackendToken) throw new Error('Sign in to the shared database before returning this application for edits.')
+        const response = await fetch(`${BACKEND_API_URL}/pause-registration.php`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officialBackendToken}` },
+          body: JSON.stringify({ registration_id: request.backendRegistrationId, note }),
+        })
+        const result = await response.json()
+        if (!response.ok || !result.success) throw new Error(result.message || 'The edit note could not be saved.')
+      }
+      const updatedAt = new Date().toISOString()
+      const nextRequests = registrationRequests.map((current) => current.id === request.id
       ? {
         ...current,
         referenceAccessStatus: 'Paused',
@@ -10088,22 +10133,59 @@ function App() {
         referenceNoticeDismissedAt: '',
         updatedAt,
       }
-      : current))
-    setExpandedRegistrationId(null)
-    setRegistrationReviewStage('')
-    setRegistrationAdminNote('')
-    setRegistrationActionError('')
-    setRegistrationDecisionModalOpen(false)
+      : current)
+      if (isDatabaseConnected && officialBackendToken) {
+        await saveDatabaseRecords({ [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
+        databaseRecordsRef.current = { ...(databaseRecordsRef.current || {}), [registrationRequestsStorageKey]: nextRequests }
+      }
+      setRegistrationRequests(nextRequests)
+      setExpandedRegistrationId(null)
+      setRegistrationReviewStage('')
+      setRegistrationAdminNote('')
+      setRegistrationDecisionModalOpen(false)
+    } catch (error) {
+      console.error(`Unable to return registration ${request.id} for edits.`, error)
+      setRegistrationActionError(error.message || 'The edit note could not be saved.')
+    } finally {
+      setProcessingRegistrationId('')
+    }
   }
 
-  const resumeRegistrationReview = (request) => {
-    setRegistrationRequests((requests) => requests.map((current) => current.id === request.id
+  const resumeRegistrationReview = async (request) => {
+    if (request.backendRegistrationId) {
+      try {
+        const response = await fetch(`${BACKEND_API_URL}/pause-registration.php`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${officialBackendToken}` },
+          body: JSON.stringify({ action: 'resume', registration_id: request.backendRegistrationId }),
+        })
+        const result = await response.json()
+        if (!response.ok || !result.success) throw new Error(result.message || 'The returned note could not be cleared.')
+      } catch (error) {
+        setRegistrationActionError(error.message || 'The application could not be reopened for review.')
+        return
+      }
+    }
+    const nextRequests = registrationRequests.map((current) => current.id === request.id
       ? { ...current, referenceAccessStatus: '', referenceAccessNote: '', updatedAt: new Date().toISOString() }
-      : current))
+      : current)
+    if (isDatabaseConnected && officialBackendToken) {
+      try {
+        await saveDatabaseRecords({ [registrationRequestsStorageKey]: nextRequests }, officialBackendToken)
+        databaseRecordsRef.current = { ...(databaseRecordsRef.current || {}), [registrationRequestsStorageKey]: nextRequests }
+      } catch (error) {
+        setRegistrationActionError(error.message || 'The application could not be reopened for review.')
+        return
+      }
+    }
+    setRegistrationRequests(nextRequests)
     openRegistrationReview({ ...request, referenceAccessNote: '' }, getRegistrationReviewSteps()[0].key)
   }
 
-  const reviewRegistration = async (request, status, fastSync) => {
+  const reviewRegistration = async (event) => {
+    const request = activeRegistrationReviewRequest
+    const status = event.currentTarget.dataset.registrationStatus
+    if (!request || !['Approved', 'Declined'].includes(status)) return
     if (request.status !== 'Pending') return
     if (getRegistrationReviewSteps(request).some(({ key }) => !request.reviewSteps?.[key])) return
     if (processingRegistrationId) return
@@ -10155,17 +10237,17 @@ function App() {
         residentCode = existingResident?.code || generateResidentCode(request.name, adminResidents)
       }
 
+      let nextResidents = adminResidents
       if (status === 'Approved' && residentCode) {
-        setAdminResidents((residents) => {
-          const matchingResident = residents.find((resident) => resident.code?.toLowerCase() === residentCode.toLowerCase())
-          if (matchingResident) {
-            return matchingResident.recordStatus === 'inactive'
-              ? residents.map((resident) => resident.id === matchingResident.id
-                ? { ...resident, recordStatus: 'active', updatedAt: new Date().toISOString() }
-                : resident)
-              : residents
-          }
-          return [...residents, {
+        const matchingResident = adminResidents.find((resident) => resident.code?.toLowerCase() === residentCode.toLowerCase())
+        if (matchingResident) {
+          nextResidents = matchingResident.recordStatus === 'inactive'
+            ? adminResidents.map((resident) => resident.id === matchingResident.id
+              ? { ...resident, recordStatus: 'active', updatedAt: new Date().toISOString() }
+              : resident)
+            : adminResidents
+        } else {
+          nextResidents = [...adminResidents, {
             id: residentCode,
             name: request.name,
             firstName: request.data?.firstName || '',
@@ -10180,7 +10262,7 @@ function App() {
             recordStatus: 'active',
             createdAt: new Date().toISOString(),
           }]
-        })
+        }
       }
 
       const reviewedAt = new Date().toISOString()
@@ -10198,10 +10280,17 @@ function App() {
         : current)
       if (request.backendRegistrationId) {
         await saveDatabaseRecords({
+          ...(status === 'Approved' ? { [residentRecordsStorageKey]: nextResidents } : {}),
           [registrationRequestsStorageKey]: nextRequests,
-        }, officialBackendToken, null, fastSync)
+        }, officialBackendToken, null, adminFastSync)
+        databaseRecordsRef.current = {
+          ...(databaseRecordsRef.current || {}),
+          ...(status === 'Approved' ? { [residentRecordsStorageKey]: nextResidents } : {}),
+          [registrationRequestsStorageKey]: nextRequests,
+        }
         setRegistrationSyncError('')
       }
+      if (status === 'Approved') setAdminResidents(nextResidents)
       setRegistrationRequests(nextRequests)
       setExpandedRegistrationId(null)
       setRegistrationReviewStage('details')
@@ -14051,9 +14140,9 @@ function App() {
                   <label className="registration-decline-reason registration-admin-note">Reason / note for the applicant <span>(required to decline or pause)</span><textarea value={registrationAdminNote} onChange={(event) => setRegistrationAdminNote(event.target.value)} maxLength={1000} rows="3" placeholder="Example: The ID photo is unclear. Please upload a clearer image showing your full name and ID number." /></label>
                   <p className="registration-decision-note">Be specific and respectful. Mention what is missing or incorrect and what the applicant can do next, such as correcting a name mismatch or providing clearer proof of residence. This note is saved with a rejection or shown while the application is paused.</p>
                   <div className="registration-decision-modal-actions">
-                    <button type="button" className="registration-decision-choice is-approve" disabled={processingRegistrationId === request.id} onClick={() => reviewRegistration(request, 'Approved', adminFastSync)}><span aria-hidden="true">✓</span>{processingRegistrationId === request.id ? 'Saving…' : 'Approve'}</button>
-                    <button type="button" className="registration-decision-choice is-decline" disabled={processingRegistrationId === request.id} onClick={() => reviewRegistration(request, 'Declined', adminFastSync)}><span aria-hidden="true">×</span>Decline</button>
-                    <button type="button" className="registration-decision-choice is-pause" disabled={processingRegistrationId === request.id} onClick={() => pauseRegistrationApplication(request)}><span aria-hidden="true">Ⅱ</span>Pause</button>
+                    <button type="button" className="registration-decision-choice is-approve" data-registration-status="Approved" disabled={processingRegistrationId === request.id} onClick={reviewRegistration}><span aria-hidden="true">✓</span>{processingRegistrationId === request.id ? 'Saving…' : 'Approve'}</button>
+                    <button type="button" className="registration-decision-choice is-decline" data-registration-status="Declined" disabled={processingRegistrationId === request.id} onClick={reviewRegistration}><span aria-hidden="true">×</span>Decline</button>
+                    <button type="button" className="registration-decision-choice is-pause" disabled={processingRegistrationId === request.id} onClick={pauseRegistrationApplication}><span aria-hidden="true">Ⅱ</span>Pause</button>
                   </div>
                 </section>
               </div>

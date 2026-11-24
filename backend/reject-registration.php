@@ -2,6 +2,7 @@
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/registration-application-storage.php";
 
 header("Content-Type: application/json");
 
@@ -21,6 +22,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 
 try {
     $admin = authenticateUser($pdo, ["admin", "official"]);
+    ensureRegistrationReferenceAccessTable($pdo);
 
     $input = json_decode(file_get_contents("php://input"), true);
 
@@ -103,6 +105,9 @@ try {
         $reason,
         $registrationId
     ]);
+
+    $clearPausedNote = $pdo->prepare("UPDATE registration_reference_access SET paused_note = NULL WHERE registration_id = ?");
+    $clearPausedNote->execute([$registrationId]);
 
     $pdo->commit();
 

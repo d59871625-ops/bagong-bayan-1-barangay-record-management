@@ -58,7 +58,7 @@ if (!is_array($input)) respond(400, ["success" => false, "message" => "Invalid J
 $action = $input["action"] ?? "lookup";
 $reference = strtoupper(trim((string) ($input["reference"] ?? "")));
 $name = $input["name"] ?? null;
-if (!in_array($action, ["lookup", "acknowledge"], true)
+if (!in_array($action, ["lookup", "acknowledge", "resume"], true)
     || !preg_match('/^(?:DB-)?REG-(?:[1-9][0-9]*|[0-9]{4}-[A-F0-9]{16})$/', $reference)
     || !is_array($name)) {
     respond(422, ["success" => false, "message" => "A valid application reference and applicant name are required."]);
@@ -79,7 +79,7 @@ try {
         $registrationId = (int) $matches[1];
         $stmt = $pdo->prepare("SELECT r.id, r.first_name, r.middle_name, r.last_name, r.suffix,
                 r.status, r.reviewed_at, r.rejection_reason, a.resident_code,
-                a.declined_notice_acknowledged_at
+                a.paused_note, a.declined_notice_acknowledged_at
             FROM registration_requests AS r
             LEFT JOIN registration_reference_access AS a ON a.registration_id = r.id
             WHERE r.id = ? LIMIT 1");
@@ -112,6 +112,12 @@ try {
             $ack->execute([$registrationId]);
             respond(200, ["success" => true, "data" => ["acknowledged" => true]]);
         }
+        if ($action === "resume") {
+            if ($status !== "pending") respond(409, ["success" => false, "message" => "Only a pending registration can be resubmitted."]);
+            $resume = $pdo->prepare("UPDATE registration_reference_access SET paused_note = NULL WHERE registration_id = ?");
+            $resume->execute([$registrationId]);
+            respond(200, ["success" => true, "data" => ["resumed" => true]]);
+        }
         if (in_array($status, ["rejected", "declined"], true) && $application["declined_notice_acknowledged_at"]) {
             respond(200, ["success" => true, "data" => ["status" => "used"]]);
         }
@@ -120,9 +126,10 @@ try {
         }
         respond(200, ["success" => true, "data" => [
             "reference" => "DB-REG-" . $registrationId,
-            "status" => in_array($status, ["rejected", "declined"], true) ? "Declined" : ($status === "approved" ? "Approved" : "Pending"),
+            "status" => in_array($status, ["rejected", "declined"], true) ? "Declined" : ($status === "approved" ? "Approved" : (trim((string) ($application["paused_note"] ?? "")) !== "" ? "Paused" : "Pending")),
             "resident_code" => $status === "approved" ? $code : null,
             "rejection_reason" => $application["rejection_reason"] ?? "",
+            "reference_access_note" => $application["paused_note"] ?? "",
         ]]);
     }
     respond(404, ["success" => false, "message" => "Application reference or applicant name was not found."]);
