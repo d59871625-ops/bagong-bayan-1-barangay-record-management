@@ -14621,7 +14621,16 @@ function App() {
                         .catch((error) => console.error(`Unable to prepare the ${document} template preview.`, error))}
                       onClick={() => setPreviewTemplateDocument(document)}
                     >Preview template</button>
-                    <button type="button" className="certificate-template-edit" disabled={!template} onClick={() => openCertificateTemplateEditor(document)}>Edit layout</button>
+                    <button
+                      type="button"
+                      className="certificate-template-edit"
+                      disabled={!template}
+                      onPointerEnter={() => preloadCertificateTemplatePreview(document, customCertificateTemplates)
+                        .catch((error) => console.error(`Unable to prepare the ${document} template editor.`, error))}
+                      onFocus={() => preloadCertificateTemplatePreview(document, customCertificateTemplates)
+                        .catch((error) => console.error(`Unable to prepare the ${document} template editor.`, error))}
+                      onClick={() => openCertificateTemplateEditor(document)}
+                    >Edit layout</button>
                     <label className="template-enabled-toggle"><input type="checkbox" checked={isEnabled} onChange={() => toggleCertificateType(document)} />Available to residents</label>
                     {template?.overridesBuiltIn
                       ? <button type="button" className="table-delete" onClick={() => restoreBuiltInCertificateTemplate(template)}>Restore original</button>
