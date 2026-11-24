@@ -7180,8 +7180,7 @@ function App() {
       - new Date(first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const paymentHistoryRecords = groupPaymentRequests(allDocumentRequests
     .filter((request) => Number(request.feeAmount || 0) > 0
-      && request.paymentStatus === 'Paid'
-      && notIssuedPaymentRequest(request)))
+      && request.paymentStatus === 'Paid'))
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const getPaymentResidentContactNumber = (request) => {
