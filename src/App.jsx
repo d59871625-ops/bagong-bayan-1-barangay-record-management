@@ -7109,8 +7109,17 @@ function App() {
   const residentUpdateCount = residentInboxRequests.reduce((total, request) => total + (request.statusHistory || withRequestStatusHistory(request).statusHistory).filter((entry) => entry.status !== 'New').length, 0)
     + residentInboxRequests.filter((request) => request.pickupNotificationSentAt).length
     + registrationInboxRequests.filter((request) => request.reviewedAt).length
-  const documentProcessingRequests = residentRequests.filter(isRequestReadyForDocumentProcessing)
-  const documentInboxRequests = residentRequests.filter(isRequestSubmittedToAdmin)
+  const issuedAdminRequestIds = new Set(issuedDocuments
+    .map((document) => String(document.requestId || ''))
+    .filter(Boolean))
+  const documentProcessingRequests = residentRequests.filter((request) => (
+    isRequestReadyForDocumentProcessing(request)
+    && !issuedAdminRequestIds.has(String(request.id))
+  ))
+  const documentInboxRequests = residentRequests.filter((request) => (
+    isRequestSubmittedToAdmin(request)
+    && !issuedAdminRequestIds.has(String(request.id))
+  ))
   const isLoadingPrivateDatabaseData = Boolean(officialBackendToken)
     && !hasLoadedPrivateDatabaseData
     && databaseSaveStatus === 'checking'
@@ -11308,6 +11317,9 @@ function App() {
       : currentRequest))
     setPaymentReviewRequestId('')
     setPaymentOrNumber('')
+    setDocumentQueueFilter('review')
+    setSelectedRequestId('')
+    setAdminView('documents')
   }
 
   const addGcashRecipient = () => {
