@@ -119,11 +119,37 @@ try {
             registration_requests.created_at,
             registration_requests.reviewed_at,
             registration_requests.rejection_reason,
-            reference_access.resident_code AS assigned_resident_code
+            COALESCE(reference_access.resident_code, resident.resident_code) AS assigned_resident_code,
+            resident.id AS resident_id,
+            resident.record_status AS resident_record_status,
+            resident.first_name AS resident_first_name,
+            resident.middle_name AS resident_middle_name,
+            resident.last_name AS resident_last_name,
+            resident.suffix AS resident_suffix,
+            resident.date_of_birth AS resident_date_of_birth,
+            resident.contact_number AS resident_contact_number,
+            resident.house_no_street AS resident_house_no_street,
+            resident.purok AS resident_purok,
+            resident.barangay AS resident_barangay,
+            resident.city_municipality AS resident_city_municipality,
+            resident.province AS resident_province,
+            account.email AS resident_email
         FROM registration_requests
         LEFT JOIN registration_reference_access AS reference_access
             ON reference_access.registration_id = registration_requests.id
-        WHERE registration_requests.status IN ('approved', 'rejected')
+        LEFT JOIN residents AS resident
+            ON resident.resident_code = COALESCE(reference_access.resident_code, (
+                SELECT fallback_resident.resident_code
+                FROM residents AS fallback_resident
+                INNER JOIN users AS fallback_account ON fallback_account.id = fallback_resident.user_id
+                WHERE LOWER(fallback_account.email) = LOWER(registration_requests.email)
+                  AND fallback_account.role = 'resident'
+                ORDER BY fallback_resident.id DESC
+                LIMIT 1
+            ))
+        LEFT JOIN users AS account
+            ON account.id = resident.user_id
+        WHERE registration_requests.status IN ('approved', 'rejected', 'declined')
         ORDER BY registration_requests.created_at DESC, registration_requests.id DESC
     ");
     $history = $historyStatement->fetchAll(PDO::FETCH_ASSOC);

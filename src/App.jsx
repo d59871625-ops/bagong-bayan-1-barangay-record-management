@@ -3874,6 +3874,22 @@ const mapBackendRegistrationRequest = (application) => {
     reviewedAt: application.reviewed_at || '',
     rejectionReason: application.rejection_reason || '',
     assignedResidentCode: application.assigned_resident_code || '',
+    residentId: application.resident_id || '',
+    residentRecordStatus: application.resident_record_status || '',
+    residentEmailAddress: application.resident_email || '',
+    residentDirectoryDetails: application.resident_id ? {
+      firstName: application.resident_first_name || data.firstName,
+      middleName: application.resident_middle_name || data.middleName,
+      lastName: application.resident_last_name || data.lastName,
+      suffix: application.resident_suffix || data.suffix,
+      birthDate: application.resident_date_of_birth || data.birthDate,
+      mobileNumber: application.resident_contact_number || data.mobileNumber,
+      houseBlockLot: application.resident_house_no_street || data.houseBlockLot,
+      streetPurok: application.resident_purok || data.streetPurok,
+      barangay: application.resident_barangay || data.barangay,
+      municipalityCity: application.resident_city_municipality || data.municipalityCity,
+      province: application.resident_province || data.province,
+    } : null,
     data,
     files: application.application_data
       ? {
@@ -3883,6 +3899,51 @@ const mapBackendRegistrationRequest = (application) => {
       : {},
     reviewSteps: {},
   }
+}
+
+const mergeApprovedRegistrationResidents = (residents, registrations) => {
+  const result = Array.isArray(residents) ? residents.slice() : []
+  const knownCodes = new Set(result.map((resident) => normalizeResidentCode(
+    resident.code || resident.residentCode || resident.resident_code || resident.id,
+  )).filter(Boolean))
+
+  registrations.forEach((request) => {
+    const code = String(request?.assignedResidentCode || '').trim()
+    const normalizedCode = normalizeResidentCode(code)
+    if (request?.status !== 'Approved' || !normalizedCode || knownCodes.has(normalizedCode)) return
+    const details = request.residentDirectoryDetails || request.data || {}
+    const firstName = details.firstName || details.first_name || ''
+    const middleName = details.middleName || details.middle_name || ''
+    const lastName = details.lastName || details.last_name || ''
+    const suffix = details.suffix || ''
+    const name = [firstName, middleName, lastName, suffix].filter(Boolean).join(' ') || request.name || 'Resident'
+    const address = [
+      details.houseBlockLot || details.house_no_street,
+      details.streetPurok || details.purok,
+      details.barangay,
+      details.municipalityCity || details.city_municipality,
+      details.province,
+    ].filter(Boolean).join(', ') || request.address || ''
+    result.push({
+      id: request.residentId || code,
+      name,
+      firstName,
+      middleName,
+      lastName,
+      suffix,
+      address,
+      birthDate: details.birthDate || details.date_of_birth || '',
+      contactNumber: details.mobileNumber || details.contact_number || '',
+      emailAddress: request.residentEmailAddress || details.emailAddress || details.email || '',
+      code,
+      recordStatus: request.residentRecordStatus === 'inactive' ? 'inactive' : 'active',
+      createdAt: request.submittedAt || '',
+      updatedAt: request.reviewedAt || '',
+    })
+    knownCodes.add(normalizedCode)
+  })
+
+  return result
 }
 
 const getResidentRecordAddressLabel = (resident, registrations) => {
@@ -6440,6 +6501,7 @@ function App() {
           registrationRequestsRef.current = mergedRequests
           return mergedRequests
         })
+        setAdminResidents((residents) => mergeApprovedRegistrationResidents(residents, registrationRecords))
         pendingRegistrationEtagRef.current = response.headers.get('ETag') || ''
         setRegistrationSyncError('')
         setHasLoadedPendingRegistrations(true)
