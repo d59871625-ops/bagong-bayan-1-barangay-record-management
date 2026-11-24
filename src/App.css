@@ -12045,19 +12045,20 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 
 @media (max-width: 720px) {
   .payment-assessment-list { max-height: min(68dvh, 620px); }
-  .payment-assessment-item:not(.is-expanded) { box-sizing: border-box; height: auto !important; min-height: 0; max-height: none !important; overflow: visible !important; }
-  .payment-assessment-summary { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(104px, auto); grid-auto-rows: auto; align-items: start; gap: 10px 8px; height: auto !important; min-height: 0; max-height: none !important; overflow: visible !important; padding: 13px; }
+  .payment-assessment-item:not(.is-expanded) { display: block !important; box-sizing: border-box; height: auto !important; min-height: 0; max-height: none !important; overflow: hidden !important; border: 1px solid #d6e5ed; border-radius: 12px; }
+  .payment-assessment-summary { display: flex !important; flex-direction: column; align-items: stretch; gap: 12px; box-sizing: border-box; width: 100%; height: auto !important; min-height: 0; max-height: none !important; overflow: visible !important; padding: 14px; }
+  .payment-assessment-summary > * { position: static !important; float: none !important; grid-column: auto !important; grid-row: auto !important; flex: 0 0 auto; width: 100%; min-width: 0; box-sizing: border-box; }
   .payment-assessment-resident,
-  .payment-assessment-request { grid-column: 1 / -1; grid-row: auto; }
+  .payment-assessment-request { display: grid; gap: 4px; }
   .payment-assessment-resident strong,
   .payment-assessment-request strong { font-size: 14px; line-height: 1.4; }
   .payment-assessment-resident span,
   .payment-assessment-request span { font-size: 12px; line-height: 1.45; }
-  .payment-action-needed { grid-column: 1; grid-row: auto; align-self: center; font-size: 11px; }
-  .payment-assessment-amount-wrap { grid-column: 2; grid-row: auto; align-self: center; justify-items: end; min-width: 0; }
-  .payment-assessment-amount-wrap > span { font-size: 9px; }
+  .payment-action-needed { display: inline-flex !important; align-self: flex-start; width: max-content; max-width: 100%; font-size: 11px; }
+  .payment-assessment-amount-wrap { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 5px 12px; }
+  .payment-assessment-amount-wrap > span { font-size: 10px; text-align: left; }
   .payment-assessment-amount { font-size: 16px; }
-  .payment-assessment-summary > .payment-assessment-toggle { position: static !important; display: flex !important; visibility: visible !important; grid-column: 1 / -1; grid-row: auto; justify-self: stretch; align-items: center; justify-content: center; width: 100%; min-width: 0; min-height: 52px; margin: 2px 0 0; padding: 12px 14px; font-size: 15px; line-height: 1.3; white-space: normal; }
+  .payment-assessment-summary > .payment-assessment-toggle { position: static !important; display: flex !important; visibility: visible !important; align-items: center; justify-content: center; width: 100%; min-width: 0; min-height: 52px; margin: 2px 0 0; padding: 12px 14px; border-radius: 9px; font-size: 15px; line-height: 1.3; white-space: normal; }
 }
 
 .resident-account-shell.resident-dark-mode { color-scheme: dark; background: #17221b; color: #e5eee6; }
