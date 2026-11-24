@@ -1977,7 +1977,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
   const [originalPageSizeId, setOriginalPageSizeId] = useState('short')
   const [pageOrientation, setPageOrientation] = useState('portrait')
   const [editorPageZoom, setEditorPageZoom] = useState(1)
-  const [editorZoomMultiplier, setEditorZoomMultiplier] = useState(1)
+  const [editorZoomMultiplier, setEditorZoomMultiplier] = useState(1.15)
   const [isEditorToolsOpen, setIsEditorToolsOpen] = useState(() => window.matchMedia('(max-width: 760px)').matches)
   const [originalPageOrientation, setOriginalPageOrientation] = useState('portrait')
   const [originalPageDimensions, setOriginalPageDimensions] = useState({ widthTwips: 12240, heightTwips: 15840 })
@@ -2771,6 +2771,7 @@ function CertificateTemplateContentEditor({ document, customTemplates, onClose, 
           <button type="button" className="certificate-editor-close" onClick={onClose}>Close editor</button>
         </header>
         {error && <p className="community-update-error" role="alert">{error}</p>}
+        {(isLoading || (sourceBlob && !isRendered)) && !error && <p className="certificate-editor-loading" role="status">Preparing the editable document…</p>}
         {!isLoading && paragraphs.length === 0
           ? <p className="docx-preview-loading">No editable Word paragraphs were found in this template.</p>
             : <div className={`certificate-template-editor-workspace${isEditorToolsOpen ? ' is-tools-open' : ''}`}>
