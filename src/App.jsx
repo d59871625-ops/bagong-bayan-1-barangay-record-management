@@ -5641,7 +5641,7 @@ function App() {
   const [refundProofLoading, setRefundProofLoading] = useState(false)
   const [refundNote, setRefundNote] = useState('')
   const [refundError, setRefundError] = useState('')
-  const [profileUpdateForm, setProfileUpdateForm] = useState({ birthDate: '', contactNumber: '', emailAddress: '', address: '' })
+  const [profileUpdateForm, setProfileUpdateForm] = useState({ fullName: '', birthDate: '', emailAddress: '', address: '' })
   const [profileUpdateFormOpen, setProfileUpdateFormOpen] = useState(false)
   const [profileUpdateError, setProfileUpdateError] = useState('')
   const [residentProfileUpdateResidentCode, setResidentProfileUpdateResidentCode] = useState('')
@@ -7021,8 +7021,8 @@ function App() {
       </div>
       {!profileUpdateFormOpen && <button type="button" className="resident-table-action" onClick={() => { setProfileUpdateForm(currentProfileValues); setProfileUpdateError(''); setProfileUpdateFormOpen(true) }}>Request profile update</button>}
       {profileUpdateFormOpen && <form className="resident-profile-update-form" onSubmit={submitProfileUpdateRequest}>
+        <label>Full name<input value={profileUpdateForm.fullName} onChange={(event) => setProfileUpdateForm({ ...profileUpdateForm, fullName: event.target.value })} autoComplete="name" /></label>
         <label>Date of birth<input type="date" value={profileUpdateForm.birthDate} onChange={(event) => setProfileUpdateForm({ ...profileUpdateForm, birthDate: event.target.value })} /></label>
-        <label>Contact number<input type="tel" value={profileUpdateForm.contactNumber} onChange={(event) => setProfileUpdateForm({ ...profileUpdateForm, contactNumber: event.target.value })} placeholder="09XX XXX XXXX" /></label>
         <label>Email address<input type="email" value={profileUpdateForm.emailAddress} onChange={(event) => setProfileUpdateForm({ ...profileUpdateForm, emailAddress: event.target.value })} placeholder="you@example.com" /></label>
         <label>Home address<input value={profileUpdateForm.address} onChange={(event) => setProfileUpdateForm({ ...profileUpdateForm, address: event.target.value })} /></label>
         {profileUpdateError && <p className="community-update-error" role="alert">{profileUpdateError}</p>}
@@ -11309,7 +11309,10 @@ function App() {
 
   const submitProfileUpdateRequest = async (event) => {
     event.preventDefault()
-    const proposedChanges = Object.fromEntries(Object.entries(profileUpdateForm).map(([key, value]) => [key, String(value || '').trim()]))
+    const proposedChanges = Object.fromEntries(Object.entries(profileUpdateForm).map(([key, value]) => [
+      key,
+      key === 'emailAddress' ? String(value || '').trim().toLowerCase() : String(value || '').trim(),
+    ]))
     if (Object.values(proposedChanges).every((value) => !value)) {
       setProfileUpdateError('Enter the updated information you would like the barangay office to review.')
       return
@@ -11363,10 +11366,17 @@ function App() {
       const approvedChanges = Object.fromEntries(
         Object.entries(request.proposedChanges || {}).filter(([, value]) => String(value || '').trim()),
       )
+      const approvedNameParts = approvedChanges.fullName
+        ? residentNameFieldsFromFullName(approvedChanges.fullName)
+        : null
       if (officialBackendToken && !isSharedRegistrationResident) {
         try {
           await updateResidentAccountBackend(request.residentCode, 'update_profile', {
             changes: Object.fromEntries(Object.entries({
+              first_name: approvedNameParts?.firstName,
+              middle_name: approvedNameParts?.middleName,
+              last_name: approvedNameParts?.lastName,
+              suffix: approvedNameParts?.suffix,
               date_of_birth: approvedChanges.birthDate,
               contact_number: approvedChanges.contactNumber,
               email: approvedChanges.emailAddress,
@@ -11380,10 +11390,26 @@ function App() {
         }
       }
       setAdminResidents((residents) => residents.map((candidate) => candidate.code?.toLowerCase() === request.residentCode.toLowerCase()
-        ? { ...candidate, ...approvedChanges, updatedAt: reviewedAt }
+        ? {
+          ...candidate,
+          ...approvedChanges,
+          ...(approvedNameParts ? {
+            name: approvedChanges.fullName,
+            firstName: approvedNameParts.firstName,
+            middleName: approvedNameParts.middleName,
+            lastName: approvedNameParts.lastName,
+            suffix: approvedNameParts.suffix,
+          } : {}),
+          updatedAt: reviewedAt,
+        }
         : candidate))
       setRegistrationRequests((requests) => requests.map((registration) => registration.assignedResidentCode?.toLowerCase() === request.residentCode.toLowerCase()
-        ? { ...registration, data: { ...(registration.data || {}), ...approvedChanges }, address: approvedChanges.address || registration.address }
+        ? {
+          ...registration,
+          data: { ...(registration.data || {}), ...approvedChanges, ...(approvedNameParts ? approvedNameParts : {}) },
+          name: approvedChanges.fullName || registration.name,
+          address: approvedChanges.address || registration.address,
+        }
         : registration))
     }
     setResidentProfileUpdateRequests((requests) => requests.map((candidate) => candidate.id === request.id
@@ -14515,7 +14541,7 @@ function App() {
                     {profileRequests.map((request) => <article key={request.id}>
                       <div className="resident-profile-update-request-heading"><div><strong>{request.id}</strong><span>Submitted {request.submittedAt ? new Date(request.submittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</span></div><span className={`compliance-status ${request.status.toLowerCase()}`}>{request.status}</span></div>
                       <h3>Requested changes</h3>
-                      <dl className="registration-data-grid">{Object.entries(request.proposedChanges || {}).map(([field, value]) => <div key={field}><dt>{({ birthDate: 'Date of birth', contactNumber: 'Contact number', emailAddress: 'Email address', address: 'Home address' })[field] || field}</dt><dd>{value || 'Not provided'}</dd></div>)}</dl>
+                      <dl className="registration-data-grid">{Object.entries(request.proposedChanges || {}).map(([field, value]) => <div key={field}><dt>{({ fullName: 'Full name', birthDate: 'Date of birth', contactNumber: 'Contact number', emailAddress: 'Email address', address: 'Home address' })[field] || field}</dt><dd>{value || 'Not provided'}</dd></div>)}</dl>
                       {request.reviewedAt && <p className="resident-profile-update-reviewed">Reviewed {new Date(request.reviewedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}</p>}
                       {request.status === 'Pending' && <div className="resident-profile-update-request-actions"><button type="button" onClick={() => reviewProfileUpdateRequest(request, 'Approved')}>Approve changes</button><button type="button" className="table-delete" onClick={() => reviewProfileUpdateRequest(request, 'Declined')}>Decline</button></div>}
                     </article>)}
@@ -15736,8 +15762,8 @@ function App() {
                     .filter((request) => request.residentCode?.toLowerCase() === residentName.code.trim().toLowerCase())
                     .sort((first, second) => new Date(second.submittedAt).getTime() - new Date(first.submittedAt).getTime())
                   const currentProfileValues = {
+                    fullName: residentRecord?.name || fullName,
                     birthDate: residentRecord?.birthDate || residentRecord?.dateOfBirth || profileDetails.birthDate || requestDetails.birthDate || '',
-                    contactNumber: residentRecord?.contactNumber || residentRecord?.mobileNumber || profileDetails.mobileNumber || requestDetails.contactNumber || '',
                     emailAddress: residentRecord?.emailAddress || profileDetails.emailAddress || '',
                     address: residentRecord?.address || requestDetails.address || registration?.address || '',
                   }
@@ -15748,14 +15774,13 @@ function App() {
                     {
                       title: 'Personal details',
                       icon: 'personal',
-                      items: [['Date of birth', currentProfileValues.birthDate || 'Not provided']],
+                      items: [['Full name', currentProfileValues.fullName || profileName || 'Not provided'], ['Date of birth', currentProfileValues.birthDate || 'Not provided']],
                     },
                     {
                       title: 'Contact & residence',
                       icon: 'residence',
                       items: [
                         ['Home address', currentProfileValues.address || 'Not provided'],
-                        ['Contact number', currentProfileValues.contactNumber || 'Not provided'],
                         ['Email address', currentProfileValues.emailAddress || 'Not provided'],
                       ],
                     },

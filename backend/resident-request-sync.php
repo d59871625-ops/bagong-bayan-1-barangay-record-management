@@ -333,17 +333,28 @@ function residentSyncPendingSubmissions(
         } else {
             $changes = $record->proposedChanges ?? null;
             if (!($changes instanceof stdClass)
-                || array_diff(array_keys(get_object_vars($changes)), ["birthDate", "contactNumber", "emailAddress", "address"])) {
+                || array_diff(array_keys(get_object_vars($changes)), ["fullName", "birthDate", "emailAddress", "address", "contactNumber"])) {
                 throw new InvalidArgumentException("Invalid resident profile update details.");
             }
             $clean->resident = $fullName;
             $clean->residentCode = $residentCode;
             $clean->proposedChanges = new stdClass();
             foreach (get_object_vars($changes) as $field => $value) {
-                if (!is_string($value) || strlen($value) > 1000) {
+                $limit = $field === "emailAddress" ? 254 : ($field === "contactNumber" ? 40 : 1000);
+                if (!is_string($value) || strlen($value) > $limit) {
                     throw new InvalidArgumentException("Invalid resident profile update details.");
                 }
-                $clean->proposedChanges->{$field} = trim($value);
+                $value = trim($value);
+                if ($field === "emailAddress" && $value !== "" && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                    throw new InvalidArgumentException("Enter a valid email address.");
+                }
+                if ($field === "birthDate" && $value !== "") {
+                    $date = DateTime::createFromFormat("Y-m-d", $value);
+                    if (!$date || $date->format("Y-m-d") !== $value) {
+                        throw new InvalidArgumentException("Enter a valid date of birth.");
+                    }
+                }
+                $clean->proposedChanges->{$field} = $value;
             }
             if (!get_object_vars($clean->proposedChanges)) {
                 throw new InvalidArgumentException("Enter at least one resident profile change.");
