@@ -3426,6 +3426,49 @@ const groupPaymentRequests = (requests) => {
     }
   })
 }
+const getIssuedPaymentHistoryRequests = (issuedDocuments, requestRecords, belongsToAccount = () => true) => {
+  const requestsById = new Map(requestRecords.map((request) => [String(request.id), request]))
+  const issuedByRequestId = new Map()
+  issuedDocuments.forEach((document) => {
+    const requestId = String(document?.requestId || '')
+    if (!requestId || !belongsToAccount(document)) return
+    const previous = issuedByRequestId.get(requestId)
+    if (previous) {
+      if (document.document && !previous.documents.includes(document.document)) previous.documents.push(document.document)
+      if (!previous.feeAmount && Number(document.feeAmount || 0) > 0) previous.feeAmount = Number(document.feeAmount)
+      return
+    }
+    issuedByRequestId.set(requestId, {
+      ...document,
+      id: requestId,
+      documents: document.document ? [document.document] : [],
+    })
+  })
+
+  return [...issuedByRequestId.entries()].flatMap(([requestId, issued]) => {
+    const savedRequest = requestsById.get(requestId)
+    const feeAmount = Number(savedRequest?.feeAmount || issued.feeAmount || 0)
+    const explicitlyPaid = [savedRequest?.paymentStatus, issued.paymentStatus]
+      .some((status) => String(status || '').toLowerCase() === 'paid')
+    const issuedWithReceipt = String(issued.status || '').toLowerCase() === 'received'
+      && Boolean(String(issued.orNumber || '').trim())
+      && String(issued.orNumber || '').trim().toUpperCase() !== 'N/A'
+    if (!explicitlyPaid && feeAmount <= 0 && !issuedWithReceipt) return []
+    const merged = { ...issued, ...(savedRequest || {}) }
+    return [{
+      ...merged,
+      id: requestId,
+      documents: [...new Set([...(issued.documents || []), ...(savedRequest?.documents || [])])],
+      feeAmount: feeAmount || null,
+      paymentStatus: 'Paid',
+      paymentSubmittedAt: savedRequest?.paymentSubmittedAt || issued.paymentSubmittedAt || '',
+      paymentVerifiedAt: savedRequest?.paymentVerifiedAt || issued.paymentVerifiedAt || issued.date || '',
+      paymentMethod: savedRequest?.paymentMethod || issued.paymentMethod || '',
+      paymentOrNumber: savedRequest?.paymentOrNumber || issued.paymentOrNumber || issued.orNumber || '',
+      paymentProofOrNumber: savedRequest?.paymentProofOrNumber || issued.paymentProofOrNumber || '',
+    }]
+  })
+}
 const createResidentProfileUpdateId = () => `PU-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`
 const initialGcashRecipients = [
   { id: 'gcash-recipient-1', displayName: 'Crizzia Mae Famenial', mobileNumber: '09531765764' },
@@ -6890,29 +6933,15 @@ function App() {
     ...residentPendingPaymentRequests,
   ].sort((first, second) => new Date(second.requestedAt || second.paymentDraftedAt || 0).getTime()
     - new Date(first.requestedAt || first.paymentDraftedAt || 0).getTime())
-  const residentIssuedPaymentHistoryRequests = (() => {
-    const issuedByRequest = new Map()
-    uniqueResidentRequestsById(issuedDocuments)
-      .filter((document) => document.requestId && belongsToResidentAccount(document))
-      .forEach((document) => {
-        const requestId = String(document.requestId)
-        const existing = issuedByRequest.get(requestId)
-        if (existing) {
-          if (document.document && !existing.documents.includes(document.document)) existing.documents.push(document.document)
-          return
-        }
-        issuedByRequest.set(requestId, {
-          ...document,
-          id: requestId,
-          resident: document.resident || fullName,
-          residentCode: document.residentCode || residentName.code,
-          documents: document.document ? [document.document] : [],
-          status: 'Completed',
-          paymentStatus: document.paymentStatus || (Number(document.feeAmount || 0) > 0 ? 'Paid' : ''),
-        })
-      })
-    return [...issuedByRequest.values()]
-  })()
+  const residentIssuedPaymentHistoryRequests = getIssuedPaymentHistoryRequests(
+    uniqueResidentRequestsById([...issuedDocuments, ...residentIssuedDocuments]),
+    residentHistoryRequestCandidates,
+    belongsToResidentAccount,
+  ).map((request) => ({
+    ...request,
+    resident: request.resident || fullName,
+    residentCode: request.residentCode || residentName.code,
+  }))
   const residentPaymentHistoryByRequestId = new Map(residentHistoryRequestCandidates.map((request) => [String(request.id), request]))
   residentIssuedPaymentHistoryRequests.forEach((request) => {
     const requestId = String(request.id)
@@ -6928,7 +6957,7 @@ function App() {
     residentPaymentHistoryByRequestId.set(requestId, merged)
   })
   const residentPaymentHistoryRequests = [...residentPaymentHistoryByRequestId.values()]
-    .filter((request) => Number(request.feeAmount || 0) > 0 && String(request.paymentStatus || '').toLowerCase() === 'paid')
+    .filter((request) => String(request.paymentStatus || '').toLowerCase() === 'paid')
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const residentPaymentRecords = groupPaymentRequests(residentPaymentRequests)
@@ -7316,9 +7345,12 @@ function App() {
   const sortedPaymentAssessmentRecords = paymentAssessmentRecords.slice()
     .sort((first, second) => new Date(second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentSubmittedAt || first.requestedAt || 0).getTime())
-  const paymentHistoryRecords = groupPaymentRequests(allDocumentRequests
-    .filter((request) => Number(request.feeAmount || 0) > 0
-      && request.paymentStatus === 'Paid'))
+  const paymentHistoryRequestsById = new Map(allDocumentRequests.map((request) => [String(request.id), request]))
+  getIssuedPaymentHistoryRequests(issuedDocuments, allDocumentRequests).forEach((request) => {
+    paymentHistoryRequestsById.set(String(request.id), request)
+  })
+  const paymentHistoryRecords = groupPaymentRequests([...paymentHistoryRequestsById.values()]
+    .filter((request) => String(request.paymentStatus || '').toLowerCase() === 'paid'))
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const getPaymentResidentContactNumber = (request) => {
@@ -14664,7 +14696,7 @@ function App() {
                     <td>{payment.residentCode || 'Not recorded'}</td>
                     <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.requests.length > 1 ? `${payment.requests.length} requests · ` : ''}{payment.id}</small></td>
                     <td>{paymentDate}</td>
-                    <td>₱{Number(payment.feeAmount || 0).toFixed(2)}</td>
+                    <td>{Number(payment.feeAmount || 0) > 0 ? `₱${Number(payment.feeAmount).toFixed(2)}` : 'Amount not recorded'}</td>
                     <td>{payment.paymentOrNumber || payment.paymentProofOrNumber || 'No reference recorded'}</td>
                     <td className="payment-history-status-cell"><span className={`compliance-status ${String(payment.paymentStatus || 'Unpaid').toLowerCase().replace(/\s+/g, '-')}`}>{payment.paymentStatus || 'Unpaid'}</span>{paymentOutcome && <small>{paymentOutcome}</small>}</td>
                   </tr>
@@ -15903,7 +15935,7 @@ function App() {
                           ].filter(Boolean).join(' ')}>
                             <td>{paymentDate}</td>
                             <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.id}</small></td>
-                            <td>₱{Number(payment.feeAmount || 0).toFixed(2)}</td>
+                            <td>{Number(payment.feeAmount || 0) > 0 ? `₱${Number(payment.feeAmount).toFixed(2)}` : 'Amount not recorded'}</td>
                             <td>{payment.paymentMethod === 'gcash' ? 'GCash transfer' : payment.paymentMethod === 'walk-in' ? 'Walk-in' : 'Not recorded'}</td>
                             <td>{payment.paymentOrNumber || payment.paymentProofOrNumber || 'Not recorded'}</td>
                             <td className="payment-history-status-cell">
