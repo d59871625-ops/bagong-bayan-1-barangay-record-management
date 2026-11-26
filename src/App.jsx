@@ -3858,7 +3858,11 @@ const reconcileResidentCodeRotationRecords = (residents, recoveryRequests) => {
   const canonicalResidents = residents.map((resident) => {
     const rotatedCode = rotatedCodeByResidentId.get(String(resident.id))
     return rotatedCode && resident.code?.trim().toUpperCase() !== rotatedCode.code
-      ? { ...resident, code: rotatedCode.code }
+      ? {
+        ...resident,
+        code: rotatedCode.code,
+        legacyCodes: [...new Set([...(resident.legacyCodes || []), resident.code].filter(Boolean))],
+      }
       : resident
   })
   const residentsByCode = new Map()
@@ -3888,9 +3892,46 @@ const reconcileResidentCodeRotationRecords = (residents, recoveryRequests) => {
         merged[key] = value
       }
     })
-    residentsByCode.set(code, { ...merged, id: canonical.id, code })
+    residentsByCode.set(code, {
+      ...merged,
+      id: canonical.id,
+      code,
+      legacyCodes: [...new Set([
+        ...(existing.legacyCodes || []), ...(resident.legacyCodes || []), ...(canonical.legacyCodes || []),
+        existing.code, resident.code,
+      ].filter((value) => value && normalizeResidentCode(value) !== code))],
+    })
   })
-  return Array.from(residentsByCode.values())
+  const residentsByName = new Map()
+  Array.from(residentsByCode.values()).forEach((resident) => {
+    const nameKey = getResidentRecordNameKey(resident)
+    const key = nameKey || `unkeyed:${residentsByName.size}`
+    const existing = residentsByName.get(key)
+    if (!existing) {
+      residentsByName.set(key, resident)
+      return
+    }
+    const existingHasRecovery = rotatedCodeByResidentId.has(String(existing.id))
+    const residentHasRecovery = rotatedCodeByResidentId.has(String(resident.id))
+    const canonical = residentHasRecovery !== existingHasRecovery
+      ? residentHasRecovery ? resident : existing
+      : getPersistedRecordTimestamp(resident) > getPersistedRecordTimestamp(existing) ? resident : existing
+    const other = canonical === resident ? existing : resident
+    const merged = { ...other, ...canonical }
+    Object.entries(other).forEach(([field, value]) => {
+      if ((merged[field] === undefined || merged[field] === null || merged[field] === '') && value !== undefined) merged[field] = value
+    })
+    const code = normalizeResidentCode(canonical.code)
+    residentsByName.set(key, {
+      ...merged,
+      id: canonical.id,
+      code: canonical.code,
+      legacyCodes: [...new Set([
+        ...(existing.legacyCodes || []), ...(resident.legacyCodes || []), existing.code, resident.code,
+      ].filter((value) => value && normalizeResidentCode(value) !== code))],
+    })
+  })
+  return Array.from(residentsByName.values())
 }
 
 const mapBackendRegistrationRequest = (application) => {
@@ -3971,14 +4012,11 @@ const mapBackendRegistrationRequest = (application) => {
 
 const mergeApprovedRegistrationResidents = (residents, registrations) => {
   const result = Array.isArray(residents) ? residents.slice() : []
-  const knownCodes = new Set(result.map((resident) => normalizeResidentCode(
-    resident.code || resident.residentCode || resident.resident_code || resident.id,
-  )).filter(Boolean))
 
   registrations.forEach((request) => {
     const code = String(request?.assignedResidentCode || '').trim()
     const normalizedCode = normalizeResidentCode(code)
-    if (request?.status !== 'Approved' || !normalizedCode || knownCodes.has(normalizedCode)) return
+    if (request?.status !== 'Approved' || !normalizedCode) return
     const details = request.residentDirectoryDetails || request.data || {}
     const firstName = details.firstName || details.first_name || ''
     const middleName = details.middleName || details.middle_name || ''
@@ -3992,6 +4030,13 @@ const mergeApprovedRegistrationResidents = (residents, registrations) => {
       details.municipalityCity || details.city_municipality,
       details.province,
     ].filter(Boolean).join(', ') || request.address || ''
+    const nameKey = getResidentRecordNameKey({ name })
+    const alreadyRecorded = result.some((resident) => (
+      normalizeResidentCode(resident.code || resident.residentCode || resident.resident_code || resident.id) === normalizedCode
+      || (request.residentId !== undefined && String(resident.id) === String(request.residentId))
+      || (nameKey && getResidentRecordNameKey(resident) === nameKey)
+    ))
+    if (alreadyRecorded) return
     result.push({
       id: request.residentId || code,
       name,
@@ -4008,10 +4053,9 @@ const mergeApprovedRegistrationResidents = (residents, registrations) => {
       createdAt: request.submittedAt || '',
       updatedAt: request.reviewedAt || '',
     })
-    knownCodes.add(normalizedCode)
   })
 
-  return result
+  return reconcileResidentCodeRotationRecords(result, [])
 }
 
 const getResidentRecordAddressLabel = (resident, registrations) => {
@@ -4283,9 +4327,10 @@ const residentNameFieldsFromFullName = (value) => {
 const residentRecordMatchesAccount = (record, resident) => {
   const recordCode = normalizeResidentCode(record.residentCode || record.resident_code || record.code)
   const currentCode = normalizeResidentCode(resident.code)
+  const currentCodes = new Set([currentCode, ...(resident.legacyCodes || []).map(normalizeResidentCode)].filter(Boolean))
   const registeredName = record.resident || record.name || record.fullName || record.full_name || ''
   return recordCode
-    ? recordCode === currentCode
+    ? currentCodes.has(recordCode)
     : residentNameMatches(registeredName, resident, record.data || record)
 }
 
@@ -6058,7 +6103,9 @@ function App() {
   const [barangayContactInformationStatus, setBarangayContactInformationStatus] = useState('')
   const [showResidentInbox, setShowResidentInbox] = useState(false)
   const fullName = `${residentName.firstName} ${residentName.middleName} ${residentName.lastName} ${residentName.suffix}`.replace(/\s+/g, ' ').trim()
-  const currentResidentRecord = adminResidents.find((resident) => resident.code.toLowerCase() === residentName.code.trim().toLowerCase())
+  const currentResidentRecord = adminResidents.find((resident) => (
+    [resident.code, ...(resident.legacyCodes || [])].some((code) => String(code || '').toLowerCase() === residentName.code.trim().toLowerCase())
+  ))
   const currentRequestDocument = selectedDocuments.includes(activeRequestDocument) ? activeRequestDocument : selectedDocuments[0] || ''
   const uniqueRequestCertificateFields = getCertificateTemplateFields(currentRequestDocument, customCertificateTemplates)
   const hasRequestPurposeField = hasPurposeCertificateField(uniqueRequestCertificateFields)
@@ -6821,6 +6868,7 @@ function App() {
     residentName.code,
     currentResidentRecord?.code,
     currentResidentRecord?.id,
+    ...(currentResidentRecord?.legacyCodes || []),
   ].filter(Boolean).map((value) => normalizeResidentCode(value)))
   const residentIdentityNameKeys = new Set([fullName, currentResidentRecord?.name]
     .map((name) => getResidentRecordNameKey({ name }))
@@ -14506,6 +14554,7 @@ function App() {
                 && (
                   String(candidate.assignedResidentCode || '').toLowerCase() === String(residentCode || '').toLowerCase()
                   || (candidate.residentId !== undefined && String(candidate.residentId) === String(resident.id))
+                  || getResidentRecordNameKey({ name: candidate.name }) === getResidentRecordNameKey(resident)
                 )
               ))
               const registrationFieldLabels = new Map(registrationReviewInformationSections.flatMap((section) => (
@@ -14513,7 +14562,7 @@ function App() {
               )))
               const detailSections = registrationReviewInformationSections.map((section) => ({
                 ...section,
-                entries: section.fields.filter(([field]) => field !== 'mobileNumber').map(([field, label]) => {
+                entries: section.fields.map(([field, label]) => {
                   const rawValue = registration?.data?.[field]
                   const value = Array.isArray(rawValue) ? rawValue.join(', ') : String(rawValue ?? '').trim()
                   return value ? { field, label, value } : null
