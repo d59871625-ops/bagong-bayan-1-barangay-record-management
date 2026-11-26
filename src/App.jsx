@@ -5819,6 +5819,8 @@ function App() {
   const [residentFormError, setResidentFormError] = useState('')
   const [residentAccountMessage, setResidentAccountMessage] = useState('')
   const [deletingResidentId, setDeletingResidentId] = useState('')
+  const [residentDeleteMode, setResidentDeleteMode] = useState(false)
+  const [selectedResidentDeleteIds, setSelectedResidentDeleteIds] = useState(() => new Set())
   const [passwordMessage, setPasswordMessage] = useState('')
   const [passwordFields, setPasswordFields] = useState({ current: '', next: '', confirm: '' })
   const [officialCredentials, setOfficialCredentials] = useState({ username: '', password: '' })
@@ -10339,6 +10341,7 @@ function App() {
       ...residentRecord,
       ...cleanResident,
       id: existingResident?.id || cleanResident.code,
+      recordStatus: existingResident?.recordStatus || 'active',
       ...(!existingResident ? { createdAt: today } : {}),
       updatedAt: today,
     }
@@ -10406,36 +10409,53 @@ function App() {
       : `Resident record marked ${recordStatus} in shared app data. Database sign-in is unchanged until an authorized backend admin session is used.`)
   }
 
-  const deleteResidentPermanently = async (resident) => {
-    if (!window.confirm(`Permanently delete ${resident.name || resident.fullName || 'this resident'} and their registration account? This cannot be undone.`)) return
+  const deleteSelectedResidents = async () => {
+    const selectedResidents = adminResidents.filter((resident) => selectedResidentDeleteIds.has(String(resident.id)))
+    if (!selectedResidents.length) return
+    const names = selectedResidents.map((resident) => resident.name || resident.fullName || 'Resident').join(', ')
+    if (!window.confirm(`Permanently remove resident access for ${names}? They will no longer be able to sign in. Payment history, issued documents, requests, and admin records will be kept.`)) return
     if (!officialBackendToken) {
       setResidentAccountMessage('Sign in with an active admin account before permanently deleting a resident.')
       return
     }
-    setDeletingResidentId(String(resident.id))
+    setDeletingResidentId('selected')
     setResidentAccountMessage('')
-    const residentCode = String(resident.code || '').trim()
-    const linkedRegistration = (request) => request.status === 'Approved' && (
-      String(request.assignedResidentCode || '').toLowerCase() === residentCode.toLowerCase()
-      || (request.residentId !== undefined && String(request.residentId) === String(resident.id))
-    )
-    const registrationIds = registrationRequests.filter(linkedRegistration)
-      .map((request) => String(request.backendRegistrationId || request.id || '').replace(/^DB-REG-/i, ''))
-      .filter((id) => /^\d+$/.test(id))
+    const removedResidents = []
+    const failedResidents = []
     try {
-      await updateResidentAccountBackend(residentCode, 'delete_permanently', { registration_ids: registrationIds })
-      const nextResidents = adminResidents.filter((record) => String(record.id) !== String(resident.id))
-      const nextRegistrations = registrationRequests.map((request) => linkedRegistration(request)
-        ? { ...request, status: 'Deleted', deletedAt: new Date().toISOString() }
-        : request)
+      for (const resident of selectedResidents) {
+        try {
+          await updateResidentAccountBackend(String(resident.code || '').trim(), 'delete_permanently')
+          removedResidents.push(resident)
+        } catch (error) {
+          failedResidents.push({ resident, error })
+        }
+      }
+      if (!removedResidents.length) {
+        throw failedResidents[0]?.error || new Error('No resident accounts were removed.')
+      }
+      const removedIds = new Set(removedResidents.map((resident) => String(resident.id)))
+      const removedCodes = new Set(removedResidents.map((resident) => String(resident.code || '').toLowerCase()))
+      const nextResidents = adminResidents.filter((record) => !removedIds.has(String(record.id)))
+      const nextRegistrations = registrationRequests.map((request) => {
+        const linked = request.status === 'Approved' && (
+          removedCodes.has(String(request.assignedResidentCode || '').toLowerCase())
+          || removedIds.has(String(request.residentId ?? ''))
+        )
+        return linked ? { ...request, status: 'Deleted', deletedAt: new Date().toISOString() } : request
+      })
       setAdminResidents(nextResidents)
       setRegistrationRequests(nextRegistrations)
-      if (String(registrationResidentViewCode).toLowerCase() === residentCode.toLowerCase()) setRegistrationResidentViewCode('')
-      if (editingResidentId === resident.id) {
+      if (removedCodes.has(String(registrationResidentViewCode).toLowerCase())) setRegistrationResidentViewCode('')
+      if (removedIds.has(String(editingResidentId))) {
         setEditingResidentId(null)
         setResidentFormOpen(false)
       }
-      setResidentAccountMessage(`${resident.name || resident.fullName || 'Resident'} was permanently deleted.`)
+      setSelectedResidentDeleteIds(new Set())
+      setResidentDeleteMode(false)
+      setResidentAccountMessage(failedResidents.length
+        ? `${removedResidents.length} resident account(s) were removed and their records were kept. ${failedResidents.length} could not be removed: ${failedResidents.map(({ resident }) => resident.name || resident.fullName || resident.code).join(', ')}.`
+        : `${removedResidents.length} resident account(s) were permanently removed. Payment history, issued documents, requests, and admin records were kept.`)
       const recordsToSave = {
         [residentRecordsStorageKey]: nextResidents,
         [registrationRequestsStorageKey]: nextRegistrations,
@@ -10445,7 +10465,7 @@ function App() {
         databaseRecordsRef.current = { ...databaseRecordsRef.current, ...recordsToSave }
       } catch (saveError) {
         console.error('Resident deleted, but the shared directory refresh could not be confirmed.', saveError)
-        setResidentAccountMessage('The account was deleted. The shared directory is retrying its update; refresh after synchronization completes.')
+        setResidentAccountMessage('Account access was removed and transaction records were kept. The resident directory is retrying its shared database update.')
       }
     } catch (error) {
       console.error('Unable to permanently delete resident.', error)
@@ -14631,19 +14651,29 @@ function App() {
                 ))
                 return sameNameRegistrations.length === 1 ? sameNameRegistrations[0] : null
               })()
+              const savedResidentInformation = registration?.data || resident.registrationData || resident.data || {
+                firstName: resident.firstName || '',
+                middleName: resident.middleName || '',
+                lastName: resident.lastName || '',
+                suffix: resident.suffix || '',
+                birthDate: resident.birthDate || resident.dateOfBirth || '',
+                mobileNumber: resident.contactNumber || resident.mobileNumber || '',
+                emailAddress: resident.emailAddress || '',
+                houseBlockLot: resident.address || '',
+              }
               const registrationFieldLabels = new Map(registrationReviewInformationSections.flatMap((section) => (
                 section.fields.map(([field, label]) => [field, label])
               )))
               const detailSections = registrationReviewInformationSections.map((section) => ({
                 ...section,
                 entries: section.fields.map(([field, label]) => {
-                  const rawValue = registration?.data?.[field]
+                  const rawValue = savedResidentInformation[field]
                   const value = Array.isArray(rawValue) ? rawValue.join(', ') : String(rawValue ?? '').trim()
                   return value ? { field, label, value } : null
                 }).filter(Boolean),
               })).filter((section) => section.entries.length)
               const knownRegistrationFields = new Set(registrationFieldLabels.keys())
-              const additionalRegistrationEntries = Object.entries(registration?.data || {})
+              const additionalRegistrationEntries = Object.entries(savedResidentInformation)
                 .filter(([field, rawValue]) => !knownRegistrationFields.has(field)
                   && rawValue !== null && rawValue !== undefined && rawValue !== '')
                 .map(([field, rawValue]) => {
@@ -14670,10 +14700,10 @@ function App() {
                         <div><dt>Resident code</dt><dd>{residentCode || 'Not recorded'}</dd></div>
                         <div><dt>Account status</dt><dd>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</dd></div>
                         <div><dt>Address</dt><dd>{resident.address || 'Not recorded'}</dd></div>
-                        <div><dt>Date of birth</dt><dd>{resident.birthDate || resident.dateOfBirth || registration?.data?.birthDate || 'Not recorded'}</dd></div>
-                        <div><dt>Contact number</dt><dd>{resident.contactNumber || resident.mobileNumber || registration?.data?.mobileNumber || 'Not recorded'}</dd></div>
-                        <div><dt>Email address</dt><dd>{resident.emailAddress || registration?.data?.emailAddress || 'Not recorded'}</dd></div>
-                        <div><dt>Approved</dt><dd>{registration?.reviewedAt ? new Date(registration.reviewedAt).toLocaleString('en-PH') : 'Approval date not recorded'}</dd></div>
+                        <div><dt>Date of birth</dt><dd>{resident.birthDate || resident.dateOfBirth || savedResidentInformation.birthDate || 'Not recorded'}</dd></div>
+                        <div><dt>Contact number</dt><dd>{resident.contactNumber || resident.mobileNumber || savedResidentInformation.mobileNumber || 'Not recorded'}</dd></div>
+                        <div><dt>Email address</dt><dd>{resident.emailAddress || savedResidentInformation.emailAddress || 'Not recorded'}</dd></div>
+                        {registration && <div><dt>Approved</dt><dd>{registration.reviewedAt ? new Date(registration.reviewedAt).toLocaleString('en-PH') : 'Approval date not recorded'}</dd></div>}
                         {registration && <div><dt>Application reference</dt><dd>{registration.id}</dd></div>}
                       </dl>
                     </article>
@@ -14690,7 +14720,7 @@ function App() {
                       {registration.files.validId && <div className="registration-review-file-row"><span>Valid ID</span><RegistrationEvidencePreview evidence={registration.files.validId} label="Valid ID" /></div>}
                       {registration.files.proofOfResidence && <div className="registration-review-file-row"><span>Proof of residence</span><RegistrationEvidencePreview evidence={registration.files.proofOfResidence} label="Proof of residence" /></div>}
                     </article>}
-                    {!registration && <p className="resident-profile-note">No registration form is linked to this resident record.</p>}
+                    {!registration && <p className="resident-profile-note">This resident was added by an administrator. Only information saved on the resident record is shown.</p>}
                   </div>
                 </section>
               </div>
@@ -14928,9 +14958,18 @@ function App() {
             </div>
             {residentRecordsTab !== 'recovery' && <label className="resident-record-search"><span className="sr-only">Search resident records</span><input type="search" value={residentRecordsSearch} onChange={(event) => { setResidentRecordsSearch(event.target.value); setHighlightedResidentId('') }} placeholder={residentRecordsTab === 'rejected' ? 'Search applicant name or resident code' : 'Search resident name or Gmail'} /></label>}
             {residentRecordsTab === 'active' ? <section className="resident-record-tab-panel">
-              <button type="button" className="resident-add-form-toggle" aria-expanded={residentFormOpen || Boolean(editingResidentId)} disabled={Boolean(editingResidentId)} onClick={() => { setResidentFormOpen((isOpen) => !isOpen); setResidentFormError('') }}>
-                <span aria-hidden="true">{residentFormOpen || editingResidentId ? '−' : '+'}</span>{editingResidentId ? 'Editing resident' : residentFormOpen ? 'Hide resident form' : 'Add resident'}
-              </button>
+              <div className="resident-record-toolbar">
+                <button type="button" className="resident-add-form-toggle" aria-expanded={residentFormOpen || Boolean(editingResidentId)} disabled={Boolean(editingResidentId)} onClick={() => { setResidentFormOpen((isOpen) => !isOpen); setResidentFormError('') }}>
+                  <span aria-hidden="true">{residentFormOpen || editingResidentId ? '−' : '+'}</span>{editingResidentId ? 'Editing resident' : residentFormOpen ? 'Hide resident form' : 'Add resident'}
+                </button>
+                {!editingResidentId && <button type="button" className={`resident-delete-mode-toggle${residentDeleteMode ? ' is-active' : ''}`} aria-pressed={residentDeleteMode} onClick={() => { setResidentDeleteMode((active) => !active); setSelectedResidentDeleteIds(new Set()) }}>
+                  {residentDeleteMode ? 'Cancel selection' : 'Delete resident'}
+                </button>}
+                {residentDeleteMode && <button type="button" className="resident-delete-selected" disabled={!selectedResidentDeleteIds.size || Boolean(deletingResidentId)} onClick={deleteSelectedResidents}>
+                  {deletingResidentId ? 'Removing…' : `Delete selected (${selectedResidentDeleteIds.size})`}
+                </button>}
+              </div>
+              {residentDeleteMode && <p className="resident-delete-note">Select residents to permanently remove their sign-in access. Payment history, issued documents, requests, and admin records will remain.</p>}
               {(residentFormOpen || editingResidentId) && <form className="resident-record-form" onSubmit={saveResident}>
                 <div className="resident-name-fields">
                   <label htmlFor="admin-resident-first-name"><span className="resident-field-label">First name</span><input id="admin-resident-first-name" value={residentForm.firstName} onChange={(event) => setResidentForm({ ...residentForm, firstName: event.target.value })} placeholder="Given name(s)" autoComplete="given-name" required /></label>
@@ -14957,12 +14996,18 @@ function App() {
               <p className="resident-record-result-count" aria-live="polite">{!hasLoadedPrivateDatabaseData && officialBackendToken
                 ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')
                 : `Showing ${filteredAdminResidents.length} of ${adminResidents.length} current residents`}</p>
-              <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account status</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
+              <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr>{residentDeleteMode && <th>Select</th>}<th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account status</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
                 const profileRequests = residentProfileUpdateRequests.filter((request) => String(request.residentCode || '').toLowerCase() === String(resident.code || '').toLowerCase())
                 const pendingProfileRequests = profileRequests.filter((request) => request.status === 'Pending').length
                 const isRecoveryNameMatch = resident.id === highlightedResidentId
                 const residentAddressLabel = getResidentRecordAddressLabel(resident, registrationRequests)
                 return <tr className={isRecoveryNameMatch ? 'recovery-resident-match' : ''} key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
+                  {residentDeleteMode && <td><input type="checkbox" aria-label={`Select ${resident.name || resident.fullName} for deletion`} checked={selectedResidentDeleteIds.has(String(resident.id))} disabled={Boolean(deletingResidentId)} onChange={(event) => setSelectedResidentDeleteIds((selected) => {
+                    const next = new Set(selected)
+                    if (event.target.checked) next.add(String(resident.id))
+                    else next.delete(String(resident.id))
+                    return next
+                  })} /></td>}
                   <td><strong>{resident.name}</strong>{isRecoveryNameMatch && <small className="recovery-resident-match-label">Closest name match for recovery request</small>}</td>
                   <td>{residentAddressLabel}</td>
                   <td>{resident.emailAddress || 'Not recorded'}</td>
@@ -14971,11 +15016,10 @@ function App() {
                   <td><div className="table-actions">
                     <button type="button" onClick={() => editResident(resident)}>Edit</button>
                     <button type="button" className={resident.recordStatus === 'inactive' ? '' : 'table-delete'} onClick={() => toggleResidentRecordStatus(resident)}>{resident.recordStatus === 'inactive' ? 'Reactivate account' : 'Deactivate account'}</button>
-                    <button type="button" className="table-delete" disabled={deletingResidentId === String(resident.id)} onClick={() => deleteResidentPermanently(resident)}>{deletingResidentId === String(resident.id) ? 'Deleting…' : 'Delete permanently'}</button>
                     {profileRequests.length > 0 && <button type="button" className="resident-profile-update-icon" aria-label={`Open ${profileRequests.length} profile update request${profileRequests.length === 1 ? '' : 's'} for ${resident.name}`} title="Review profile update requests" onClick={() => { setResidentProfileUpdateResidentCode(resident.code); setProfileUpdateError(''); setResidentAccountMessage('') }}><span aria-hidden="true">✎</span>{pendingProfileRequests > 0 && <small>{pendingProfileRequests}</small>}</button>}
                   </div></td>
                 </tr>
-              })}{filteredAdminResidents.length === 0 && <tr><td colSpan="6">{adminResidents.length
+              })}{filteredAdminResidents.length === 0 && <tr><td colSpan={residentDeleteMode ? 7 : 6}>{adminResidents.length
                 ? 'No current residents match your search.'
                 : getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')}</td></tr>}</tbody></table></div>
             </section> : residentRecordsTab === 'recovery' ? <section className="resident-record-tab-panel resident-code-recovery-tab">
