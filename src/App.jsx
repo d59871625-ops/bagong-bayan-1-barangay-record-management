@@ -7026,7 +7026,26 @@ function App() {
     residentPaymentHistoryByRequestId.set(requestId, merged)
   })
   const residentPaymentHistoryRequests = [...residentPaymentHistoryByRequestId.values()]
-    .filter((request) => String(request.paymentStatus || '').toLowerCase() === 'paid')
+    .flatMap((request) => {
+      const paymentStatus = String(request.paymentStatus || '').trim().toLowerCase()
+      const requestStatus = String(request.status || request.finalStatus || '').trim().toLowerCase()
+      const feeAmount = Number(request.feeAmount || 0)
+      // Older requests may have a final Received/Completed status but no
+      // paymentStatus field. These final states only follow payment review for
+      // paid documents, so preserve them in the resident's permanent history.
+      const completedPaidLegacyRequest = feeAmount > 0
+        && ['received', 'completed', 'released'].includes(requestStatus)
+      if (paymentStatus !== 'paid' && !completedPaidLegacyRequest) return []
+      return [{
+        ...request,
+        paymentStatus: 'Paid',
+        paymentVerifiedAt: request.paymentVerifiedAt
+          || request.releasedAt
+          || request.finalDate
+          || request.completedAt
+          || '',
+      }]
+    })
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const residentPaymentRecords = groupPaymentRequests(residentPaymentRequests)
