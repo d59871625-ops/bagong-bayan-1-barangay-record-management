@@ -2,6 +2,7 @@
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/registration-application-storage.php";
 
 header("Cache-Control: no-store");
 
@@ -25,11 +26,27 @@ $action = is_array($input) ? trim($input["action"] ?? "") : "";
 if (!preg_match('/^BB1-[A-Z0-9]{1,8}-\d{3}$/', $residentCode)) {
     respond(422, ["success" => false, "message" => "A valid resident code is required."]);
 }
-if (!in_array($action, ["update_profile", "set_status"], true)) {
+if (!in_array($action, ["update_profile", "set_status", "delete_permanently"], true)) {
     respond(422, ["success" => false, "message" => "A supported resident account action is required."]);
 }
 
 try {
+    if ($action === "delete_permanently") {
+        ensureRegistrationApplicationDetailsTable($pdo);
+        ensureRegistrationReferenceAccessTable($pdo);
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bb1_app_state (
+            data_key VARCHAR(100) NOT NULL PRIMARY KEY,
+            data_value LONGTEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bb1_app_state_snapshots (
+            snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            data_key VARCHAR(100) NOT NULL,
+            data_value LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_snapshot_key_created (data_key, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    }
     $pdo->beginTransaction();
     $residentStmt = $pdo->prepare("
         SELECT r.id, r.user_id, r.first_name, r.middle_name, r.last_name, r.suffix, u.email
@@ -43,8 +60,138 @@ try {
     $residentStmt->execute([$residentCode]);
     $resident = $residentStmt->fetch(PDO::FETCH_ASSOC);
     if (!$resident) {
+        if ($action === "delete_permanently") {
+            $providedRegistrationIds = is_array($input["registration_ids"] ?? null) ? $input["registration_ids"] : [];
+            $registrationIds = [];
+            foreach ($providedRegistrationIds as $registrationId) {
+                if ((is_string($registrationId) || is_int($registrationId)) && ctype_digit((string) $registrationId)) {
+                    $registrationIds[(string) $registrationId] = true;
+                }
+            }
+            if ($registrationIds) {
+                $placeholders = implode(",", array_fill(0, count($registrationIds), "?"));
+                $registrationValues = array_map("intval", array_keys($registrationIds));
+                $pdo->prepare("DELETE FROM registration_application_details WHERE registration_id IN ($placeholders)")->execute($registrationValues);
+                $pdo->prepare("DELETE FROM registration_reference_access WHERE registration_id IN ($placeholders)")->execute($registrationValues);
+                $pdo->prepare("DELETE FROM registration_requests WHERE id IN ($placeholders)")->execute($registrationValues);
+            }
+            $stateSelect = $pdo->prepare("SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN (?, ?) FOR UPDATE");
+            $stateSelect->execute(["bb1-resident-records", "bb1-registration-requests"]);
+            $stateUpdate = $pdo->prepare("UPDATE bb1_app_state SET data_value = ? WHERE data_key = ?");
+            $snapshot = $pdo->prepare("INSERT INTO bb1_app_state_snapshots (data_key, data_value) VALUES (?, ?)");
+            foreach ($stateSelect->fetchAll(PDO::FETCH_ASSOC) as $stateRow) {
+                $records = json_decode((string) $stateRow["data_value"], false, 512, JSON_THROW_ON_ERROR);
+                if (!is_array($records)) throw new RuntimeException("Saved resident data is invalid and could not be deleted safely.");
+                $snapshot->execute([$stateRow["data_key"], $stateRow["data_value"]]);
+                if ($stateRow["data_key"] === "bb1-resident-records") {
+                    $records = array_values(array_filter($records, static function ($record) use ($residentCode) {
+                        if (!($record instanceof stdClass)) return true;
+                        return strtoupper(trim((string) ($record->code ?? $record->residentCode ?? $record->resident_code ?? ""))) !== $residentCode;
+                    }));
+                } else {
+                    $deletedRegistrationIds = $registrationIds;
+                    $records = array_map(static function ($record) use ($residentCode, $deletedRegistrationIds) {
+                        if (!($record instanceof stdClass)) return $record;
+                        $code = strtoupper(trim((string) ($record->assignedResidentCode ?? $record->residentCode ?? $record->resident_code ?? "")));
+                        $id = preg_replace('/^DB-REG-/', '', (string) ($record->id ?? ""));
+                        if (($code === $residentCode || isset($deletedRegistrationIds[$id])) && ($record->status ?? "") === "Approved") {
+                            $record->status = "Deleted";
+                            $record->deletedAt = gmdate("c");
+                        }
+                        return $record;
+                    }, $records);
+                }
+                $stateUpdate->execute([json_encode($records, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), $stateRow["data_key"]]);
+            }
+            $pdo->commit();
+            respond(200, ["success" => true, "message" => "Resident record was permanently deleted."]);
+        }
         $pdo->rollBack();
         respond(404, ["success" => false, "message" => "The resident account was not found."]);
+    }
+
+    if ($action === "delete_permanently") {
+        $providedRegistrationIds = is_array($input["registration_ids"] ?? null) ? $input["registration_ids"] : [];
+        $registrationIds = [];
+        foreach ($providedRegistrationIds as $registrationId) {
+            if ((is_string($registrationId) || is_int($registrationId)) && ctype_digit((string) $registrationId)) {
+                $registrationIds[(string) $registrationId] = true;
+            }
+        }
+        $registrationConditions = ["access.resident_code = ?"];
+        $registrationParameters = [$residentCode];
+        $residentEmail = trim((string) ($resident["email"] ?? ""));
+        if ($residentEmail !== "") {
+            $registrationConditions[] = "LOWER(r.email) = LOWER(?)";
+            $registrationParameters[] = $residentEmail;
+        }
+        if ($registrationIds) {
+            $registrationConditions[] = "r.id IN (" . implode(",", array_fill(0, count($registrationIds), "?")) . ")";
+            array_push($registrationParameters, ...array_map("intval", array_keys($registrationIds)));
+        }
+        $registrationStmt = $pdo->prepare("SELECT r.id
+            FROM registration_requests AS r
+            LEFT JOIN registration_reference_access AS access ON access.registration_id = r.id
+            WHERE (" . implode(" OR ", $registrationConditions) . ")
+            FOR UPDATE");
+        $registrationStmt->execute($registrationParameters);
+        foreach ($registrationStmt->fetchAll(PDO::FETCH_COLUMN) as $registrationId) {
+            $registrationIds[(string) $registrationId] = true;
+        }
+        if ($registrationIds) {
+            $placeholders = implode(",", array_fill(0, count($registrationIds), "?"));
+            $registrationValues = array_map("intval", array_keys($registrationIds));
+            $pdo->prepare("DELETE FROM registration_application_details WHERE registration_id IN ($placeholders)")->execute($registrationValues);
+            $pdo->prepare("DELETE FROM registration_reference_access WHERE registration_id IN ($placeholders)")->execute($registrationValues);
+            $pdo->prepare("DELETE FROM registration_requests WHERE id IN ($placeholders)")->execute($registrationValues);
+        }
+
+        $stateKeys = ["bb1-resident-records", "bb1-registration-requests"];
+        $stateSelect = $pdo->prepare("SELECT data_key, data_value FROM bb1_app_state WHERE data_key IN (?, ?) FOR UPDATE");
+        $stateSelect->execute($stateKeys);
+        $stateRows = $stateSelect->fetchAll(PDO::FETCH_ASSOC);
+        $stateUpdate = $pdo->prepare("UPDATE bb1_app_state SET data_value = ? WHERE data_key = ?");
+        $snapshot = $pdo->prepare("INSERT INTO bb1_app_state_snapshots (data_key, data_value) VALUES (?, ?)");
+        foreach ($stateRows as $stateRow) {
+            $stateKey = (string) $stateRow["data_key"];
+            $records = json_decode((string) $stateRow["data_value"], false, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($records)) {
+                throw new RuntimeException("Saved resident data is invalid and could not be deleted safely.");
+            }
+            $snapshot->execute([$stateKey, $stateRow["data_value"]]);
+            if ($stateKey === "bb1-resident-records") {
+                $records = array_values(array_filter($records, static function ($record) use ($residentCode, $resident) {
+                    if (!($record instanceof stdClass)) return true;
+                    $code = strtoupper(trim((string) ($record->code ?? $record->residentCode ?? $record->resident_code ?? "")));
+                    $id = trim((string) ($record->id ?? ""));
+                    return $code !== $residentCode && $id !== (string) $resident["id"];
+                }));
+            } else {
+                $deletedRegistrationIds = $registrationIds;
+                $records = array_map(static function ($record) use ($residentCode, $resident, $deletedRegistrationIds) {
+                    if (!($record instanceof stdClass)) return $record;
+                    $assignedCode = strtoupper(trim((string) ($record->assignedResidentCode ?? $record->residentCode ?? $record->resident_code ?? "")));
+                    $registrationId = preg_replace('/^DB-REG-/', '', (string) ($record->id ?? ""));
+                    $isLinked = $assignedCode === $residentCode
+                        || (string) ($record->residentId ?? $record->resident_id ?? "") === (string) $resident["id"]
+                        || isset($deletedRegistrationIds[$registrationId]);
+                    if ($isLinked && ($record->status ?? "") === "Approved") {
+                        $record->status = "Deleted";
+                        $record->deletedAt = gmdate("c");
+                    }
+                    return $record;
+                }, $records);
+            }
+            $stateUpdate->execute([json_encode($records, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), $stateKey]);
+        }
+
+        $pdo->prepare("DELETE FROM api_tokens WHERE user_id = ?")->execute([$resident["user_id"]]);
+        $pdo->prepare("DELETE FROM resident_history WHERE resident_id = ?")->execute([$resident["id"]]);
+        $pdo->prepare("DELETE FROM document_requests WHERE resident_id = ?")->execute([$resident["id"]]);
+        $pdo->prepare("DELETE FROM residents WHERE id = ?")->execute([$resident["id"]]);
+        $pdo->prepare("DELETE FROM users WHERE id = ? AND role = 'resident'")->execute([$resident["user_id"]]);
+        $pdo->commit();
+        respond(200, ["success" => true, "message" => "Resident account and registration were permanently deleted."]);
     }
 
     if ($action === "set_status") {

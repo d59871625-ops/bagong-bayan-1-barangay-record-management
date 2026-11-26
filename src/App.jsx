@@ -5806,6 +5806,7 @@ function App() {
   const [editingResidentId, setEditingResidentId] = useState(null)
   const [residentFormError, setResidentFormError] = useState('')
   const [residentAccountMessage, setResidentAccountMessage] = useState('')
+  const [deletingResidentId, setDeletingResidentId] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
   const [passwordFields, setPasswordFields] = useState({ current: '', next: '', confirm: '' })
   const [officialCredentials, setOfficialCredentials] = useState({ username: '', password: '' })
@@ -10389,6 +10390,55 @@ function App() {
       : `Resident record marked ${recordStatus} in shared app data. Database sign-in is unchanged until an authorized backend admin session is used.`)
   }
 
+  const deleteResidentPermanently = async (resident) => {
+    if (!window.confirm(`Permanently delete ${resident.name || resident.fullName || 'this resident'} and their registration account? This cannot be undone.`)) return
+    if (!officialBackendToken) {
+      setResidentAccountMessage('Sign in with an active admin account before permanently deleting a resident.')
+      return
+    }
+    setDeletingResidentId(String(resident.id))
+    setResidentAccountMessage('')
+    const residentCode = String(resident.code || '').trim()
+    const linkedRegistration = (request) => request.status === 'Approved' && (
+      String(request.assignedResidentCode || '').toLowerCase() === residentCode.toLowerCase()
+      || (request.residentId !== undefined && String(request.residentId) === String(resident.id))
+    )
+    const registrationIds = registrationRequests.filter(linkedRegistration)
+      .map((request) => String(request.backendRegistrationId || request.id || '').replace(/^DB-REG-/i, ''))
+      .filter((id) => /^\d+$/.test(id))
+    try {
+      await updateResidentAccountBackend(residentCode, 'delete_permanently', { registration_ids: registrationIds })
+      const nextResidents = adminResidents.filter((record) => String(record.id) !== String(resident.id))
+      const nextRegistrations = registrationRequests.map((request) => linkedRegistration(request)
+        ? { ...request, status: 'Deleted', deletedAt: new Date().toISOString() }
+        : request)
+      setAdminResidents(nextResidents)
+      setRegistrationRequests(nextRegistrations)
+      if (String(registrationResidentViewCode).toLowerCase() === residentCode.toLowerCase()) setRegistrationResidentViewCode('')
+      if (editingResidentId === resident.id) {
+        setEditingResidentId(null)
+        setResidentFormOpen(false)
+      }
+      setResidentAccountMessage(`${resident.name || resident.fullName || 'Resident'} was permanently deleted.`)
+      const recordsToSave = {
+        [residentRecordsStorageKey]: nextResidents,
+        [registrationRequestsStorageKey]: nextRegistrations,
+      }
+      try {
+        await saveDatabaseRecords(recordsToSave, officialBackendToken, null, fastSyncRef.current)
+        databaseRecordsRef.current = { ...databaseRecordsRef.current, ...recordsToSave }
+      } catch (saveError) {
+        console.error('Resident deleted, but the shared directory refresh could not be confirmed.', saveError)
+        setResidentAccountMessage('The account was deleted. The shared directory is retrying its update; refresh after synchronization completes.')
+      }
+    } catch (error) {
+      console.error('Unable to permanently delete resident.', error)
+      setResidentAccountMessage(error.message || 'The resident could not be deleted. No changes were made.')
+    } finally {
+      setDeletingResidentId('')
+    }
+  }
+
   const markRegistrationReviewStep = (request, stepKey) => {
     if (request.status !== 'Pending') return
     const nextStepKey = getRegistrationReviewSteps(request).find(({ key }) => !request.reviewSteps?.[key])?.key
@@ -14553,14 +14603,17 @@ function App() {
               ))
               if (!resident) return null
               const residentCode = resident.code || resident.id
-              const registration = registrationRequests.find((candidate) => (
-                candidate.status === 'Approved'
-                && (
-                  String(candidate.assignedResidentCode || '').toLowerCase() === String(residentCode || '').toLowerCase()
-                  || (candidate.residentId !== undefined && String(candidate.residentId) === String(resident.id))
-                  || getResidentRecordNameKey({ name: candidate.name }) === getResidentRecordNameKey(resident)
-                )
-              ))
+              const approvedRegistrations = registrationRequests.filter((candidate) => candidate.status === 'Approved')
+              const registration = approvedRegistrations.find((candidate) => (
+                String(candidate.assignedResidentCode || '').toLowerCase() === String(residentCode || '').toLowerCase()
+              )) || approvedRegistrations.find((candidate) => (
+                candidate.residentId !== undefined && String(candidate.residentId) === String(resident.id)
+              )) || (() => {
+                const sameNameRegistrations = approvedRegistrations.filter((candidate) => (
+                  getResidentRecordNameKey({ name: candidate.name }) === getResidentRecordNameKey(resident)
+                ))
+                return sameNameRegistrations.length === 1 ? sameNameRegistrations[0] : null
+              })()
               const registrationFieldLabels = new Map(registrationReviewInformationSections.flatMap((section) => (
                 section.fields.map(([field, label]) => [field, label])
               )))
@@ -14901,6 +14954,7 @@ function App() {
                   <td><div className="table-actions">
                     <button type="button" onClick={() => editResident(resident)}>Edit</button>
                     <button type="button" className={resident.recordStatus === 'inactive' ? '' : 'table-delete'} onClick={() => toggleResidentRecordStatus(resident)}>{resident.recordStatus === 'inactive' ? 'Reactivate account' : 'Deactivate account'}</button>
+                    <button type="button" className="table-delete" disabled={deletingResidentId === String(resident.id)} onClick={() => deleteResidentPermanently(resident)}>{deletingResidentId === String(resident.id) ? 'Deleting…' : 'Delete permanently'}</button>
                     {profileRequests.length > 0 && <button type="button" className="resident-profile-update-icon" aria-label={`Open ${profileRequests.length} profile update request${profileRequests.length === 1 ? '' : 's'} for ${resident.name}`} title="Review profile update requests" onClick={() => { setResidentProfileUpdateResidentCode(resident.code); setProfileUpdateError(''); setResidentAccountMessage('') }}><span aria-hidden="true">✎</span>{pendingProfileRequests > 0 && <small>{pendingProfileRequests}</small>}</button>}
                   </div></td>
                 </tr>

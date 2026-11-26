@@ -123,6 +123,7 @@ try {
             registration_requests.created_at,
             registration_requests.reviewed_at,
             registration_requests.rejection_reason,
+            details.application_data,
             COALESCE(reference_access.resident_code, resident.resident_code) AS assigned_resident_code,
             resident.id AS resident_id,
             resident.record_status AS resident_record_status,
@@ -139,6 +140,8 @@ try {
             resident.province AS resident_province,
             account.email AS resident_email
         FROM registration_requests
+        LEFT JOIN registration_application_details AS details
+            ON details.registration_id = registration_requests.id
         LEFT JOIN registration_reference_access AS reference_access
             ON reference_access.registration_id = registration_requests.id
         LEFT JOIN residents AS resident
@@ -157,6 +160,12 @@ try {
         ORDER BY registration_requests.created_at DESC, registration_requests.id DESC
     ");
     $history = $historyStatement->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($history as &$application) {
+        if ($application["application_data"] !== null) {
+            $application["application_data"] = decodeRegistrationApplicationJson($application["application_data"], "data");
+        }
+    }
+    unset($application);
 
     echo json_encode([
         "success" => true,

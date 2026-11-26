@@ -3247,6 +3247,9 @@ button, a, summary, input, select, textarea, [tabindex]:not([tabindex="-1"]) {
 .resident-record-search { display: block; max-width: 620px; }
 .resident-record-result-count { margin: 0; color: #68746a; font-size: 11px; }
 .resident-records-table tbody tr.recovery-resident-match { background: #e8f5e8; box-shadow: inset 4px 0 #3c7a45; }
+.resident-records-table .table-actions { flex-wrap: wrap; }
+.resident-records-table .table-actions .table-delete { border-color: #d7a39b; color: #8f372d; }
+.resident-records-table .table-actions button:disabled { cursor: wait; opacity: .65; }
 .resident-records-table tbody tr.recovery-resident-match td:first-child strong { color: #245c2e; }
 .recovery-resident-match-label { display: block; margin-top: 3px; color: #3c7a45; font-size: 9px; font-weight: 700; }
 .resident-record-tab-panel { display: grid; gap: 12px; min-width: 0; }
