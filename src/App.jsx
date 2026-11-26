@@ -10300,6 +10300,10 @@ function App() {
 
   const saveResident = async (event) => {
     event.preventDefault()
+    if (!officialBackendToken || !hasLoadedPrivateDatabaseData || !isDatabaseConnected) {
+      setResidentFormError('Connect to the shared database with an active admin account before adding or editing a resident. The record was not saved only in this browser.')
+      return
+    }
     const existingResident = adminResidents.find((resident) => resident.id === editingResidentId)
     const cleanResident = {
       firstName: residentForm.firstName.trim(),
@@ -10326,6 +10330,14 @@ function App() {
     }
     if (!cleanResident.emailAddress || !isRecoveryEmail(cleanResident.emailAddress)) {
       setResidentFormError('Enter a valid email address for this resident.')
+      return
+    }
+    const duplicateEmailResident = adminResidents.find((resident) => (
+      resident.id !== editingResidentId
+      && String(resident.emailAddress || '').trim().toLowerCase() === cleanResident.emailAddress.toLowerCase()
+    ))
+    if (duplicateEmailResident) {
+      setResidentFormError(`This Gmail address is already saved for ${duplicateEmailResident.name || duplicateEmailResident.fullName}. Use a unique email address for each resident account.`)
       return
     }
     if (adminResidents.some((resident) => resident.code.toLowerCase() === cleanResident.code.toLowerCase() && resident.id !== editingResidentId)) {
@@ -10364,31 +10376,53 @@ function App() {
       ...(!existingResident ? { createdAt: today } : {}),
       updatedAt: today,
     }
-    setAdminResidents((residents) => editingResidentId
-      ? residents.map((resident) => resident.id === editingResidentId ? updatedResident : resident)
-      : [...residents, updatedResident])
-    if (existingResident) {
-      const previousName = existingResident.name
-      setResidentRequests((requests) => requests.map((request) => (
+    const nextResidents = editingResidentId
+      ? adminResidents.map((resident) => resident.id === editingResidentId ? updatedResident : resident)
+      : [...adminResidents, updatedResident]
+    const previousName = existingResident?.name || existingResident?.fullName || ''
+    const nextRequests = existingResident
+      ? residentRequests.map((request) => (
         request.residentCode?.toLowerCase() === existingResident.code.toLowerCase() || request.resident === previousName
           ? { ...request, resident: cleanResident.name }
           : request
-      )))
-    }
-    setResidentHistory((history) => [{
+      ))
+      : residentRequests
+    const historyEntry = {
       id: `resident-history-${Date.now()}`,
       resident: cleanResident.name,
       code: cleanResident.code,
       action: editingResidentId ? 'Updated resident record' : 'Added resident record',
       date: today,
-    }, ...history])
+    }
+    const nextHistory = [historyEntry, ...residentHistory]
+    const recordsToSave = {
+      [residentRecordsStorageKey]: nextResidents,
+      [residentHistoryStorageKey]: nextHistory,
+      ...(existingResident ? { [residentRequestsStorageKey]: nextRequests } : {}),
+    }
+    try {
+      setDatabaseSaveStatus('saving')
+      await queueDatabaseRecords(databaseSaveQueueRef, recordsToSave, officialBackendToken, null, fastSyncRef.current)
+      databaseRecordsRef.current = { ...(databaseRecordsRef.current || {}), ...recordsToSave }
+      setDatabaseSaveError('')
+      setDatabaseSaveStatus('saved')
+    } catch (error) {
+      console.error('Unable to save the resident record to the shared database.', error)
+      setDatabaseSaveStatus('error')
+      setDatabaseSaveError(error.message || 'The resident record could not be saved to the shared database.')
+      setResidentFormError(error.message || 'The resident record was not saved. Please reconnect to the shared database and try again.')
+      return
+    }
+    setAdminResidents(nextResidents)
+    if (existingResident) setResidentRequests(nextRequests)
+    setResidentHistory(nextHistory)
     setResidentForm({ firstName: '', middleName: '', lastName: '', suffix: '', address: '', birthDate: '', contactNumber: '', emailAddress: '', code: '' })
     setEditingResidentId(null)
     setResidentFormOpen(false)
     setResidentFormError('')
-    setResidentAccountMessage(officialBackendToken && existingResident
-      ? 'Resident record changes were saved to the shared app and database.'
-      : 'Resident record saved to shared app data. Database sign-in changes require an authorized backend admin session.')
+    setResidentAccountMessage(existingResident
+      ? 'Resident record changes were saved to the shared database.'
+      : 'Resident record was saved permanently. The resident can now sign in with the assigned resident code and the same name.')
   }
 
   const editResident = (resident) => {

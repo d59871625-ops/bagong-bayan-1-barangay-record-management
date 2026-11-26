@@ -191,6 +191,7 @@ function getActiveResidentDirectoryRecord(PDO $pdo, string $residentCode): ?arra
             "date_of_birth" => $record->birthDate ?? $record->dateOfBirth ?? $record->date_of_birth ?? null,
             "contact_number" => $record->contactNumber ?? $record->mobileNumber ?? $record->contact_number ?? null,
             "house_no_street" => $record->address ?? $record->house_no_street ?? null,
+            "email" => $record->emailAddress ?? $record->email ?? null,
         ];
     }
 
@@ -248,6 +249,10 @@ function ensureResidentAccountFromDirectory(PDO $pdo, string $residentCode, arra
         $address = is_string($directoryRecord["house_no_street"])
             ? trim($directoryRecord["house_no_street"])
             : "";
+        $email = is_string($directoryRecord["email"])
+            ? strtolower(trim($directoryRecord["email"]))
+            : "";
+        if ($email !== "" && !filter_var($email, FILTER_VALIDATE_EMAIL)) $email = "";
         $unusablePasswordHash = password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT);
         if ($unusablePasswordHash === false) {
             throw new RuntimeException("Unable to create the resident account credential.");
@@ -255,9 +260,9 @@ function ensureResidentAccountFromDirectory(PDO $pdo, string $residentCode, arra
 
         $userStmt = $pdo->prepare("
             INSERT INTO users (full_name, email, password_hash, role, account_status)
-            VALUES (?, NULL, ?, 'resident', 'active')
+            VALUES (?, ?, ?, 'resident', 'active')
         ");
-        $userStmt->execute([$directoryRecord["full_name"], $unusablePasswordHash]);
+        $userStmt->execute([$directoryRecord["full_name"], $email !== "" ? $email : null, $unusablePasswordHash]);
         $userId = (int) $pdo->lastInsertId();
 
         $residentStmt = $pdo->prepare("
@@ -408,6 +413,13 @@ try {
 
 } catch (Throwable $e) {
     error_log("Resident login error: " . $e->getMessage());
+
+    if ($e instanceof PDOException && $e->getCode() === "23000") {
+        respond(409, [
+            "success" => false,
+            "message" => "This resident code or Gmail address is already linked to another account. Ask the admin to verify the resident record."
+        ]);
+    }
 
     respond(500, [
         "success" => false,
