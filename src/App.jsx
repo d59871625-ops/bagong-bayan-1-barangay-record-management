@@ -7009,6 +7009,7 @@ function App() {
   }))
   const residentPaymentHistoryByRequestId = new Map(uniqueResidentRequestsById([
     ...residentHistoryRequestCandidates,
+    ...residentCompletedIssuedRequests,
     ...residentPaymentRequests,
     ...residentCancelledRequests,
   ]).map((request) => [String(request.id), request]))
@@ -7029,15 +7030,30 @@ function App() {
     .flatMap((request) => {
       const paymentStatus = String(request.paymentStatus || '').trim().toLowerCase()
       const requestStatus = String(request.status || request.finalStatus || '').trim().toLowerCase()
-      const feeAmount = Number(request.feeAmount || 0)
-      // Older requests may have a final Received/Completed status but no
-      // paymentStatus field. These final states only follow payment review for
-      // paid documents, so preserve them in the resident's permanent history.
+      const savedFeeAmount = Number(request.feeAmount || request.amountPaid || request.amount_paid || 0)
+      const documents = Array.isArray(request.documents) ? request.documents : []
+      const copyCount = Math.max(1, Number.parseInt(request.copyCount || request.copies || 1, 10) || 1)
+      const reconstructedFeeAmount = documents.reduce((total, document) => (
+        total + Number(documentFees?.[document] || 0) * copyCount
+      ), 0)
+      const feeAmount = savedFeeAmount > 0 ? savedFeeAmount : reconstructedFeeAmount
+      const verifiedPaymentActivity = (request.activity || []).some((activity) => (
+        /^payment marked paid\b/i.test(String(activity?.action || ''))
+      ))
+      const verifiedReceipt = [request.paymentOrNumber, request.orNumber]
+        .some((reference) => Boolean(String(reference || '').trim())
+          && String(reference || '').trim().toUpperCase() !== 'N/A')
+      // Legacy issued records can have a final Received/Completed state while
+      // their original fee and paymentStatus were omitted from the archived
+      // snapshot. Keep the resident's paid transaction visible by restoring
+      // its amount from the stored document fee and requested copy count.
       const completedPaidLegacyRequest = feeAmount > 0
         && ['received', 'completed', 'released'].includes(requestStatus)
-      if (paymentStatus !== 'paid' && !completedPaidLegacyRequest) return []
+      const wasPaid = paymentStatus === 'paid' || verifiedPaymentActivity || verifiedReceipt || completedPaidLegacyRequest
+      if (!wasPaid) return []
       return [{
         ...request,
+        feeAmount: savedFeeAmount > 0 ? savedFeeAmount : feeAmount || null,
         paymentStatus: 'Paid',
         paymentVerifiedAt: request.paymentVerifiedAt
           || request.releasedAt
