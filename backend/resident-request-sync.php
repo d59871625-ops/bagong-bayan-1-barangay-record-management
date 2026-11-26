@@ -223,6 +223,23 @@ function residentSyncOwnedRecords($records, string $residentCode, string $fullNa
     ));
 }
 
+function residentSyncAttachAccountId(array $records, int $residentId): array
+{
+    foreach ($records as $record) {
+        if (!($record instanceof stdClass)) {
+            continue;
+        }
+        // The authenticated account ownership filter has already accepted
+        // these records. Return the stable account ID so clients can retain
+        // them across code or profile name changes.
+        $record->residentId = $residentId;
+        if (($record->request ?? null) instanceof stdClass) {
+            $record->request->residentId = $residentId;
+        }
+    }
+    return $records;
+}
+
 function residentSyncReadOwnedState(
     PDO $pdo,
     string $key,
@@ -782,6 +799,11 @@ try {
             $identity
         );
         $paymentDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-payment-drafts", $residentCode, $fullName, $identity);
+        $history = residentSyncAttachAccountId($history, $residentId);
+        $requestDrafts = residentSyncAttachAccountId($requestDrafts, $residentId);
+        $issuedDocuments = residentSyncAttachAccountId($issuedDocuments, $residentId);
+        $requests = residentSyncAttachAccountId($requests, $residentId);
+        $paymentDrafts = residentSyncAttachAccountId($paymentDrafts, $residentId);
         residentSyncRespond(200, [
             "success" => true,
             "data" => [
@@ -1016,7 +1038,8 @@ try {
         $history = residentSyncOwnedRecords(
             json_decode($savedHistoryJson, false, 512, JSON_THROW_ON_ERROR),
             $residentCode,
-            $fullName
+            $fullName,
+            $identity
         );
 
         $paymentDraftLock = $pdo->prepare("
@@ -1275,6 +1298,13 @@ try {
             $identity
         );
         $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName, $identity);
+        $ownRequests = residentSyncAttachAccountId($ownRequests, $residentId);
+        $ownPaymentDrafts = residentSyncAttachAccountId($ownPaymentDrafts, $residentId);
+        $ownRequestDrafts = residentSyncAttachAccountId($ownRequestDrafts, $residentId);
+        $ownRecoveryRequests = residentSyncAttachAccountId($ownRecoveryRequests, $residentId);
+        $ownProfileUpdateRequests = residentSyncAttachAccountId($ownProfileUpdateRequests, $residentId);
+        $history = residentSyncAttachAccountId($history, $residentId);
+        $issuedDocuments = residentSyncAttachAccountId($issuedDocuments, $residentId);
         header("ETag: " . residentSyncGetDataEtag($pdo));
         residentSyncRespond(200, [
             "success" => true,

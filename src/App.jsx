@@ -4325,13 +4325,24 @@ const residentNameFieldsFromFullName = (value) => {
   }
 }
 const residentRecordMatchesAccount = (record, resident) => {
+  const recordResidentId = record.residentId ?? record.resident_id ?? record.matchedResidentId
+  const residentIds = new Set([
+    resident.resident_id,
+    resident.residentId,
+    resident.id,
+  ].filter((value) => value !== undefined && value !== null && String(value).trim()).map(String))
+  if (recordResidentId !== undefined && residentIds.has(String(recordResidentId))) return true
+
   const recordCode = normalizeResidentCode(record.residentCode || record.resident_code || record.code)
   const currentCode = normalizeResidentCode(resident.code)
   const currentCodes = new Set([currentCode, ...(resident.legacyCodes || []).map(normalizeResidentCode)].filter(Boolean))
   const registeredName = record.resident || record.name || record.fullName || record.full_name || ''
-  return recordCode
-    ? currentCodes.has(recordCode)
-    : residentNameMatches(registeredName, resident, record.data || record)
+  if (recordCode && currentCodes.has(recordCode)) return true
+
+  // A resident can receive a replacement code after recovery. Preserve the
+  // account's past requests by checking its registered name if an old record
+  // has no stable resident ID and its code is no longer current.
+  return residentNameMatches(registeredName, resident, record.data || record)
 }
 
 const mergeResidentSyncRecords = (currentRecords, remoteRecords, resident, archivedIds = new Set()) => {
@@ -5284,8 +5295,9 @@ function App() {
       lastName: initialDashboardSession.profile?.last_name || '',
       suffix: initialDashboardSession.profile?.suffix || '',
       code: initialDashboardSession.profile?.resident_code || '',
+      resident_id: initialDashboardSession.profile?.resident_id,
     }
-    : { firstName: '', middleName: '', lastName: '', suffix: '', code: '' })
+    : { firstName: '', middleName: '', lastName: '', suffix: '', code: '', resident_id: undefined })
   const [residentToken, setResidentToken] = useState(initialDashboardSession?.role === 'resident' ? initialDashboardSession.token : '')
   const [authenticatedResidentProfile, setAuthenticatedResidentProfile] = useState(initialDashboardSession?.role === 'resident' ? initialDashboardSession.profile || null : null)
   const [selectedDocuments, setSelectedDocuments] = useState([])
@@ -6867,6 +6879,8 @@ function App() {
   ].filter((value) => value !== undefined && value !== null && String(value).trim()).map(String))
   const residentIdentityCodes = new Set([
     residentName.code,
+    authenticatedResidentProfile?.resident_code,
+    ...(authenticatedResidentProfile?.legacy_codes || []),
     currentResidentRecord?.code,
     currentResidentRecord?.id,
     ...(currentResidentRecord?.legacyCodes || []),
@@ -8510,6 +8524,7 @@ function App() {
     const controller = new AbortController()
     const residentAccount = {
       code: residentName.code,
+      resident_id: authenticatedResidentProfile?.resident_id,
       firstName: residentName.firstName,
       middleName: residentName.middleName,
       lastName: residentName.lastName,
@@ -9229,6 +9244,7 @@ function App() {
       lastName: profile.last_name || '',
       suffix: profile.suffix || '',
       code: profile.resident_code,
+      resident_id: profile.resident_id,
     })
     setResidentDashboardSection('community')
     setSelectedInboxRequestId(null)
@@ -11269,6 +11285,7 @@ function App() {
 
       const residentAccount = {
         code: residentName.code,
+        resident_id: authenticatedResidentProfile?.resident_id,
         firstName: residentName.firstName,
         middleName: residentName.middleName,
         lastName: residentName.lastName,
@@ -11772,7 +11789,7 @@ function App() {
       return
     }
     const request = { id: createResidentProfileUpdateId(), resident: fullName, residentCode: residentName.code.trim().toUpperCase(), proposedChanges, status: 'Pending', submittedAt: new Date().toISOString() }
-    const residentAccount = { code: residentName.code, firstName: residentName.firstName, middleName: residentName.middleName, lastName: residentName.lastName, suffix: residentName.suffix }
+    const residentAccount = { code: residentName.code, resident_id: authenticatedResidentProfile?.resident_id, firstName: residentName.firstName, middleName: residentName.middleName, lastName: residentName.lastName, suffix: residentName.suffix }
     const pendingRequests = residentProfileUpdateRequests.filter((current) => current.status === 'Pending' && residentRecordMatchesAccount(current, residentAccount))
     try {
       const response = await fetchWithTimeout(RESIDENT_REQUEST_SYNC_URL, {
