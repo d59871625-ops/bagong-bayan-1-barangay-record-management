@@ -156,27 +156,31 @@ try {
         }
     }
 
-    $historyStmt = $pdo->prepare("
-        INSERT INTO resident_history (
-            resident_id,
-            user_id,
-            transaction_type,
-            description,
-            reference_type,
-            reference_id
-        )
-        VALUES (?, ?, ?, ?, ?, NULL)
-    ");
-    $description = $action === "set_status"
-        ? "Resident account marked " . $status . " by an authorized official."
-        : "Resident profile updated by an authorized official.";
-    $historyStmt->execute([
-        $resident["id"],
-        $admin["id"],
-        "resident_account_management",
-        $description,
-        "resident_account",
-    ]);
+    try {
+        $historyStmt = $pdo->prepare("
+            INSERT INTO resident_history (
+                resident_id,
+                user_id,
+                transaction_type,
+                description,
+                reference_type,
+                reference_id
+            )
+            VALUES (?, ?, ?, ?, ?, NULL)
+        ");
+        $description = $action === "set_status"
+            ? "Resident account marked " . $status . " by an authorized official."
+            : "Resident profile updated by an authorized official.";
+        $historyStmt->execute([
+            $resident["id"],
+            $admin["id"],
+            "resident_account_management",
+            $description,
+            "resident_account",
+        ]);
+    } catch (Throwable $historyError) {
+        error_log("Resident account update history could not be recorded: " . $historyError->getMessage());
+    }
 
     $pdo->commit();
     respond(200, [

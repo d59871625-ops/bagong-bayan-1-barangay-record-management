@@ -41,6 +41,30 @@ const RESIDENT_REQUEST_SYNC_INTERVAL_MS = 2000
 const RESIDENT_REQUEST_READ_TIMEOUT_MS = 120000
 const RESIDENT_REQUEST_INITIAL_READ_TIMEOUT_MS = 120000
 const DATABASE_REQUEST_TIMEOUT_MS = 120000
+const DASHBOARD_SESSION_STORAGE_KEY = 'bb1-dashboard-session-v1'
+const RESIDENT_IDLE_LOGOUT_MINUTES = 30
+const getCurrentTimestamp = () => Date.now()
+const readDashboardSession = () => {
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null')
+    if (!saved || !['admin', 'resident'].includes(saved.role) || typeof saved.token !== 'string' || !saved.token) return null
+    const idleMinutes = saved.role === 'admin'
+      ? Number.isFinite(Number(saved.autoLogoutMinutes)) ? Number(saved.autoLogoutMinutes) : 30
+      : RESIDENT_IDLE_LOGOUT_MINUTES
+    const lastActivityAt = Number(saved.lastActivityAt) || 0
+    if (idleMinutes > 0 && (!lastActivityAt || Date.now() - lastActivityAt >= idleMinutes * 60 * 1000)) {
+      window.sessionStorage.removeItem(DASHBOARD_SESSION_STORAGE_KEY)
+      return null
+    }
+    return saved
+  } catch {
+    return null
+  }
+}
+const initialDashboardSession = readDashboardSession()
+const clearDashboardSession = () => {
+  try { window.sessionStorage.removeItem(DASHBOARD_SESSION_STORAGE_KEY) } catch { /* Storage can be unavailable in private browsing. */ }
+}
 const ADMIN_RECORD_CACHE_DB = 'bb1-admin-record-cache'
 const ADMIN_RECORD_CACHE_STORE = 'snapshots'
 let adminRecordCacheDbPromise
@@ -5007,7 +5031,7 @@ function GcashTransferInstructions({ amount, recipients }) {
   )
 }
 
-function TableSearch({ label, children }) {
+function TableSearch({ label, placeholder, children }) {
   const tableRegionRef = useRef(null)
   const searchStatusRef = useRef(null)
   const emptyStateRef = useRef(null)
@@ -5048,7 +5072,7 @@ function TableSearch({ label, children }) {
         <input
           type="search"
           aria-label={`Search ${label}`}
-          placeholder={`Search ${label}`}
+          placeholder={placeholder || `Search ${label}`}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
@@ -5085,17 +5109,17 @@ function App() {
   const pendingRegistrationEtagRef = useRef('')
   const requestEvidenceAvailableIdsRef = useRef(new Set())
   const requestEvidenceLoadedIdsRef = useRef(new Set())
-  const [selectedRole, setSelectedRole] = useState('')
+  const [selectedRole, setSelectedRole] = useState(initialDashboardSession?.role || '')
   const [hasStarted, setHasStarted] = useState(false)
   const [showOfficials, setShowOfficials] = useState(false)
   const [showResidentCheck, setShowResidentCheck] = useState(false)
   const [showResidentOptions, setShowResidentOptions] = useState(false)
-  const [showResidentInboxPage, setShowResidentInboxPage] = useState(false)
+  const [showResidentInboxPage, setShowResidentInboxPage] = useState(initialDashboardSession?.role === 'resident')
   const [selectedInboxRequestId, setSelectedInboxRequestId] = useState(null)
   const [residentCancellationRequestId, setResidentCancellationRequestId] = useState('')
   const [cancellationGcashNumber, setCancellationGcashNumber] = useState('')
   const [cancellationGcashError, setCancellationGcashError] = useState('')
-  const [residentDashboardSection, setResidentDashboardSection] = useState('community')
+  const [residentDashboardSection, setResidentDashboardSection] = useState(initialDashboardSession?.role === 'resident' ? initialDashboardSession.residentDashboardSection || 'community' : 'community')
   const [residentMobileMenuOpen, setResidentMobileMenuOpen] = useState(false)
   const [residentCommunityTab, setResidentCommunityTab] = useState('announcements')
   const [residentDraftsCorrectionsTab, setResidentDraftsCorrectionsTab] = useState('drafts')
@@ -5165,18 +5189,26 @@ function App() {
     householdHead: 'yes', householdHeadName: '', householdMembers: '1', relationshipToHead: '', validIdType: '', idNumber: '', proofOfResidence: '',
   })
   const [registrationFiles, setRegistrationFiles] = useState({ validId: null, proofOfResidence: null })
-  const [residentName, setResidentName] = useState({ firstName: '', middleName: '', lastName: '', suffix: '', code: '' })
-  const [residentToken, setResidentToken] = useState('')
-  const [authenticatedResidentProfile, setAuthenticatedResidentProfile] = useState(null)
+  const [residentName, setResidentName] = useState(() => initialDashboardSession?.role === 'resident'
+    ? {
+      firstName: initialDashboardSession.profile?.first_name || '',
+      middleName: initialDashboardSession.profile?.middle_name || '',
+      lastName: initialDashboardSession.profile?.last_name || '',
+      suffix: initialDashboardSession.profile?.suffix || '',
+      code: initialDashboardSession.profile?.resident_code || '',
+    }
+    : { firstName: '', middleName: '', lastName: '', suffix: '', code: '' })
+  const [residentToken, setResidentToken] = useState(initialDashboardSession?.role === 'resident' ? initialDashboardSession.token : '')
+  const [authenticatedResidentProfile, setAuthenticatedResidentProfile] = useState(initialDashboardSession?.role === 'resident' ? initialDashboardSession.profile || null : null)
   const [selectedDocuments, setSelectedDocuments] = useState([])
-  const [residentStatus, setResidentStatus] = useState('')
+  const [residentStatus, setResidentStatus] = useState(initialDashboardSession?.role === 'resident' ? 'registered' : '')
   const [residentLoginError, setResidentLoginError] = useState('')
   const [registrationReferenceNotice, setRegistrationReferenceNotice] = useState(null)
   const [registrationCommunityOnlyAccess, setRegistrationCommunityOnlyAccess] = useState(false)
   const [showDocumentOptions, setShowDocumentOptions] = useState(false)
   const [showRequestForm, setShowRequestForm] = useState(false)
   const [showOfficialLogin, setShowOfficialLogin] = useState(false)
-  const [showOfficialDashboard, setShowOfficialDashboard] = useState(false)
+  const [showOfficialDashboard, setShowOfficialDashboard] = useState(initialDashboardSession?.role === 'admin')
   const [isStorageLoaded, setIsStorageLoaded] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [requestEvidenceAvailableIds, setRequestEvidenceAvailableIds] = useState(() => new Set())
@@ -5338,7 +5370,7 @@ function App() {
   const [recoveryDeliveryMode, setRecoveryDeliveryMode] = useState('verify')
   const [isSendingRecoveryCode, setIsSendingRecoveryCode] = useState(false)
   const [isSendingRecoveryNotice, setIsSendingRecoveryNotice] = useState(false)
-  const [officialBackendToken, setOfficialBackendTokenState] = useState('')
+  const [officialBackendToken, setOfficialBackendTokenState] = useState(initialDashboardSession?.role === 'admin' ? initialDashboardSession.token : '')
   const [adminDatabaseHealth, setAdminDatabaseHealth] = useState('checking')
   const setOfficialBackendToken = useCallback((token) => {
     setOfficialBackendTokenState(token)
@@ -5471,7 +5503,7 @@ function App() {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
   }, [officialBackendToken])
-  const [adminView, setAdminView] = useState('overview')
+  const [adminView, setAdminView] = useState(initialDashboardSession?.role === 'admin' ? initialDashboardSession.adminView || 'overview' : 'overview')
   const allCertificateDocuments = [...new Set([...barangayDocuments, ...customCertificateTemplates.map((template) => template.name)])]
   const getCertificateTemplateTarget = (request) => {
     const targets = (request?.documents || []).filter((document) => (
@@ -5596,6 +5628,55 @@ function App() {
   const [darkMode, setDarkMode] = useState(false)
   const [fontSize, setFontSize] = useState('standard')
   const [autoLogoutMinutes, setAutoLogoutMinutes] = useState(30)
+  useEffect(() => {
+    const role = showOfficialDashboard && officialBackendToken
+      ? 'admin'
+      : showResidentInboxPage && residentToken && !registrationCommunityOnlyAccess
+        ? 'resident'
+        : ''
+    if (!role) {
+      clearDashboardSession()
+      return
+    }
+    const token = role === 'admin' ? officialBackendToken : residentToken
+    let previous = null
+    try { previous = JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null') } catch { /* Replace invalid session data below. */ }
+    const sameSession = previous?.role === role && previous?.token === token
+    const session = {
+      role,
+      token,
+      profile: role === 'resident' ? authenticatedResidentProfile : undefined,
+      adminView: role === 'admin' ? adminView : undefined,
+      residentDashboardSection: role === 'resident' ? residentDashboardSection : undefined,
+      autoLogoutMinutes: role === 'admin' ? autoLogoutMinutes : RESIDENT_IDLE_LOGOUT_MINUTES,
+      lastActivityAt: sameSession ? Number(previous.lastActivityAt) || Date.now() : Date.now(),
+    }
+    try { window.sessionStorage.setItem(DASHBOARD_SESSION_STORAGE_KEY, JSON.stringify(session)) } catch { /* Session persistence is best-effort. */ }
+  }, [adminView, autoLogoutMinutes, authenticatedResidentProfile, officialBackendToken, registrationCommunityOnlyAccess, residentDashboardSection, residentToken, showOfficialDashboard, showResidentInboxPage])
+  useEffect(() => {
+    const role = showOfficialDashboard && officialBackendToken
+      ? 'admin'
+      : showResidentInboxPage && residentToken && !registrationCommunityOnlyAccess
+        ? 'resident'
+        : ''
+    if (!role) return undefined
+    const token = role === 'admin' ? officialBackendToken : residentToken
+    let lastWriteAt = 0
+    const recordActivity = () => {
+      const now = Date.now()
+      if (now - lastWriteAt < 5000) return
+      lastWriteAt = now
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null')
+        if (saved?.role === role && saved?.token === token) {
+          window.sessionStorage.setItem(DASHBOARD_SESSION_STORAGE_KEY, JSON.stringify({ ...saved, lastActivityAt: now }))
+        }
+      } catch { /* Session persistence is best-effort. */ }
+    }
+    const events = ['pointerdown', 'keydown', 'touchstart', 'scroll']
+    events.forEach((eventName) => window.addEventListener(eventName, recordActivity, { passive: true }))
+    return () => events.forEach((eventName) => window.removeEventListener(eventName, recordActivity))
+  }, [officialBackendToken, registrationCommunityOnlyAccess, residentToken, showOfficialDashboard, showResidentInboxPage])
   const [adminMailAccount, setAdminMailAccount] = useState({ emailAddress: '', senderName: '' })
   const [adminMailAccountError, setAdminMailAccountError] = useState('')
   const [isLoadingAdminMailAccount, setIsLoadingAdminMailAccount] = useState(false)
@@ -6789,7 +6870,7 @@ function App() {
     ...residentPendingPaymentRequests,
   ].sort((first, second) => new Date(second.requestedAt || second.paymentDraftedAt || 0).getTime()
     - new Date(first.requestedAt || first.paymentDraftedAt || 0).getTime())
-  const residentPaymentHistoryRequests = residentAccountRequests
+  const residentPaymentHistoryRequests = residentHistoryRequestCandidates
     .filter((request) => Number(request.feeAmount || 0) > 0 && request.paymentStatus === 'Paid')
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
@@ -10155,6 +10236,9 @@ function App() {
         setResidentAccountMessage(error.message || 'Resident account status was not changed in the database.')
         return
       }
+    } else {
+      setResidentAccountMessage('Sign in with an active admin account to change the resident account status in the shared database.')
+      return
     }
     setAdminResidents((residents) => residents.map((currentResident) => currentResident.id === resident.id
       ? { ...currentResident, recordStatus, updatedAt: new Date().toISOString() }
@@ -11761,25 +11845,94 @@ function App() {
     if (!showOfficialDashboard || autoLogoutMinutes === 0) return undefined
 
     let timeoutId
+    const idleLimit = autoLogoutMinutes * 60 * 1000
     const resetInactivityTimer = () => {
       window.clearTimeout(timeoutId)
+      const lastActivityAt = Date.now()
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null')
+        if (saved?.role === 'admin' && saved.token === officialBackendToken) {
+          window.sessionStorage.setItem(DASHBOARD_SESSION_STORAGE_KEY, JSON.stringify({ ...saved, lastActivityAt }))
+        }
+      } catch { /* Session persistence is best-effort. */ }
       timeoutId = window.setTimeout(() => {
+        clearDashboardSession()
+        setOfficialBackendToken('')
+        setShowResidentInboxPage(false)
         setShowOfficialDashboard(false)
-        setShowOfficialLogin(false)
+        setShowOfficialLogin(true)
         setAdminView('overview')
         setProfileOpen(false)
         setNotificationsOpen(false)
-      }, autoLogoutMinutes * 60 * 1000)
+        setLoginStatus('You were signed out after being inactive.')
+      }, idleLimit)
     }
-    const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'mousemove']
+    const savedSession = (() => {
+      try { return JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null') } catch { return null }
+    })()
+    const lastActivityAt = savedSession?.role === 'admin' && savedSession.token === officialBackendToken
+      ? Number(savedSession.lastActivityAt) || Date.now()
+      : Date.now()
+    const remainingTime = Math.max(0, idleLimit - (Date.now() - lastActivityAt))
+    const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'scroll']
     activityEvents.forEach((eventName) => window.addEventListener(eventName, resetInactivityTimer, { passive: true }))
-    resetInactivityTimer()
+    timeoutId = window.setTimeout(() => {
+      clearDashboardSession()
+      setOfficialBackendToken('')
+      setShowResidentInboxPage(false)
+      setShowOfficialDashboard(false)
+      setShowOfficialLogin(true)
+      setAdminView('overview')
+      setProfileOpen(false)
+      setNotificationsOpen(false)
+      setLoginStatus('You were signed out after being inactive.')
+    }, remainingTime)
 
     return () => {
       window.clearTimeout(timeoutId)
       activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetInactivityTimer))
     }
-  }, [autoLogoutMinutes, showOfficialDashboard])
+  }, [autoLogoutMinutes, officialBackendToken, showOfficialDashboard, setOfficialBackendToken])
+
+  useEffect(() => {
+    if (!showResidentInboxPage || !residentToken || registrationCommunityOnlyAccess) return undefined
+    const idleLimit = RESIDENT_IDLE_LOGOUT_MINUTES * 60 * 1000
+    let timeoutId
+    const signOutResident = () => {
+      clearDashboardSession()
+      resetResidentSyncConnection()
+      setResidentToken('')
+      setAuthenticatedResidentProfile(null)
+      setShowResidentInboxPage(false)
+      setShowResidentCheck(true)
+      setSelectedInboxRequestId(null)
+      setResidentStatus('')
+      setResidentLoginError('Your session ended after being inactive. Sign in again to continue.')
+    }
+    const noteActivity = () => {
+      window.clearTimeout(timeoutId)
+      const lastActivityAt = Date.now()
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null')
+        if (saved?.role === 'resident' && saved.token === residentToken) {
+          window.sessionStorage.setItem(DASHBOARD_SESSION_STORAGE_KEY, JSON.stringify({ ...saved, lastActivityAt }))
+        }
+      } catch { /* Session persistence is best-effort. */ }
+      timeoutId = window.setTimeout(signOutResident, idleLimit)
+    }
+    let savedSession = null
+    try { savedSession = JSON.parse(window.sessionStorage.getItem(DASHBOARD_SESSION_STORAGE_KEY) || 'null') } catch { /* Expire malformed session state. */ }
+    const lastActivityAt = savedSession?.role === 'resident' && savedSession.token === residentToken
+      ? Number(savedSession.lastActivityAt) || getCurrentTimestamp()
+      : getCurrentTimestamp()
+    timeoutId = window.setTimeout(signOutResident, Math.max(0, idleLimit - (getCurrentTimestamp() - lastActivityAt)))
+    const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'scroll']
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, noteActivity, { passive: true }))
+    return () => {
+      window.clearTimeout(timeoutId)
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, noteActivity))
+    }
+  }, [registrationCommunityOnlyAccess, residentToken, showResidentInboxPage])
 
   const recordPrintedDocument = (request, document, certificateData) => {
     const printedDocuments = { ...getUnchangedPrintedDocuments(request, certificateData), [document]: true }
@@ -13479,7 +13632,7 @@ function App() {
               <div className="request-search-panel-controls">
                 <label className="request-search">
                   <span>Search requests</span>
-                  <input type="search" value={requestSearch} onChange={(event) => setRequestSearch(event.target.value)} placeholder="Search resident or document" />
+                  <input type="search" value={requestSearch} onChange={(event) => setRequestSearch(event.target.value)} placeholder="Search resident name or requested document" />
                 </label>
                 <label className="request-document-filter">Document type
                   <select value={requestDocumentFilter} onChange={(event) => setRequestDocumentFilter(event.target.value)}>
@@ -14235,24 +14388,25 @@ function App() {
             })()}
             <section className="requests-panel registration-requests-panel registration-resident-directory">
               <div className="requests-heading"><div><span className="section-number">RESIDENT DIRECTORY</span><h2>Resident Information</h2><p>Approved applicants appear here automatically with their generated resident code.</p></div><span className="request-notification">{getPrivateDatabaseCount(adminResidents.length)}</span></div>
-              <TableSearch label="resident directory"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => String(first.name || first.fullName || '').localeCompare(String(second.name || second.fullName || ''), 'en', { sensitivity: 'base' })).map((resident) => <tr key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress].filter(Boolean).join(' ')}>
+              <TableSearch label="resident directory" placeholder="Search resident name, Gmail, or resident code"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Resident</th><th>Address</th><th>Resident code</th><th>Account status</th><th>Information</th></tr></thead><tbody>{[...adminResidents].sort((first, second) => String(first.name || first.fullName || '').localeCompare(String(second.name || second.fullName || ''), 'en', { sensitivity: 'base' })).map((resident) => <tr key={resident.id} data-search-text={[resident.name, resident.fullName, resident.emailAddress, resident.code].filter(Boolean).join(' ')}>
                 <td><strong>{resident.name}</strong></td><td>{resident.address || 'Address not recorded'}</td><td>{resident.code || 'Code not assigned'}</td>
                 <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
-                <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(resident.code || resident.id)}>View information</button></td>
+                <td><button type="button" className="resident-table-action" aria-label={`View information for ${resident.name}`} onClick={() => setRegistrationResidentViewCode(String(resident.code || resident.id || ''))}>View information</button></td>
               </tr>)}
               {!adminResidents.length && <tr><td colSpan="5">{getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet. Approved applications will be added here.')}</td></tr>}
               </tbody></table></div></TableSearch>
             </section>
             {registrationResidentViewCode && (() => {
+              const lookupKey = String(registrationResidentViewCode || '').toLowerCase()
               const resident = adminResidents.find((candidate) => (
-                candidate.code?.toLowerCase() === registrationResidentViewCode.toLowerCase()
-                || candidate.id?.toLowerCase() === registrationResidentViewCode.toLowerCase()
+                String(candidate.code || '').toLowerCase() === lookupKey
+                || String(candidate.id || '').toLowerCase() === lookupKey
               ))
               if (!resident) return null
               const residentCode = resident.code || resident.id
               const registration = registrationRequests.find((candidate) => (
                 candidate.status === 'Approved'
-                && candidate.assignedResidentCode?.toLowerCase() === residentCode?.toLowerCase()
+                && String(candidate.assignedResidentCode || '').toLowerCase() === String(residentCode || '').toLowerCase()
               ))
               const detailSections = registrationReviewInformationSections.map((section) => ({
                 ...section,
@@ -14280,6 +14434,7 @@ function App() {
                         <div><dt>Account status</dt><dd>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</dd></div>
                         <div><dt>Address</dt><dd>{resident.address || 'Not recorded'}</dd></div>
                         <div><dt>Date of birth</dt><dd>{resident.birthDate || resident.dateOfBirth || registration?.data?.birthDate || 'Not recorded'}</dd></div>
+                        <div><dt>Contact number</dt><dd>{resident.contactNumber || resident.mobileNumber || registration?.data?.mobileNumber || 'Not recorded'}</dd></div>
                         <div><dt>Email address</dt><dd>{resident.emailAddress || registration?.data?.emailAddress || 'Not recorded'}</dd></div>
                         <div><dt>Approved</dt><dd>{registration?.reviewedAt ? new Date(registration.reviewedAt).toLocaleString('en-PH') : 'Approval date not recorded'}</dd></div>
                         {registration && <div><dt>Application reference</dt><dd>{registration.id}</dd></div>}
@@ -14405,7 +14560,7 @@ function App() {
                 <div><span className="section-number">VERIFIED PAYMENTS</span><h3 id="payment-history-title">Payment history</h3><p>Verified payments remain here even when a request is later cancelled or refunded.</p></div>
                 <span className="admin-panel-count">{paymentHistoryRecords.length} records</span>
               </header>
-              <TableSearch label="payment history"><div className="table-scroll"><table className="admin-table payment-history-table"><thead><tr><th>Resident</th><th>Resident code</th><th>Request</th><th>Payment submitted</th><th>Amount</th><th>Payment reference</th><th>Status</th></tr></thead><tbody>
+              <TableSearch label="payment history" placeholder="Search resident, code, document, date, OR/reference, or status"><div className="table-scroll"><table className="admin-table payment-history-table"><thead><tr><th>Resident</th><th>Resident code</th><th>Request</th><th>Payment submitted</th><th>Amount</th><th>Payment reference</th><th>Status</th></tr></thead><tbody>
                 {paymentHistoryRecords.map((payment) => {
                   const paymentDate = payment.paymentSubmittedAt
                     ? new Date(payment.paymentSubmittedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })
@@ -14418,7 +14573,7 @@ function App() {
                     cancelledRequests.length ? `${cancelledRequests.length} of ${payment.requests.length} requests cancelled` : '',
                     refundedAmount > 0 ? `Refunded ₱${refundedAmount.toFixed(2)} · net ₱${Math.max(0, Number(payment.feeAmount || 0) - refundedAmount).toFixed(2)}` : '',
                   ].filter(Boolean).join(' · ')
-                  return <tr key={payment.groupKey} data-search-text={[payment.resident, payment.residentCode, paymentDate].filter(Boolean).join(' ')}>
+                  return <tr key={payment.groupKey} data-search-text={[payment.resident, payment.residentCode, ...(payment.documents || []), payment.id, paymentDate, payment.paymentOrNumber, payment.paymentProofOrNumber, payment.paymentStatus].filter(Boolean).join(' ')}>
                     <td><strong>{payment.resident}</strong></td>
                     <td>{payment.residentCode || 'Not recorded'}</td>
                     <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.requests.length > 1 ? `${payment.requests.length} requests · ` : ''}{payment.id}</small></td>
@@ -14561,8 +14716,8 @@ function App() {
               <p className="resident-record-result-count" aria-live="polite">{!hasLoadedPrivateDatabaseData && officialBackendToken
                 ? getPrivateDatabaseEmptyMessage('Resident records', 'No resident records yet.')
                 : `Showing ${filteredAdminResidents.length} of ${adminResidents.length} current residents`}</p>
-              <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
-                const profileRequests = residentProfileUpdateRequests.filter((request) => request.residentCode?.toLowerCase() === resident.code.toLowerCase())
+              <div className="table-scroll"><table className="admin-table resident-records-table"><thead><tr><th>Name</th><th>Address</th><th>Email address</th><th>Resident code</th><th>Account status</th><th>Actions</th></tr></thead><tbody>{filteredAdminResidents.map((resident) => {
+                const profileRequests = residentProfileUpdateRequests.filter((request) => String(request.residentCode || '').toLowerCase() === String(resident.code || '').toLowerCase())
                 const pendingProfileRequests = profileRequests.filter((request) => request.status === 'Pending').length
                 const isRecoveryNameMatch = resident.id === highlightedResidentId
                 const residentAddressLabel = getResidentRecordAddressLabel(resident, registrationRequests)
@@ -14574,7 +14729,7 @@ function App() {
                   <td><span className={`compliance-status ${resident.recordStatus === 'inactive' ? 'declined' : 'approved'}`}>{resident.recordStatus === 'inactive' ? 'Inactive' : 'Active'}</span></td>
                   <td><div className="table-actions">
                     <button type="button" onClick={() => editResident(resident)}>Edit</button>
-                    <button type="button" className={resident.recordStatus === 'inactive' ? '' : 'table-delete'} onClick={() => toggleResidentRecordStatus(resident)}>{resident.recordStatus === 'inactive' ? 'Reactivate' : 'Deactivate'}</button>
+                    <button type="button" className={resident.recordStatus === 'inactive' ? '' : 'table-delete'} onClick={() => toggleResidentRecordStatus(resident)}>{resident.recordStatus === 'inactive' ? 'Reactivate account' : 'Deactivate account'}</button>
                     {profileRequests.length > 0 && <button type="button" className="resident-profile-update-icon" aria-label={`Open ${profileRequests.length} profile update request${profileRequests.length === 1 ? '' : 's'} for ${resident.name}`} title="Review profile update requests" onClick={() => { setResidentProfileUpdateResidentCode(resident.code); setProfileUpdateError(''); setResidentAccountMessage('') }}><span aria-hidden="true">✎</span>{pendingProfileRequests > 0 && <small>{pendingProfileRequests}</small>}</button>}
                   </div></td>
                 </tr>
@@ -14877,9 +15032,9 @@ function App() {
           {adminView === 'issuedDocuments' && <section className="compliance-panel issued-documents-workspace">
             <div className="requests-heading"><div><span className="section-number">ISSUANCE REGISTER</span><h2>Issued documents</h2></div><span className="request-notification">{issuedDocuments.length} documents</span></div>
             <p className="resident-report-note">Each released certificate receives a unique control number and records its date, purpose, OR number, recipient, and issuing officer.</p>
-            <TableSearch label="issued documents"><div className="table-scroll"><table className="admin-table issued-documents-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th><th>Action</th></tr></thead><tbody>{issuedDocuments.map((entry) => {
+            <TableSearch label="issued documents" placeholder="Search control number, resident, document, purpose, date, or OR number"><div className="table-scroll"><table className="admin-table issued-documents-table"><thead><tr><th>Control number</th><th>Date</th><th>Resident / recipient</th><th>Document</th><th>Purpose</th><th>OR number</th><th>Issuing officer</th><th>Action</th></tr></thead><tbody>{issuedDocuments.map((entry) => {
               const issuedRequest = historyRequestList.find((request) => request.id === entry.requestId)
-              return <tr key={entry.id} data-search-text={[entry.releasedTo || entry.resident, entry.date, entry.date ? new Date(entry.date).toLocaleDateString('en-PH', { dateStyle: 'medium' }) : '', entry.document, entry.purpose].filter(Boolean).join(' ')}>
+              return <tr key={entry.id} data-search-text={[entry.controlNumber, entry.releasedTo, entry.resident, entry.residentCode, entry.date, entry.date ? new Date(entry.date).toLocaleDateString('en-PH', { dateStyle: 'medium' }) : '', entry.document, entry.purpose, entry.orNumber, entry.issuingOfficer].filter(Boolean).join(' ')}>
                 <td>{entry.controlNumber}</td>
                 <td>{entry.date ? new Date(entry.date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date not recorded'}</td>
                 <td>{entry.releasedTo || entry.resident}</td>
@@ -14945,7 +15100,7 @@ function App() {
             <section className="compliance-panel resident-history-log">
               <div className="requests-heading"><div><span className="section-number">EXPORTABLE REPORT</span><h2>Document request reports</h2></div><button type="button" className="check-button" onClick={exportDocumentReport}>Export CSV</button></div>
               <p className="resident-report-note">Request counts grouped by document type, request month, and current status. Export the same report as a spreadsheet-ready CSV.</p>
-              <TableSearch label="document request reports"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Month</th><th>Document type</th><th>Status</th><th>Requests</th></tr></thead><tbody>{documentReportRows.map((row) => <tr key={row.key}><td>{row.month}</td><td>{row.document}</td><td>{row.status}</td><td>{row.count}</td></tr>)}{documentReportRows.length === 0 && <tr><td colSpan="4">No document request data is available for reporting.</td></tr>}</tbody></table></div></TableSearch>
+              <TableSearch label="document request reports" placeholder="Search month, document type, or status"><div className="table-scroll"><table className="admin-table"><thead><tr><th>Month</th><th>Document type</th><th>Status</th><th>Requests</th></tr></thead><tbody>{documentReportRows.map((row) => <tr key={row.key}><td>{row.month}</td><td>{row.document}</td><td>{row.status}</td><td>{row.count}</td></tr>)}{documentReportRows.length === 0 && <tr><td colSpan="4">No document request data is available for reporting.</td></tr>}</tbody></table></div></TableSearch>
             </section>
           </section>}
           {adminView === 'settings' && <section className="admin-account-page">
@@ -15633,7 +15788,7 @@ function App() {
                     </div>
                     <span className="admin-panel-count">{residentPaymentHistoryRequests.length} records</span>
                   </header>
-                  <TableSearch label="resident payment history"><div className="table-scroll">
+                  <TableSearch label="resident payment history" placeholder="Search document, date, reference, or payment status"><div className="table-scroll">
                     <table className="admin-table payment-history-table">
                       <thead><tr><th>Date</th><th>Request</th><th>Amount</th><th>Payment method</th><th>Reference</th><th>Status</th></tr></thead>
                       <tbody>
@@ -15653,6 +15808,12 @@ function App() {
                           return <tr key={payment.id} data-search-text={[
                             ...(payment.documents || []),
                             paymentDate,
+                            payment.id,
+                            payment.feeAmount,
+                            payment.paymentMethod,
+                            payment.paymentOrNumber,
+                            payment.paymentProofOrNumber,
+                            paymentStatus,
                           ].filter(Boolean).join(' ')}>
                             <td>{paymentDate}</td>
                             <td className="payment-history-request-cell"><strong>{payment.documents?.join(' · ') || 'Document request'}</strong><small>{payment.id}</small></td>
@@ -15678,7 +15839,7 @@ function App() {
                   <div><span className="section-number">REQUEST ARCHIVE</span><h2>Request History</h2><p>Review past requests, their final status, and processing timeline.</p></div>
                   <span className="admin-panel-count">{residentHistoryRequests.length} records</span>
                 </header>
-                <TableSearch label="resident request history"><div className="resident-history-table-wrap">
+                <TableSearch label="resident request history" placeholder="Search submitted date, request ID, document, or final status"><div className="resident-history-table-wrap">
                   <table className="resident-history-table resident-request-history-table">
                     <thead><tr><th>Submitted</th><th>Request ID</th><th>Documents requested</th><th>Final status</th><th>Final date</th><th>Updates</th><th>Timeline</th></tr></thead>
                     <tbody>
