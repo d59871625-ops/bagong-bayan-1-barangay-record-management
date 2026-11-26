@@ -30,13 +30,141 @@ function residentSyncNameKey(string $name): string
     return preg_replace('/[^\p{L}\p{N}]+/u', '', $name) ?? "";
 }
 
-function residentSyncRecordBelongsTo($record, string $residentCode, string $fullName): bool
+function residentSyncBuildIdentity(PDO $pdo, int $residentId, string $residentCode, string $fullName, string $email = ""): array
+{
+    $identity = [
+        "ids" => [(string) $residentId => true],
+        "codes" => [strtoupper(trim($residentCode)) => true],
+        "names" => [residentSyncNameKey($fullName) => true],
+        "emails" => [strtolower(trim($email)) => true],
+    ];
+    $profiles = residentSyncReadState($pdo, "bb1-resident-records", []);
+    $recoveries = residentSyncReadState($pdo, "bb1-resident-code-recovery-requests", []);
+    $registrations = residentSyncReadState($pdo, "bb1-registration-requests", []);
+    $changed = true;
+    while ($changed) {
+        $changed = false;
+        foreach (is_array($profiles) ? $profiles : [] as $profile) {
+            if (!($profile instanceof stdClass)) {
+                continue;
+            }
+            $profileId = trim((string) ($profile->residentId ?? $profile->resident_id ?? $profile->id ?? ""));
+            $profileCodes = array_merge(is_array($profile->legacyCodes ?? null) ? $profile->legacyCodes : [], [
+                $profile->code ?? "", $profile->residentCode ?? "", $profile->resident_code ?? "",
+            ]);
+            $linked = $profileId !== "" && (
+                isset($identity["ids"][$profileId])
+                || isset($identity["codes"][strtoupper($profileId)])
+            );
+            foreach ($profileCodes as $code) {
+                $code = strtoupper(trim((string) $code));
+                if ($code !== "" && isset($identity["codes"][$code])) $linked = true;
+            }
+            if (!$linked) continue;
+            if ($profileId !== "" && !isset($identity["ids"][$profileId])) {
+                $identity["ids"][$profileId] = true;
+                $changed = true;
+            }
+            $profileIdCode = strtoupper($profileId);
+            if ($profileIdCode !== "" && !isset($identity["codes"][$profileIdCode])) {
+                $identity["codes"][$profileIdCode] = true;
+                $changed = true;
+            }
+            foreach ($profileCodes as $code) {
+                $code = strtoupper(trim((string) $code));
+                if ($code !== "" && !isset($identity["codes"][$code])) {
+                    $identity["codes"][$code] = true;
+                    $changed = true;
+                }
+            }
+            foreach (["name", "fullName", "full_name"] as $field) {
+                $nameKey = residentSyncNameKey((string) ($profile->{$field} ?? ""));
+                if ($nameKey !== "" && !isset($identity["names"][$nameKey])) {
+                    $identity["names"][$nameKey] = true;
+                    $changed = true;
+                }
+            }
+        }
+        foreach (is_array($recoveries) ? $recoveries : [] as $recovery) {
+            if (!($recovery instanceof stdClass)) {
+                continue;
+            }
+            $matchedId = trim((string) ($recovery->matchedResidentId ?? ""));
+            $linkedCodes = [
+                strtoupper(trim((string) ($recovery->matchedResidentCode ?? ""))),
+                strtoupper(trim((string) ($recovery->residentCode ?? ""))),
+            ];
+            $recoveryEmail = strtolower(trim((string) ($recovery->emailAddress ?? $recovery->email ?? "")));
+            $isLinked = ($matchedId !== "" && isset($identity["ids"][$matchedId]))
+                || ($recoveryEmail !== "" && isset($identity["emails"][$recoveryEmail]));
+            foreach ($linkedCodes as $code) {
+                if ($code !== "" && isset($identity["codes"][$code])) {
+                    $isLinked = true;
+                }
+            }
+            if (!$isLinked) {
+                continue;
+            }
+            if ($matchedId !== "" && !isset($identity["ids"][$matchedId])) {
+                $identity["ids"][$matchedId] = true;
+                $changed = true;
+            }
+            foreach ($linkedCodes as $code) {
+                if ($code !== "" && !isset($identity["codes"][$code])) {
+                    $identity["codes"][$code] = true;
+                    $changed = true;
+                }
+            }
+            $recoveryName = residentSyncNameKey((string) ($recovery->fullName ?? $recovery->name ?? ""));
+            if ($recoveryName !== "" && !isset($identity["names"][$recoveryName])) {
+                $identity["names"][$recoveryName] = true;
+                $changed = true;
+            }
+        }
+        foreach (is_array($registrations) ? $registrations : [] as $registration) {
+            if (!($registration instanceof stdClass)) continue;
+            $registrationId = trim((string) ($registration->residentId ?? $registration->resident_id ?? ""));
+            $registrationCode = strtoupper(trim((string) ($registration->assignedResidentCode ?? $registration->residentCode ?? $registration->resident_code ?? "")));
+            $registrationEmail = strtolower(trim((string) ($registration->email ?? $registration->emailAddress ?? $registration->data->email ?? $registration->data->emailAddress ?? "")));
+            $linked = ($registrationId !== "" && isset($identity["ids"][$registrationId]))
+                || ($registrationCode !== "" && isset($identity["codes"][$registrationCode]))
+                || ($registrationEmail !== "" && isset($identity["emails"][$registrationEmail]));
+            if (!$linked) continue;
+            if ($registrationId !== "" && !isset($identity["ids"][$registrationId])) {
+                $identity["ids"][$registrationId] = true;
+                $changed = true;
+            }
+            if ($registrationCode !== "" && !isset($identity["codes"][$registrationCode])) {
+                $identity["codes"][$registrationCode] = true;
+                $changed = true;
+            }
+            if ($registrationEmail !== "" && !isset($identity["emails"][$registrationEmail])) {
+                $identity["emails"][$registrationEmail] = true;
+                $changed = true;
+            }
+            $registrationName = residentSyncNameKey((string) ($registration->name ?? $registration->fullName ?? $registration->data->fullName ?? $registration->data->full_name ?? ""));
+            if ($registrationName !== "" && !isset($identity["names"][$registrationName])) {
+                $identity["names"][$registrationName] = true;
+                $changed = true;
+            }
+        }
+    }
+    return $identity;
+}
+
+function residentSyncRecordBelongsTo($record, string $residentCode, string $fullName, ?array $identity = null): bool
 {
     if (!($record instanceof stdClass)) {
         return false;
     }
 
     $details = ($record->request ?? null) instanceof stdClass ? $record->request : new stdClass();
+    $recordId = trim((string) ($record->residentId ?? $record->resident_id ?? $record->matchedResidentId
+        ?? $details->residentId ?? $details->resident_id ?? ""));
+    if ($identity && $recordId !== "" && isset($identity["ids"][$recordId])) {
+        return true;
+    }
+
     $recordCode = $record->residentCode
         ?? $record->resident_code
         ?? $record->code
@@ -45,7 +173,10 @@ function residentSyncRecordBelongsTo($record, string $residentCode, string $full
         ?? $details->code
         ?? "";
     if (is_string($recordCode) && trim($recordCode) !== "") {
-        return strtoupper(trim($recordCode)) === strtoupper($residentCode);
+        $normalizedCode = strtoupper(trim($recordCode));
+        return $identity
+            ? isset($identity["codes"][$normalizedCode])
+            : $normalizedCode === strtoupper($residentCode);
     }
 
     $recordName = $record->resident
@@ -58,9 +189,10 @@ function residentSyncRecordBelongsTo($record, string $residentCode, string $full
         ?? $details->full_name
         ?? "";
 
-    return is_string($recordName)
-        && residentSyncNameKey($recordName) !== ""
-        && residentSyncNameKey($recordName) === residentSyncNameKey($fullName);
+    $nameKey = is_string($recordName) ? residentSyncNameKey($recordName) : "";
+    return $nameKey !== "" && ($identity
+        ? isset($identity["names"][$nameKey])
+        : $nameKey === residentSyncNameKey($fullName));
 }
 
 function residentSyncReadState(PDO $pdo, string $key, $fallback = null)
@@ -79,7 +211,7 @@ function residentSyncReadState(PDO $pdo, string $key, $fallback = null)
         : json_decode($value, false, 512, JSON_THROW_ON_ERROR);
 }
 
-function residentSyncOwnedRecords($records, string $residentCode, string $fullName): array
+function residentSyncOwnedRecords($records, string $residentCode, string $fullName, ?array $identity = null): array
 {
     if (!is_array($records)) {
         throw new RuntimeException("Saved resident records must be a list.");
@@ -87,7 +219,7 @@ function residentSyncOwnedRecords($records, string $residentCode, string $fullNa
 
     return array_values(array_filter(
         $records,
-        static fn($record) => residentSyncRecordBelongsTo($record, $residentCode, $fullName)
+        static fn($record) => residentSyncRecordBelongsTo($record, $residentCode, $fullName, $identity)
     ));
 }
 
@@ -95,85 +227,14 @@ function residentSyncReadOwnedState(
     PDO $pdo,
     string $key,
     string $residentCode,
-    string $fullName
+    string $fullName,
+    ?array $identity = null
 ): array {
-    $typeStatement = $pdo->prepare("
-        SELECT JSON_TYPE(data_value)
-        FROM bb1_app_state
-        WHERE data_key = ?
-        LIMIT 1
-    ");
-    $typeStatement->execute([$key]);
-    $storedType = $typeStatement->fetchColumn();
-    if ($storedType === false) {
-        return [];
-    }
-    if ($storedType !== "ARRAY") {
+    $records = residentSyncReadState($pdo, $key, []);
+    if (!residentSyncIsList($records)) {
         throw new RuntimeException("Saved resident records must be a list.");
     }
-
-    $query = <<<'SQL'
-        SELECT JSON_EXTRACT(app_state.data_value, CONCAT('$[', owner_record.ordinal - 1, ']')) AS record_json
-        FROM (
-            SELECT data_value
-            FROM bb1_app_state
-            WHERE data_key = ?
-        ) AS app_state
-        CROSS JOIN JSON_TABLE(app_state.data_value, '$[*]' COLUMNS (
-            ordinal FOR ORDINALITY,
-            resident_code VARCHAR(100) PATH '$.residentCode' NULL ON EMPTY,
-            resident_code_alias VARCHAR(100) PATH '$.resident_code' NULL ON EMPTY,
-            legacy_code VARCHAR(100) PATH '$.code' NULL ON EMPTY,
-            nested_resident_code VARCHAR(100) PATH '$.request.residentCode' NULL ON EMPTY,
-            nested_resident_code_alias VARCHAR(100) PATH '$.request.resident_code' NULL ON EMPTY,
-            nested_legacy_code VARCHAR(100) PATH '$.request.code' NULL ON EMPTY
-        )) AS owner_record
-        WHERE (
-              COALESCE(
-                  NULLIF(TRIM(owner_record.resident_code), ''),
-                  NULLIF(TRIM(owner_record.resident_code_alias), ''),
-                  NULLIF(TRIM(owner_record.legacy_code), ''),
-                  NULLIF(TRIM(owner_record.nested_resident_code), ''),
-                  NULLIF(TRIM(owner_record.nested_resident_code_alias), ''),
-                  NULLIF(TRIM(owner_record.nested_legacy_code), ''),
-                  ''
-              ) = ''
-              OR UPPER(COALESCE(
-                  NULLIF(TRIM(owner_record.resident_code), ''),
-                  NULLIF(TRIM(owner_record.resident_code_alias), ''),
-                  NULLIF(TRIM(owner_record.legacy_code), ''),
-                  NULLIF(TRIM(owner_record.nested_resident_code), ''),
-                  NULLIF(TRIM(owner_record.nested_resident_code_alias), ''),
-                  NULLIF(TRIM(owner_record.nested_legacy_code), ''),
-                  ''
-              )) = UPPER(?)
-          )
-        ORDER BY owner_record.ordinal
-        SQL;
-
-    try {
-        $statement = $pdo->prepare($query);
-        $statement->execute([$key, $residentCode]);
-        $records = [];
-        while (($recordJson = $statement->fetchColumn()) !== false) {
-            $record = json_decode((string) $recordJson, false, 512, JSON_THROW_ON_ERROR);
-            if ($record instanceof stdClass
-                && residentSyncRecordBelongsTo($record, $residentCode, $fullName)) {
-                $records[] = $record;
-            }
-        }
-        return $records;
-    } catch (PDOException $error) {
-        if ($error->getCode() !== "42000") {
-            throw $error;
-        }
-        error_log("Resident request sync is using the compatibility read for " . $key . ": " . $error->getMessage());
-        return residentSyncOwnedRecords(
-            residentSyncReadState($pdo, $key, []),
-            $residentCode,
-            $fullName
-        );
-    }
+    return residentSyncOwnedRecords($records, $residentCode, $fullName, $identity);
 }
 
 function residentSyncGetDataEtag(PDO $pdo): string
@@ -225,72 +286,14 @@ function residentSyncReadOwnedIssuedDocuments(
     PDO $pdo,
     int $residentId,
     string $residentCode,
-    string $fullName
+    string $fullName,
+    ?array $identity = null
 ): array {
     $records = residentSyncReadState($pdo, "bb1-issued-documents", []);
-    $residentRecords = residentSyncReadState($pdo, "bb1-resident-records", []);
-    $recoveryRecords = residentSyncReadState($pdo, "bb1-resident-code-recovery-requests", []);
-    if (!is_array($records) || !is_array($residentRecords) || !is_array($recoveryRecords)) {
+    if (!is_array($records)) {
         throw new RuntimeException("Saved issued document records are not valid lists.");
     }
-
-    $identityIds = [(string) $residentId => true];
-    $identityCodes = [strtoupper(trim($residentCode)) => true];
-    $identityNames = [residentSyncNameKey($fullName) => true];
-    foreach ($residentRecords as $profile) {
-        if (!($profile instanceof stdClass)) {
-            continue;
-        }
-        $profileCode = strtoupper(trim((string) ($profile->code ?? $profile->residentCode ?? "")));
-        $profileId = trim((string) ($profile->id ?? ""));
-        if ($profileCode !== strtoupper(trim($residentCode)) && $profileId !== (string) $residentId) {
-            continue;
-        }
-        if ($profileId !== "") {
-            $identityIds[$profileId] = true;
-            $identityCodes[strtoupper($profileId)] = true;
-        }
-        if ($profileCode !== "") {
-            $identityCodes[$profileCode] = true;
-        }
-        $profileName = (string) ($profile->name ?? $profile->fullName ?? "");
-        if (residentSyncNameKey($profileName) !== "") {
-            $identityNames[residentSyncNameKey($profileName)] = true;
-        }
-    }
-    foreach ($recoveryRecords as $recovery) {
-        if (!($recovery instanceof stdClass)) {
-            continue;
-        }
-        $matchedId = trim((string) ($recovery->matchedResidentId ?? ""));
-        $matchedCode = strtoupper(trim((string) ($recovery->matchedResidentCode ?? "")));
-        if (!isset($identityIds[$matchedId]) && !isset($identityCodes[$matchedCode])) {
-            continue;
-        }
-        foreach ([$recovery->matchedResidentCode ?? "", $recovery->residentCode ?? ""] as $alias) {
-            $alias = strtoupper(trim((string) $alias));
-            if ($alias !== "") {
-                $identityCodes[$alias] = true;
-            }
-        }
-    }
-
-    return array_values(array_filter($records, static function ($record) use ($identityIds, $identityCodes, $identityNames): bool {
-        if (!($record instanceof stdClass)) {
-            return false;
-        }
-        $recordId = trim((string) ($record->residentId ?? $record->resident_id ?? ""));
-        if ($recordId !== "" && isset($identityIds[$recordId])) {
-            return true;
-        }
-        $recordCode = strtoupper(trim((string) ($record->residentCode ?? $record->resident_code ?? $record->code ?? "")));
-        if ($recordCode !== "" && isset($identityCodes[$recordCode])) {
-            return true;
-        }
-        $recordName = (string) ($record->resident ?? $record->name ?? $record->fullName ?? "");
-        $nameKey = residentSyncNameKey($recordName);
-        return $nameKey !== "" && isset($identityNames[$nameKey]);
-    }));
+    return residentSyncOwnedRecords($records, $residentCode, $fullName, $identity);
 }
 
 function residentSyncPendingSubmissions(
@@ -366,14 +369,14 @@ function residentSyncPendingSubmissions(
     return $validated;
 }
 
-function residentSyncReplaceOwnedPending($saved, array $incoming, string $residentCode, string $fullName): array
+function residentSyncReplaceOwnedPending($saved, array $incoming, string $residentCode, string $fullName, ?array $identity = null): array
 {
     if (!residentSyncIsList($saved)) {
         throw new RuntimeException("Saved resident submissions must be a list.");
     }
-    $kept = array_values(array_filter($saved, static function ($record) use ($residentCode, $fullName) {
+    $kept = array_values(array_filter($saved, static function ($record) use ($residentCode, $fullName, $identity) {
         return !(
-            residentSyncRecordBelongsTo($record, $residentCode, $fullName)
+            residentSyncRecordBelongsTo($record, $residentCode, $fullName, $identity)
             && ($record->status ?? "") === "Pending"
         );
     }));
@@ -731,7 +734,8 @@ try {
             r.middle_name,
             r.last_name,
             r.suffix,
-            u.full_name
+            u.full_name,
+            u.email
         FROM residents r
         INNER JOIN users u ON u.id = r.user_id
         WHERE r.user_id = ?
@@ -748,9 +752,11 @@ try {
     $residentId = (int) $resident["resident_id"];
     $residentCode = strtoupper(trim((string) $resident["resident_code"]));
     $fullName = trim((string) $resident["full_name"]);
+    $residentEmail = strtolower(trim((string) ($resident["email"] ?? "")));
     if ($residentCode === "" || $fullName === "") {
         residentSyncRespond(409, ["success" => false, "message" => "Resident account details are incomplete."]);
     }
+    $identity = residentSyncBuildIdentity($pdo, $residentId, $residentCode, $fullName, $residentEmail);
 
     if ($method === "GET") {
         $etag = residentSyncGetDataEtag($pdo);
@@ -761,20 +767,21 @@ try {
             exit;
         }
 
-        $history = residentSyncReadOwnedState($pdo, "bb1-resident-history", $residentCode, $fullName);
-        $requestDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-request-drafts", $residentCode, $fullName);
-        $recoveryRequests = residentSyncReadOwnedState($pdo, "bb1-resident-code-recovery-requests", $residentCode, $fullName);
-        $profileUpdateRequests = residentSyncReadOwnedState($pdo, "bb1-resident-profile-update-requests", $residentCode, $fullName);
-        $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName);
+        $history = residentSyncReadOwnedState($pdo, "bb1-resident-history", $residentCode, $fullName, $identity);
+        $requestDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-request-drafts", $residentCode, $fullName, $identity);
+        $recoveryRequests = residentSyncReadOwnedState($pdo, "bb1-resident-code-recovery-requests", $residentCode, $fullName, $identity);
+        $profileUpdateRequests = residentSyncReadOwnedState($pdo, "bb1-resident-profile-update-requests", $residentCode, $fullName, $identity);
+        $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName, $identity);
         $requests = residentSyncOwnedRecords(
             bb1MergeResidentRequestChanges(
-                residentSyncReadOwnedState($pdo, "bb1-resident-requests", $residentCode, $fullName),
-                bb1LoadResidentRequestChanges($pdo, false, $residentCode)
+                residentSyncReadOwnedState($pdo, "bb1-resident-requests", $residentCode, $fullName, $identity),
+                bb1LoadResidentRequestChanges($pdo)
             ),
             $residentCode,
-            $fullName
+            $fullName,
+            $identity
         );
-        $paymentDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-payment-drafts", $residentCode, $fullName);
+        $paymentDrafts = residentSyncReadOwnedState($pdo, "bb1-resident-payment-drafts", $residentCode, $fullName, $identity);
         residentSyncRespond(200, [
             "success" => true,
             "data" => [
@@ -1088,7 +1095,7 @@ try {
             if (isset($existingIndexes[$id])) {
                 $index = $existingIndexes[$id];
                 $existing = $allRequests[$index];
-                if (!residentSyncRecordBelongsTo($existing, $residentCode, $fullName)) {
+                if (!residentSyncRecordBelongsTo($existing, $residentCode, $fullName, $identity)) {
                     throw new DomainException("A request ID is already in use.");
                 }
                 $allRequests[$index] = residentSyncApplyUpdate($existing, $incoming, $now);
@@ -1142,7 +1149,7 @@ try {
             );
             if (isset($paymentDraftIndexes[$id])) {
                 $existingDraft = $allPaymentDrafts[$paymentDraftIndexes[$id]];
-                if (!residentSyncRecordBelongsTo($existingDraft, $residentCode, $fullName)) {
+                if (!residentSyncRecordBelongsTo($existingDraft, $residentCode, $fullName, $identity)) {
                     throw new DomainException("A payment draft ID is already in use.");
                 }
                 $allPaymentDrafts[$paymentDraftIndexes[$id]] = $validatedDraft;
@@ -1158,7 +1165,7 @@ try {
                 static fn($draft) => !(
                     $draft instanceof stdClass
                     && isset($draftIdsToRemove[$draft->id ?? ""])
-                    && residentSyncRecordBelongsTo($draft, $residentCode, $fullName)
+                    && residentSyncRecordBelongsTo($draft, $residentCode, $fullName, $identity)
                 )
             ));
         }
@@ -1166,7 +1173,7 @@ try {
         if (property_exists($input, "requestDrafts")) {
             $allRequestDrafts = array_values(array_filter(
                 $allRequestDrafts,
-                static fn($draft) => !residentSyncRecordBelongsTo($draft, $residentCode, $fullName)
+                static fn($draft) => !residentSyncRecordBelongsTo($draft, $residentCode, $fullName, $identity)
             ));
             $allRequestDrafts = array_merge($allRequestDrafts, $validatedRequestDrafts);
         }
@@ -1175,7 +1182,8 @@ try {
                 $submissionState["bb1-resident-code-recovery-requests"],
                 $validatedRecoveryRequests,
                 $residentCode,
-                $fullName
+                $fullName,
+                $identity
             );
         }
         if (property_exists($input, "profileUpdateRequests")) {
@@ -1183,7 +1191,8 @@ try {
                 $submissionState["bb1-resident-profile-update-requests"],
                 $validatedProfileUpdateRequests,
                 $residentCode,
-                $fullName
+                $fullName,
+                $identity
             );
         }
 
@@ -1250,20 +1259,22 @@ try {
         bb1BumpSyncRevision($pdo);
         $pdo->commit();
 
-        $ownRequests = residentSyncOwnedRecords($allRequests, $residentCode, $fullName);
-        $ownPaymentDrafts = residentSyncOwnedRecords($allPaymentDrafts, $residentCode, $fullName);
-        $ownRequestDrafts = residentSyncOwnedRecords($allRequestDrafts, $residentCode, $fullName);
+        $ownRequests = residentSyncOwnedRecords($allRequests, $residentCode, $fullName, $identity);
+        $ownPaymentDrafts = residentSyncOwnedRecords($allPaymentDrafts, $residentCode, $fullName, $identity);
+        $ownRequestDrafts = residentSyncOwnedRecords($allRequestDrafts, $residentCode, $fullName, $identity);
         $ownRecoveryRequests = residentSyncOwnedRecords(
             $submissionState["bb1-resident-code-recovery-requests"],
             $residentCode,
-            $fullName
+            $fullName,
+            $identity
         );
         $ownProfileUpdateRequests = residentSyncOwnedRecords(
             $submissionState["bb1-resident-profile-update-requests"],
             $residentCode,
-            $fullName
+            $fullName,
+            $identity
         );
-        $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName);
+        $issuedDocuments = residentSyncReadOwnedIssuedDocuments($pdo, $residentId, $residentCode, $fullName, $identity);
         header("ETag: " . residentSyncGetDataEtag($pdo));
         residentSyncRespond(200, [
             "success" => true,

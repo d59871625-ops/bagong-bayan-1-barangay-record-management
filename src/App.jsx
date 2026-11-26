@@ -6990,7 +6990,11 @@ function App() {
     resident: request.resident || fullName,
     residentCode: request.residentCode || residentName.code,
   }))
-  const residentPaymentHistoryByRequestId = new Map(residentHistoryRequestCandidates.map((request) => [String(request.id), request]))
+  const residentPaymentHistoryByRequestId = new Map(uniqueResidentRequestsById([
+    ...residentHistoryRequestCandidates,
+    ...residentPaymentRequests,
+    ...residentCancelledRequests,
+  ]).map((request) => [String(request.id), request]))
   residentIssuedPaymentHistoryRequests.forEach((request) => {
     const requestId = String(request.id)
     const existing = residentPaymentHistoryByRequestId.get(requestId)
