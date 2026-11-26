@@ -3611,7 +3611,7 @@ const registrationReviewInformationSections = [
     key: 'address',
     title: 'Current address',
     fields: [
-      ['streetPurok', 'Purok'], ['barangay', 'Barangay'],
+      ['houseBlockLot', 'House / block / lot / street'], ['streetPurok', 'Purok'], ['barangay', 'Barangay'],
       ['municipalityCity', 'Municipality / city'], ['province', 'Province'], ['stayDuration', 'Length of stay'],
     ],
   },
@@ -6779,15 +6779,35 @@ function App() {
     currentResidentRecord?.code,
     currentResidentRecord?.id,
   ].filter(Boolean).map((value) => normalizeResidentCode(value)))
+  const residentIdentityNameKeys = new Set([fullName, currentResidentRecord?.name]
+    .map((name) => getResidentRecordNameKey({ name }))
+    .filter(Boolean))
+  const residentIdentityNames = new Set(residentIdentityNameKeys)
+  const linkedApprovedRegistrations = registrationRequests.filter((request) => {
+    if (request.status !== 'Approved') return false
+    const registrationResidentId = request.residentId ?? request.resident_id
+    const registrationCode = normalizeResidentCode(request.assignedResidentCode || request.residentCode || request.resident_code)
+    const registrationNameKey = getResidentRecordNameKey({ name: request.name || [request.data?.firstName, request.data?.middleName, request.data?.lastName, request.data?.suffix].filter(Boolean).join(' ') })
+    return (registrationResidentId !== undefined && residentIdentityIds.has(String(registrationResidentId)))
+      || (registrationCode && residentIdentityCodes.has(registrationCode))
+      || (registrationNameKey && residentIdentityNameKeys.has(registrationNameKey))
+  })
+  linkedApprovedRegistrations.forEach((request) => {
+    const registrationResidentId = request.residentId ?? request.resident_id
+    if (registrationResidentId !== undefined && String(registrationResidentId).trim()) residentIdentityIds.add(String(registrationResidentId))
+    const registrationCode = request.assignedResidentCode || request.residentCode || request.resident_code
+    if (registrationCode) residentIdentityCodes.add(normalizeResidentCode(registrationCode))
+    const registrationNameKey = getResidentRecordNameKey({ name: request.name || [request.data?.firstName, request.data?.middleName, request.data?.lastName, request.data?.suffix].filter(Boolean).join(' ') })
+    if (registrationNameKey) residentIdentityNames.add(registrationNameKey)
+  })
   residentCodeRecoveryRequests.forEach((request) => {
-    if (residentIdentityIds.has(String(request.matchedResidentId))) {
+    const recoveryNameKey = getResidentRecordNameKey({ name: request.fullName || request.name })
+    if (residentIdentityIds.has(String(request.matchedResidentId))
+      || (recoveryNameKey && residentIdentityNameKeys.has(recoveryNameKey))) {
       const linkedCodes = [request.matchedResidentCode, request.residentCode].filter(Boolean)
       linkedCodes.forEach((code) => residentIdentityCodes.add(normalizeResidentCode(code)))
     }
   })
-  const residentIdentityNames = new Set([fullName, currentResidentRecord?.name]
-    .map(getResidentRecordNameKey)
-    .filter(Boolean))
   const addLinkedResidentNames = (records, getCode) => {
     records.forEach((record) => {
       const code = normalizeResidentCode(getCode(record))
@@ -6870,8 +6890,45 @@ function App() {
     ...residentPendingPaymentRequests,
   ].sort((first, second) => new Date(second.requestedAt || second.paymentDraftedAt || 0).getTime()
     - new Date(first.requestedAt || first.paymentDraftedAt || 0).getTime())
-  const residentPaymentHistoryRequests = residentHistoryRequestCandidates
-    .filter((request) => Number(request.feeAmount || 0) > 0 && request.paymentStatus === 'Paid')
+  const residentIssuedPaymentHistoryRequests = (() => {
+    const issuedByRequest = new Map()
+    uniqueResidentRequestsById(issuedDocuments)
+      .filter((document) => document.requestId && belongsToResidentAccount(document))
+      .forEach((document) => {
+        const requestId = String(document.requestId)
+        const existing = issuedByRequest.get(requestId)
+        if (existing) {
+          if (document.document && !existing.documents.includes(document.document)) existing.documents.push(document.document)
+          return
+        }
+        issuedByRequest.set(requestId, {
+          ...document,
+          id: requestId,
+          resident: document.resident || fullName,
+          residentCode: document.residentCode || residentName.code,
+          documents: document.document ? [document.document] : [],
+          status: 'Completed',
+          paymentStatus: document.paymentStatus || (Number(document.feeAmount || 0) > 0 ? 'Paid' : ''),
+        })
+      })
+    return [...issuedByRequest.values()]
+  })()
+  const residentPaymentHistoryByRequestId = new Map(residentHistoryRequestCandidates.map((request) => [String(request.id), request]))
+  residentIssuedPaymentHistoryRequests.forEach((request) => {
+    const requestId = String(request.id)
+    const existing = residentPaymentHistoryByRequestId.get(requestId)
+    const merged = existing ? { ...request, ...existing } : request
+    ;['feeAmount', 'paymentStatus', 'paymentGroupId', 'paymentSubmittedAt', 'paymentVerifiedAt', 'paymentMethod', 'paymentOrNumber', 'paymentProofOrNumber']
+      .forEach((field) => {
+        if ((merged[field] === undefined || merged[field] === null || merged[field] === '') && request[field] !== undefined) {
+          merged[field] = request[field]
+        }
+      })
+    merged.documents = [...new Set([...(request.documents || []), ...(existing?.documents || [])])]
+    residentPaymentHistoryByRequestId.set(requestId, merged)
+  })
+  const residentPaymentHistoryRequests = [...residentPaymentHistoryByRequestId.values()]
+    .filter((request) => Number(request.feeAmount || 0) > 0 && String(request.paymentStatus || '').toLowerCase() === 'paid')
     .sort((first, second) => new Date(second.paymentVerifiedAt || second.paymentSubmittedAt || second.requestedAt || 0).getTime()
       - new Date(first.paymentVerifiedAt || first.paymentSubmittedAt || first.requestedAt || 0).getTime())
   const residentPaymentRecords = groupPaymentRequests(residentPaymentRequests)
@@ -12081,6 +12138,14 @@ function App() {
         orNumber,
         issuingOfficer,
         releasedTo,
+        feeAmount: Number(request.feeAmount || 0),
+        paymentStatus: request.paymentStatus || (Number(request.feeAmount || 0) > 0 ? 'Paid' : ''),
+        paymentGroupId: request.paymentGroupId || '',
+        paymentSubmittedAt: request.paymentSubmittedAt || '',
+        paymentVerifiedAt: request.paymentVerifiedAt || '',
+        paymentMethod: request.paymentMethod || '',
+        paymentOrNumber: request.paymentOrNumber || '',
+        paymentProofOrNumber: request.paymentProofOrNumber || '',
       }
       nextSequence += 1
       return entry
@@ -14406,8 +14471,14 @@ function App() {
               const residentCode = resident.code || resident.id
               const registration = registrationRequests.find((candidate) => (
                 candidate.status === 'Approved'
-                && String(candidate.assignedResidentCode || '').toLowerCase() === String(residentCode || '').toLowerCase()
+                && (
+                  String(candidate.assignedResidentCode || '').toLowerCase() === String(residentCode || '').toLowerCase()
+                  || (candidate.residentId !== undefined && String(candidate.residentId) === String(resident.id))
+                )
               ))
+              const registrationFieldLabels = new Map(registrationReviewInformationSections.flatMap((section) => (
+                section.fields.map(([field, label]) => [field, label])
+              )))
               const detailSections = registrationReviewInformationSections.map((section) => ({
                 ...section,
                 entries: section.fields.filter(([field]) => field !== 'mobileNumber').map(([field, label]) => {
@@ -14416,6 +14487,17 @@ function App() {
                   return value ? { field, label, value } : null
                 }).filter(Boolean),
               })).filter((section) => section.entries.length)
+              const knownRegistrationFields = new Set(registrationFieldLabels.keys())
+              const additionalRegistrationEntries = Object.entries(registration?.data || {})
+                .filter(([field, rawValue]) => !knownRegistrationFields.has(field)
+                  && rawValue !== null && rawValue !== undefined && rawValue !== '')
+                .map(([field, rawValue]) => {
+                  const value = Array.isArray(rawValue)
+                    ? rawValue.map((entry) => typeof entry === 'object' ? JSON.stringify(entry) : String(entry)).join(', ')
+                    : typeof rawValue === 'object' ? JSON.stringify(rawValue) : String(rawValue).trim()
+                  const label = field.replace(/([A-Z])/g, ' $1').replace(/[_-]+/g, ' ').replace(/^\w/, (character) => character.toUpperCase()).trim()
+                  return value ? { field, label, value } : null
+                }).filter(Boolean)
               return <div className="resident-profile-update-modal-backdrop" onMouseDown={(event) => {
                 if (event.target === event.currentTarget) setRegistrationResidentViewCode('')
               }}>
@@ -14444,6 +14526,10 @@ function App() {
                       <h3>{section.title}</h3>
                       <dl className="registration-data-grid">{section.entries.map(({ field, label, value }) => <div key={field}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
                     </article>)}
+                    {additionalRegistrationEntries.length > 0 && <article>
+                      <h3>Other registration information</h3>
+                      <dl className="registration-data-grid">{additionalRegistrationEntries.map(({ field, label, value }) => <div key={field}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+                    </article>}
                     {registration && (registration.files?.validId || registration.files?.proofOfResidence) && <article>
                       <h3>Submitted documents</h3>
                       {registration.files.validId && <div className="registration-review-file-row"><span>Valid ID</span><RegistrationEvidencePreview evidence={registration.files.validId} label="Valid ID" /></div>}
